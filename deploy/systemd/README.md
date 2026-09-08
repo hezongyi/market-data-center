@@ -4,7 +4,6 @@
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now market-data-center-api.service
+systemctl --user enable --now market-data-center-api.service market-data-center-worker.service
 curl http://127.0.0.1:18380/api/v1/health
 ```
-

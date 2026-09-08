@@ -1,0 +1,13 @@
+[Unit]
+Description=Market Data Center Worker
+After=network.target
+
+[Service]
+WorkingDirectory=/home/quant/repos/market-data-center/backend
+Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
+ExecStart=/usr/bin/python3 -m data_center.worker_main
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
