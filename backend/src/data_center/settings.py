@@ -11,3 +11,4 @@ class Settings(BaseSettings):
     canonical_root: Path = Path("/home/quant/market_lake/canonical")
     ledger_path: Path = Path("/home/quant/market_lake/canonical/audit/data_center.sqlite")
     api_key: str | None = None
+    webui_dist: Path | None = None

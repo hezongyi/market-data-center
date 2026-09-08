@@ -1,6 +1,8 @@
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
 from data_center.settings import Settings
@@ -20,6 +22,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     worker = LocalWorker(config.canonical_root, ledger)
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "data": None,
+                "meta": {"request_id": request.headers.get("x-request-id", str(uuid4())), "schema_version": "v1"},
+                "errors": [{"code": str(exc.status_code), "message": str(exc.detail)}],
+            },
+        )
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
@@ -102,6 +115,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid api key")
         payload = run_fred_ingest(series_id=series_id, root=config.canonical_root, start=start, end=end, ledger=ledger)
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
+
+    if config.webui_dist is not None and config.webui_dist.is_dir():
+        app.mount("/", StaticFiles(directory=config.webui_dist, html=True), name="webui")
 
     return app
 
