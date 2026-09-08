@@ -8,6 +8,7 @@ from data_center.domain.models import IngestJob
 from data_center.ingest.service import run_fixture_ingest
 from data_center.runs.ledger import RunLedger
 from data_center.storage.query import query_provider_bars
+from data_center.quality.checks import check_provider_bars
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -51,6 +52,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                    start=datetime.fromisoformat(start) if start else None,
                                    end=datetime.fromisoformat(end) if end else None)
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
+
+    @app.post(f"{config.api_prefix}/quality/checks")
+    def quality_check(job: IngestJob) -> dict:
+        from data_center.connectors.fixture import fetch_bars
+        findings = check_provider_bars(fetch_bars(job))
+        status = "pass" if not findings else "fail"
+        return {"data": {"status": status, "finding_count": len(findings), "findings": findings}, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     return app
 
