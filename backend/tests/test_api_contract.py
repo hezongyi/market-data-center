@@ -33,3 +33,11 @@ def test_api_can_serve_built_webui(tmp_path) -> None:
     response = TestClient(app).get("/")
     assert response.status_code == 200
     assert "data center" in response.text
+
+
+def test_validation_errors_use_api_envelope(tmp_path) -> None:
+    app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite"))
+    response = TestClient(app).post("/api/v1/ingest/runs", json={"job_id": "invalid"})
+    assert response.status_code == 422
+    assert response.json()["data"] is None
+    assert response.json()["errors"][0]["code"] == "validation_error"

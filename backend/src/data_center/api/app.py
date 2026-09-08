@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -31,6 +32,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "data": None,
                 "meta": {"request_id": request.headers.get("x-request-id", str(uuid4())), "schema_version": "v1"},
                 "errors": [{"code": str(exc.status_code), "message": str(exc.detail)}],
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "data": None,
+                "meta": {"request_id": request.headers.get("x-request-id", str(uuid4())), "schema_version": "v1"},
+                "errors": [{"code": "validation_error", "message": error["msg"]} for error in exc.errors()],
             },
         )
 
