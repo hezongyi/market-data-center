@@ -14,6 +14,8 @@
 
 接入 FRED `economic_observations`，随后接入 `economic_events`。release time、vintage 和 availability 语义必须在独立 dataset contract 中冻结。
 
+当前已提供 FRED 只读 connector；正式落盘前仍需补 economic schema、vintage 语义和 quality policy。
+
 ## Phase 4：下游切换
 
 在 `macro-market-lab` 增加 `DataCenterClient` adapter，先切换 bars/economic observations 的只读查询，完成新旧结果对比后再切换 ingest、quality 和 maintenance。
@@ -21,4 +23,3 @@
 ## 验收原则
 
 每个 provider 必须有 fixture/mock 测试、schema 校验、质量 finding、receipt 和真实 smoke。迁移期间以 output hash、row count、时间范围和 quality status 做双读对比。
-
