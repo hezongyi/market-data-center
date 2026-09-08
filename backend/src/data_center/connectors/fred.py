@@ -19,5 +19,17 @@ class FredConnector:
         if end: params["observation_end"] = end
         response = requests.get(self.endpoint, params=params, timeout=20)
         response.raise_for_status()
-        return [{"series_id": series_id, "provider": self.provider, "observation_date": item["date"], "value": None if item["value"] == "." else float(item["value"]), "ingest_ts": datetime.now(timezone.utc).isoformat()} for item in response.json().get("observations", [])]
-
+        ingest_ts = datetime.now(timezone.utc).isoformat()
+        return [
+            {
+                "series_id": series_id,
+                "provider": self.provider,
+                "observation_date": item["date"],
+                "value": None if item["value"] == "." else float(item["value"]),
+                "vintage_start": item.get("realtime_start"),
+                "vintage_end": item.get("realtime_end"),
+                "availability_policy": "fred_realtime_vintage",
+                "ingest_ts": ingest_ts,
+            }
+            for item in response.json().get("observations", [])
+        ]

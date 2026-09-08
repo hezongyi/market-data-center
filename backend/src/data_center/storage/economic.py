@@ -1,7 +1,8 @@
 from pathlib import Path
+from uuid import uuid4
 
 
-def write_economic_observations(root: Path, rows: list[dict]) -> Path:
+def write_economic_observations(root: Path, rows: list[dict], *, part_id: str | None = None) -> Path:
     if not rows:
         raise ValueError("cannot write empty economic observations")
     import polars as pl
@@ -9,7 +10,6 @@ def write_economic_observations(root: Path, rows: list[dict]) -> Path:
     provider = rows[0]["provider"]
     target = root / "economic_observations" / f"provider={provider}" / f"series_id={series}"
     target.mkdir(parents=True, exist_ok=True)
-    path = target / "part-000.parquet"
+    path = target / f"part-{part_id or uuid4().hex}.parquet"
     pl.DataFrame(rows).write_parquet(path)
     return path
-

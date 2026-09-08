@@ -7,10 +7,11 @@ from data_center.settings import Settings
 from data_center.domain.models import IngestJob
 from data_center.runs.ledger import RunLedger
 from data_center.storage.query import query_provider_bars
+from data_center.storage.query import query_economic_observations
 from data_center.quality.checks import check_provider_bars
 from data_center.catalog.registry import DATASETS
 from data_center.ingest.worker import LocalWorker
-from data_center.connectors.fred import FredConnector
+from data_center.ingest.economic import run_fred_ingest
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -18,7 +19,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     worker = LocalWorker(config.canonical_root, ledger)
-    fred = FredConnector()
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
@@ -81,9 +81,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": findings, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(findings)}, "errors": []}
 
     @app.get(f"{config.api_prefix}/economic/observations")
-    def economic_observations(series_id: str, start: str | None = None, end: str | None = None) -> dict:
-        rows = fred.fetch_observations(series_id, start=start, end=end)
+    def economic_observations(series_id: str, provider: str = "fred", start: str | None = None, end: str | None = None) -> dict:
+        rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id, start=start, end=end)
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
+
+    @app.post(f"{config.api_prefix}/economic/ingest")
+    def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:
+        if config.api_key and x_api_key != config.api_key:
+            raise HTTPException(status_code=401, detail="invalid api key")
+        payload = run_fred_ingest(series_id=series_id, root=config.canonical_root, start=start, end=end, ledger=ledger)
+        return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     return app
 

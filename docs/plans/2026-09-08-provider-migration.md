@@ -14,7 +14,7 @@
 
 接入 FRED `economic_observations`，随后接入 `economic_events`。release time、vintage 和 availability 语义必须在独立 dataset contract 中冻结。
 
-当前已提供 FRED 只读 connector；正式落盘前仍需补 economic schema、vintage 语义和 quality policy。
+FRED 已具备 canonical ingest、`economic_observations.v1` schema、realtime vintage 语义、不可变 Parquet part 和最小质量检查。下一步是纳入 worker queue、补 coverage policy，并迁移第一个下游只读 consumer。
 
 ## Phase 4：下游切换
 
