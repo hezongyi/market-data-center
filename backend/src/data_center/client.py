@@ -25,7 +25,6 @@ class DataCenterClient:
     def datasets(self) -> list[dict]:
         return self._request("GET", "/datasets")["data"]
 
-    def bars(self, *, symbol: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> list[dict]:
-        params = {key: value for key, value in {"symbol": symbol, "timeframe": timeframe, "start": start, "end": end}.items() if value is not None}
+    def bars(self, *, provider: str, symbol: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> list[dict]:
+        params = {key: value for key, value in {"provider": provider, "symbol": symbol, "timeframe": timeframe, "start": start, "end": end}.items() if value is not None}
         return self._request("GET", "/bars", params=params)["data"]
-

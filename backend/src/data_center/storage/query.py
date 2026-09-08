@@ -2,9 +2,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-def query_provider_bars(root: Path, *, symbol: str, timeframe: str, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
+def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: str, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
     import polars as pl
-    pattern = root / "provider_bars" / "**" / f"symbol={symbol}" / f"timeframe={timeframe}" / "**" / "*.parquet"
+    pattern = root / "provider_bars" / f"provider={provider}" / "**" / f"symbol={symbol}" / f"timeframe={timeframe}" / "**" / "*.parquet"
     files = list(root.glob(str(pattern.relative_to(root))))
     if not files:
         return []
@@ -13,7 +13,13 @@ def query_provider_bars(root: Path, *, symbol: str, timeframe: str, start: datet
         frame = frame.filter(pl.col("bar_ts") >= start)
     if end is not None:
         frame = frame.filter(pl.col("bar_ts") <= end)
-    return frame.sort("bar_ts").to_dicts()
+    current = (
+        frame.sort(["bar_ts", "ingest_ts"])
+        .group_by(["provider", "symbol", "asset_class", "timeframe", "bar_ts"], maintain_order=True)
+        .last()
+        .sort("bar_ts")
+    )
+    return current.to_dicts()
 
 
 def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None, end: str | None = None) -> list[dict]:

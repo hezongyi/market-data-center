@@ -57,9 +57,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")
-    def bars(symbol: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> dict:
+    def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> dict:
         from datetime import datetime
-        rows = query_provider_bars(config.canonical_root, symbol=symbol, timeframe=timeframe,
+        rows = query_provider_bars(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe,
                                    start=datetime.fromisoformat(start) if start else None,
                                    end=datetime.fromisoformat(end) if end else None)
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}

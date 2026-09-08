@@ -1,20 +1,26 @@
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 from data_center.domain.models import ProviderBar
 
 
-def write_provider_bars(root: Path, rows: Iterable[ProviderBar]) -> Path:
+def write_provider_bars(root: Path, rows: Iterable[ProviderBar], *, part_id: str | None = None) -> list[Path]:
     records = list(rows)
     if not records:
         raise ValueError("cannot write empty provider_bars dataset")
-    target = root / "provider_bars" / f"provider={records[0].provider}" / f"asset_class={records[0].asset_class}" / f"symbol={records[0].symbol}" / f"timeframe={records[0].timeframe}" / f"year={records[0].bar_ts.year}"
-    target.mkdir(parents=True, exist_ok=True)
-    path = target / "part-000.parquet"
     try:
         import polars as pl
     except ImportError as exc:
         raise RuntimeError("polars is required for parquet storage") from exc
-    pl.DataFrame([row.model_dump() for row in records]).write_parquet(path)
-    return path
-
+    paths: list[Path] = []
+    shared_part_id = part_id or uuid4().hex
+    for year in sorted({record.bar_ts.year for record in records}):
+        year_records = [record.model_dump() for record in records if record.bar_ts.year == year]
+        first = year_records[0]
+        target = root / "provider_bars" / f"provider={first['provider']}" / f"asset_class={first['asset_class']}" / f"symbol={first['symbol']}" / f"timeframe={first['timeframe']}" / f"year={year}"
+        target.mkdir(parents=True, exist_ok=True)
+        path = target / f"part-{shared_part_id}.parquet"
+        pl.DataFrame(year_records).write_parquet(path)
+        paths.append(path)
+    return paths
