@@ -52,8 +52,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and x_api_key != config.api_key:
             raise HTTPException(status_code=401, detail="invalid api key")
-        future = worker.submit(job)
-        payload = {"status": "queued", "job_id": job.job_id, "run_id": future.run_id}
+        run_id = worker.submit(job)
+        payload = {"status": "queued", "job_id": job.job_id, "run_id": run_id}
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")

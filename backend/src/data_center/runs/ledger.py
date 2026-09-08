@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from typing import List
+from uuid import uuid4
 
 
 class RunLedger:
@@ -9,6 +10,7 @@ class RunLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(path) as conn:
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
+            conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null)")
 
     def put(self, run_id: str, payload: dict) -> None:
         import json
@@ -46,3 +48,41 @@ class RunLedger:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
+
+    def enqueue_provider_bars(self, job_payload: dict) -> str:
+        import json
+
+        run_id = str(uuid4())
+        run_payload = {
+            "run_id": run_id,
+            "job_id": job_payload["job_id"],
+            "dataset_id": job_payload["dataset_id"],
+            "status": "queued",
+        }
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
+            conn.execute("insert into jobs values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
+        return run_id
+
+    def claim_next_job(self) -> dict | None:
+        import json
+
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select job_id, run_id, payload from jobs where status = 'queued' order by rowid limit 1").fetchone()
+            if row is None:
+                return None
+            conn.execute("update jobs set status = 'running' where job_id = ?", (row[0],))
+            run = self.get(row[1])
+            run["status"] = "running"
+            conn.execute("update runs set payload = ? where run_id = ?", (json.dumps(run), row[1]))
+            return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2])}
+
+    def complete_job(self, job_id: str) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("update jobs set status = 'completed' where job_id = ?", (job_id,))
+
+    def fail_job(self, job_id: str, run_id: str, error: str) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("update jobs set status = 'failed' where job_id = ?", (job_id,))
+        self.update(run_id, status="failed", error=error)
