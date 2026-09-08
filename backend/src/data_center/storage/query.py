@@ -41,3 +41,28 @@ def query_economic_observations(root: Path, *, provider: str, series_id: str, st
         .sort("observation_date")
     )
     return latest.to_dicts()
+
+
+def provider_bars_coverage(root: Path, *, provider: str, symbol: str, timeframe: str) -> dict:
+    rows = query_provider_bars(root, provider=provider, symbol=symbol, timeframe=timeframe)
+    return {
+        "dataset_id": "provider_bars",
+        "provider": provider,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "row_count": len(rows),
+        "min_ts": rows[0]["bar_ts"] if rows else None,
+        "max_ts": rows[-1]["bar_ts"] if rows else None,
+    }
+
+
+def economic_observations_coverage(root: Path, *, provider: str, series_id: str) -> dict:
+    rows = query_economic_observations(root, provider=provider, series_id=series_id)
+    return {
+        "dataset_id": "economic_observations",
+        "provider": provider,
+        "series_id": series_id,
+        "row_count": len(rows),
+        "min_date": rows[0]["observation_date"] if rows else None,
+        "max_date": rows[-1]["observation_date"] if rows else None,
+    }

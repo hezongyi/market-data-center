@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ProviderBar(BaseModel):
@@ -28,4 +28,3 @@ class IngestJob(BaseModel):
     timeframe: str = "1d"
     start: datetime
     end: datetime
-

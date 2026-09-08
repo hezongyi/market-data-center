@@ -1,5 +1,6 @@
 from data_center.storage.economic import write_economic_observations
 from data_center.storage.query import query_economic_observations
+from data_center.storage.query import economic_observations_coverage
 
 
 def test_economic_observation_storage(tmp_path) -> None:
@@ -14,3 +15,6 @@ def test_economic_query_selects_latest_vintage_without_overwriting_parts(tmp_pat
     assert first != second
     rows = query_economic_observations(tmp_path, provider="fred", series_id="TEST")
     assert rows == [{**common, "value": 2.0, "vintage_start": "2026-01-16", "vintage_end": "9999-12-31"}]
+    coverage = economic_observations_coverage(tmp_path, provider="fred", series_id="TEST")
+    assert coverage["row_count"] == 1
+    assert coverage["min_date"] == "2026-01-01"

@@ -8,6 +8,7 @@ from data_center.domain.models import IngestJob
 from data_center.runs.ledger import RunLedger
 from data_center.storage.query import query_provider_bars
 from data_center.storage.query import query_economic_observations
+from data_center.storage.query import economic_observations_coverage, provider_bars_coverage
 from data_center.quality.checks import check_provider_bars
 from data_center.catalog.registry import DATASETS
 from data_center.ingest.worker import LocalWorker
@@ -64,6 +65,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                    end=datetime.fromisoformat(end) if end else None)
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
 
+    @app.get(f"{config.api_prefix}/provider-bars/coverage")
+    def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d") -> dict:
+        payload = provider_bars_coverage(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe)
+        return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
+
     @app.post(f"{config.api_prefix}/quality/checks")
     def quality_check(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and x_api_key != config.api_key:
@@ -84,6 +90,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def economic_observations(series_id: str, provider: str = "fred", start: str | None = None, end: str | None = None) -> dict:
         rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id, start=start, end=end)
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/economic/coverage")
+    def economic_dataset_coverage(series_id: str, provider: str = "fred") -> dict:
+        payload = economic_observations_coverage(config.canonical_root, provider=provider, series_id=series_id)
+        return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/economic/ingest")
     def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:

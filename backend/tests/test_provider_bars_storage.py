@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from data_center.domain.models import ProviderBar
 from data_center.storage.parquet import write_provider_bars
 from data_center.storage.query import query_provider_bars
+from data_center.storage.query import provider_bars_coverage
 
 
 def _bar(*, bar_ts: datetime, close: float, ingest_ts: datetime) -> ProviderBar:
@@ -18,3 +19,7 @@ def test_provider_bars_are_year_partitioned_and_current_state_is_deduplicated(tm
     assert {path.parent.name for path in paths} == {"year=2025", "year=2026"}
     rows = query_provider_bars(tmp_path, provider="fixture", symbol="BTCUSDT", timeframe="1d")
     assert [row["close"] for row in rows] == [102.0, 101.0]
+    coverage = provider_bars_coverage(tmp_path, provider="fixture", symbol="BTCUSDT", timeframe="1d")
+    assert coverage["row_count"] == 2
+    assert coverage["min_ts"] == original.bar_ts
+    assert coverage["max_ts"] == next_year.bar_ts

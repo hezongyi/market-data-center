@@ -15,8 +15,10 @@ class FredConnector:
         if not self.api_key:
             raise RuntimeError("FRED_API_KEY is required")
         params = {"series_id": series_id, "api_key": self.api_key, "file_type": "json"}
-        if start: params["observation_start"] = start
-        if end: params["observation_end"] = end
+        if start:
+            params["observation_start"] = start
+        if end:
+            params["observation_end"] = end
         response = requests.get(self.endpoint, params=params, timeout=20)
         response.raise_for_status()
         ingest_ts = datetime.now(timezone.utc).isoformat()

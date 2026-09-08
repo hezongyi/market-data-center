@@ -14,7 +14,9 @@
 
 接入 FRED `economic_observations`，随后接入 `economic_events`。release time、vintage 和 availability 语义必须在独立 dataset contract 中冻结。
 
-FRED 已具备 canonical ingest、`economic_observations.v1` schema、realtime vintage 语义、不可变 Parquet part 和最小质量检查。下一步是纳入 worker queue、补 coverage policy，并迁移第一个下游只读 consumer。
+FRED 已具备 canonical ingest、`economic_observations.v1` schema、realtime vintage 语义、不可变 Parquet part 和最小质量检查。当前 provider-bars ingest 已纳入 durable worker queue，并提供 coverage API。
+
+`macro-market-lab` 的正式 economic consumer 目前依赖 richer PIT contract，包括 `release_ts`、frequency、units、seasonal adjustment 与 series-specific availability policy。它不能直接消费 `economic_observations.v1`；先补齐兼容 dataset contract 和 parity tests，再迁移首个只读 consumer。
 
 ## Phase 4：下游切换
 
