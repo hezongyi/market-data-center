@@ -18,3 +18,5 @@ Phase 0 只冻结边界与接口，不接入真实 provider。
 后端：`cd backend && PYTHONPATH=src python -m data_center.api`
 
 前端：`cd webui && npm install && npm run dev`
+
+后端依赖：`cd backend && python -m pip install -e '.[dev]'`
