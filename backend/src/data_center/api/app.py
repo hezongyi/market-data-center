@@ -10,6 +10,7 @@ from data_center.storage.query import query_provider_bars
 from data_center.quality.checks import check_provider_bars
 from data_center.catalog.registry import DATASETS
 from data_center.ingest.worker import LocalWorker
+from data_center.connectors.fred import FredConnector
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -17,6 +18,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     worker = LocalWorker(config.canonical_root, ledger)
+    fred = FredConnector()
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
@@ -77,6 +79,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def quality_findings() -> dict:
         findings = ledger.findings()
         return {"data": findings, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(findings)}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/economic/observations")
+    def economic_observations(series_id: str, start: str | None = None, end: str | None = None) -> dict:
+        rows = fred.fetch_observations(series_id, start=start, end=end)
+        return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
 
     return app
 
