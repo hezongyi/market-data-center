@@ -19,6 +19,8 @@ Phase 0 只冻结边界与接口，不接入真实 provider。
 
 前端：`cd webui && npm install && npm run dev`
 
+前端构建：`cd webui && npm ci && npm run build`
+
 后端依赖：`cd backend && python -m pip install -e '.[dev]'`
 
 API smoke：`cd backend && PYTHONPATH=src python -c "from data_center.api.app import app; print(app.title)"`

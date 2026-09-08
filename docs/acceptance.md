@@ -7,4 +7,5 @@
 - API 可按 symbol、timeframe、时间范围读取 bars。
 - Web UI 能查看数据集、run 状态、质量 finding 和数据预览。
 - `macro-market-lab` 无需访问 canonical 文件即可通过 API 查询。
-
+- SDK mock 测试验证 API client 会发送 provider、symbol 和 API key。
+- `webui` 执行 `npm ci && npm run build` 成功生成 `dist/`。
