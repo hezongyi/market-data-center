@@ -10,4 +10,4 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     canonical_root: Path = Path("/home/quant/market_lake/canonical")
     ledger_path: Path = Path("/home/quant/market_lake/canonical/audit/data_center.sqlite")
-
+    api_key: str | None = None

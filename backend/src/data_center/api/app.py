@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 
 from data_center import __version__
 from data_center.settings import Settings
@@ -47,7 +47,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/ingest/runs")
-    def ingest(job: IngestJob) -> dict:
+    def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
+        if config.api_key and x_api_key != config.api_key:
+            raise HTTPException(status_code=401, detail="invalid api key")
         future = worker.submit(job)
         payload = {"status": "queued", "job_id": job.job_id, "run_id": future.run_id}
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
@@ -61,7 +63,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": rows, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(rows)}, "errors": []}
 
     @app.post(f"{config.api_prefix}/quality/checks")
-    def quality_check(job: IngestJob) -> dict:
+    def quality_check(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
+        if config.api_key and x_api_key != config.api_key:
+            raise HTTPException(status_code=401, detail="invalid api key")
         from data_center.connectors.fixture import fetch_bars
         findings = check_provider_bars(fetch_bars(job))
         status = "pass" if not findings else "fail"
