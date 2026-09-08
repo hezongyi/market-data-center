@@ -58,7 +58,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from data_center.connectors.fixture import fetch_bars
         findings = check_provider_bars(fetch_bars(job))
         status = "pass" if not findings else "fail"
+        if findings:
+            ledger.add_findings([{**finding, "job_id": job.job_id, "dataset_id": job.dataset_id} for finding in findings])
         return {"data": {"status": status, "finding_count": len(findings), "findings": findings}, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/quality/findings")
+    def quality_findings() -> dict:
+        findings = ledger.findings()
+        return {"data": findings, "meta": {"request_id": str(uuid4()), "schema_version": "v1", "count": len(findings)}, "errors": []}
 
     return app
 

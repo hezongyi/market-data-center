@@ -28,3 +28,15 @@ class RunLedger:
             raise KeyError(run_id)
         return json.loads(row[0])
 
+    def findings(self) -> list[dict]:
+        import json
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
+            rows = conn.execute("select payload from quality_findings order by id desc").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def add_findings(self, payloads: list[dict]) -> None:
+        import json
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
+            conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
