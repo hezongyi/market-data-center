@@ -9,12 +9,15 @@ from data_center.ingest.service import run_fixture_ingest
 from data_center.runs.ledger import RunLedger
 from data_center.storage.query import query_provider_bars
 from data_center.quality.checks import check_provider_bars
+from data_center.catalog.registry import DATASETS
+from data_center.ingest.worker import LocalWorker
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
+    worker = LocalWorker(config.canonical_root, ledger)
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
@@ -31,6 +34,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runs(request: Request) -> dict:
         return {"data": ledger.list(), "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
+    @app.get(f"{config.api_prefix}/datasets")
+    def datasets() -> dict:
+        return {"data": list(DATASETS.values()), "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
+
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
         from fastapi import HTTPException
@@ -42,7 +49,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/ingest/runs")
     def ingest(job: IngestJob) -> dict:
-        payload = run_fixture_ingest(job, config.canonical_root, ledger)
+        future = worker.submit(job)
+        payload = {"status": "queued", "job_id": job.job_id}
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")
