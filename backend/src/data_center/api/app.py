@@ -5,7 +5,6 @@ from fastapi import FastAPI, Request
 from data_center import __version__
 from data_center.settings import Settings
 from data_center.domain.models import IngestJob
-from data_center.ingest.service import run_fixture_ingest
 from data_center.runs.ledger import RunLedger
 from data_center.storage.query import query_provider_bars
 from data_center.quality.checks import check_provider_bars

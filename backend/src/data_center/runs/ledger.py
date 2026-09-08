@@ -14,6 +14,11 @@ class RunLedger:
         with sqlite3.connect(self.path) as conn:
             conn.execute("insert or replace into runs values (?, ?)", (run_id, json.dumps(payload)))
 
+    def update(self, run_id: str, **fields) -> None:
+        payload = self.get(run_id)
+        payload.update(fields)
+        self.put(run_id, payload)
+
     def list(self) -> list[dict]:
         import json
         with sqlite3.connect(self.path) as conn:

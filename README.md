@@ -13,3 +13,8 @@ Phase 0 只冻结边界与接口，不接入真实 provider。
 - `webui/`：React/Vite 前端预留目录
 - `deploy/`：systemd/Docker 部署预留目录
 
+## 本地启动
+
+后端：`cd backend && PYTHONPATH=src python -m data_center.api`
+
+前端：`cd webui && npm install && npm run dev`
