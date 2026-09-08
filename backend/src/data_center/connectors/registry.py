@@ -1,6 +1,7 @@
 from data_center.connectors.base import MarketConnector
 from data_center.connectors.fixture import fetch_bars
 from data_center.connectors.yfinance import YFinanceConnector
+from data_center.connectors.binance import BinanceConnector
 
 
 class FixtureConnector:
@@ -10,7 +11,7 @@ class FixtureConnector:
         return fetch_bars(job)
 
 
-CONNECTORS: dict[str, MarketConnector] = {"fixture": FixtureConnector(), "yfinance": YFinanceConnector()}
+CONNECTORS: dict[str, MarketConnector] = {"fixture": FixtureConnector(), "yfinance": YFinanceConnector(), "binance": BinanceConnector()}
 
 
 def get_connector(provider: str) -> MarketConnector:
