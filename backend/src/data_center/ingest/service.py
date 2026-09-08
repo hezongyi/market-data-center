@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from data_center.connectors.fixture import fetch_bars
+from data_center.connectors.registry import get_connector
 from data_center.domain.models import IngestJob
 from data_center.storage.parquet import write_provider_bars
 from data_center.domain.schema import SCHEMA_VERSION, validate_provider_bars
 
 
 def run_fixture_ingest(job: IngestJob, root: Path, ledger=None, run_id: str | None = None) -> dict:
-    rows = fetch_bars(job)
+    rows = get_connector(job.provider).fetch_bars(job)
     validate_provider_bars(rows)
     path = write_provider_bars(root, rows)
     output_hash = sha256(json.dumps([row.model_dump(mode="json") for row in rows], sort_keys=True).encode()).hexdigest()
