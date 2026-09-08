@@ -49,7 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(f"{config.api_prefix}/ingest/runs")
     def ingest(job: IngestJob) -> dict:
         future = worker.submit(job)
-        payload = {"status": "queued", "job_id": job.job_id}
+        payload = {"status": "queued", "job_id": job.job_id, "run_id": future.run_id}
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")
