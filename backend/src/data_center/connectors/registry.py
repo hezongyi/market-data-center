@@ -1,5 +1,6 @@
 from data_center.connectors.base import MarketConnector
 from data_center.connectors.fixture import fetch_bars
+from data_center.connectors.yfinance import YFinanceConnector
 
 
 class FixtureConnector:
@@ -9,7 +10,7 @@ class FixtureConnector:
         return fetch_bars(job)
 
 
-CONNECTORS: dict[str, MarketConnector] = {"fixture": FixtureConnector()}
+CONNECTORS: dict[str, MarketConnector] = {"fixture": FixtureConnector(), "yfinance": YFinanceConnector()}
 
 
 def get_connector(provider: str) -> MarketConnector:
@@ -17,4 +18,3 @@ def get_connector(provider: str) -> MarketConnector:
         return CONNECTORS[provider]
     except KeyError as exc:
         raise ValueError(f"unsupported provider: {provider}") from exc
-
