@@ -10,6 +10,6 @@ DATASETS = {
         "schema_version": "v1",
         "description": "标准化宏观经济时间序列",
         "partitioning": ["provider", "series_id"],
-        "required_fields": ["series_id", "provider", "observation_date", "value", "ingest_ts"],
+        "required_fields": ["series_id", "provider", "observation_date", "release_ts", "asof_ts", "value", "frequency", "units", "seasonal_adjustment", "vintage_start", "vintage_end", "availability_policy", "availability_lag_days", "ingest_ts", "source_hash"],
     },
 }

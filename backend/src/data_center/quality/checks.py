@@ -23,4 +23,6 @@ def check_economic_observations(rows: Iterable[dict]) -> list[dict]:
         seen.add(key)
         if row.get("vintage_start") and row.get("vintage_end") and row["vintage_start"] > row["vintage_end"]:
             findings.append({"severity": "error", "code": "invalid_vintage_interval", "observation_date": row["observation_date"]})
+        if row.get("availability_policy") not in {"realtime_vintage", "release_date_known", "release_date_unknown_ingest_asof"}:
+            findings.append({"severity": "error", "code": "invalid_availability_policy", "observation_date": row["observation_date"]})
     return findings

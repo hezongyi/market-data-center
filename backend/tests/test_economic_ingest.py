@@ -4,7 +4,7 @@ from data_center.runs.ledger import RunLedger
 
 class FakeFredConnector:
     def fetch_observations(self, series_id, start=None, end=None):
-        return [{"series_id": series_id, "provider": "fred", "observation_date": "2026-01-01", "value": 123.0, "vintage_start": "2026-01-01", "vintage_end": "9999-12-31", "availability_policy": "fred_realtime_vintage", "ingest_ts": "2026-01-02T00:00:00+00:00"}]
+        return [{"series_id": series_id, "provider": "fred", "observation_date": "2026-01-01", "release_ts": None, "asof_ts": "2026-01-02T00:00:00+00:00", "value": 123.0, "frequency": "Monthly", "units": "Thousands of Persons", "seasonal_adjustment": "Seasonally Adjusted", "vintage_start": "2026-01-01", "vintage_end": "9999-12-31", "availability_policy": "realtime_vintage", "availability_lag_days": None, "ingest_ts": "2026-01-02T00:00:00+00:00"}]
 
 
 def test_fred_ingest_writes_receipt_and_canonical_part(tmp_path) -> None:

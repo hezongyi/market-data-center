@@ -7,9 +7,14 @@ class EconomicObservation(BaseModel):
     provider: str
     observation_date: str
     value: float | None
-    ingest_ts: datetime
     release_ts: datetime | None = None
     asof_ts: datetime | None = None
-    availability_policy: str = "provider_release"
+    frequency: str
+    units: str
+    seasonal_adjustment: str
     vintage_start: str | None = None
     vintage_end: str | None = None
+    availability_policy: str
+    availability_lag_days: int | None = None
+    ingest_ts: datetime
+    source_hash: str
