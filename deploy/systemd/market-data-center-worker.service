@@ -3,11 +3,12 @@ Description=Market Data Center Worker
 After=network.target
 
 [Service]
+EnvironmentFile=-/home/quant/repos/market-data-center/.env.local
 WorkingDirectory=/home/quant/repos/market-data-center/backend
 Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
 Environment=DATACENTER_CANONICAL_ROOT=/home/quant/market_lake/canonical
 Environment=DATACENTER_LEDGER_PATH=/home/quant/market_lake/canonical/audit/data_center.sqlite
-ExecStart=/home/quant/miniforge3/envs/macro-market-lab/bin/python -m data_center.worker_main
+ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.worker_main
 Restart=on-failure
 
 [Install]

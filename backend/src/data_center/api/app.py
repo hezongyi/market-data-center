@@ -1,4 +1,7 @@
 from uuid import uuid4
+from pathlib import Path
+import sqlite3
+import tempfile
 
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -20,8 +23,15 @@ from data_center.ingest.worker import LocalWorker
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     app = FastAPI(title=config.app_name, version=__version__)
-    ledger = RunLedger(config.ledger_path)
-    worker = LocalWorker(config.canonical_root, ledger)
+    try:
+        ledger = RunLedger(config.ledger_path)
+    except (OSError, sqlite3.OperationalError):
+        if settings is not None:
+            raise
+        fallback = Path(tempfile.gettempdir()) / "market-data-center"
+        config = Settings(canonical_root=fallback / "canonical", ledger_path=fallback / "ledger.sqlite")
+        ledger = RunLedger(config.ledger_path)
+    worker = LocalWorker(config.canonical_root, ledger, timeout_seconds=config.worker_timeout_seconds)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -55,6 +65,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
             "errors": [],
         }
+
+    @app.get(f"{config.api_prefix}/health/live")
+    def health_live(request: Request) -> dict:
+        return {"data": {"status": "ok"}, "meta": {"request_id": request.headers.get("x-request-id", str(uuid4())), "schema_version": "v1"}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/health/ready")
+    def health_ready(request: Request) -> JSONResponse:
+        try:
+            config.canonical_root.mkdir(parents=True, exist_ok=True)
+            probe = config.ledger_path.parent / ".ready-probe"
+            probe.write_text("ok")
+            probe.unlink()
+            age = ledger.heartbeat_age_seconds()
+            ready = age is not None and age < 60
+            status_code = 200 if ready else 503
+            status = "ready" if ready else "not_ready"
+        except OSError:
+            status_code, status, age = 503, "not_ready", None
+        return JSONResponse(status_code=status_code, content={"data": {"status": status, "worker_heartbeat_age_seconds": age}, "meta": {"request_id": request.headers.get("x-request-id", str(uuid4())), "schema_version": "v1"}, "errors": []})
+
+    @app.get(f"{config.api_prefix}/metrics")
+    def metrics() -> dict:
+        runs = ledger.list()
+        counts = {status: sum(1 for run in runs if run.get("status") == status) for status in ("queued", "running", "pass", "failed", "dead_letter")}
+        return {"data": {"runs_total": len(runs), "runs_by_status": counts, "worker_heartbeat_age_seconds": ledger.heartbeat_age_seconds()}, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/runs")
     def runs(request: Request) -> dict:
@@ -134,4 +169,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+try:
+    app = create_app()
+except (OSError, sqlite3.OperationalError):
+    # Keep module imports usable in read-only development/test environments;
+    # configured deployments still use the paths supplied through Settings.
+    fallback = Path(tempfile.gettempdir()) / "market-data-center"
+    app = create_app(Settings(canonical_root=fallback / "canonical", ledger_path=fallback / "ledger.sqlite"))

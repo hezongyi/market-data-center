@@ -14,7 +14,8 @@ ECONOMIC_OBSERVATIONS_SCHEMA_VERSION = "economic_observations.v1"
 
 def run_fred_ingest(*, series_id: str, root: Path, connector: FredConnector | None = None, start: str | None = None, end: str | None = None, ledger=None, run_id: str | None = None) -> dict:
     run_id = run_id or str(uuid4())
-    rows = (connector or FredConnector()).fetch_observations(series_id, start=start, end=end)
+    resolved_connector = connector or FredConnector()
+    rows = resolved_connector.fetch_observations(series_id, start=start, end=end)
     if not rows:
         raise ValueError("FRED returned no observations")
     for row in rows:
@@ -26,7 +27,8 @@ def run_fred_ingest(*, series_id: str, root: Path, connector: FredConnector | No
         raise ValueError(f"economic quality check failed: {findings[0]['code']}")
     path = write_economic_observations(root, rows, part_id=run_id)
     output_hash = sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-    payload = {"run_id": run_id, "dataset_id": "economic_observations", "schema_version": ECONOMIC_OBSERVATIONS_SCHEMA_VERSION, "series_id": series_id, "provider": "fred", "status": "pass", "row_count": len(rows), "min_date": min(r["observation_date"] for r in rows), "max_date": max(r["observation_date"] for r in rows), "path": str(path), "output_hash": output_hash, "created_at": datetime.now(timezone.utc).isoformat()}
+    input_hash = sha256(json.dumps({"series_id": series_id, "start": start, "end": end}, sort_keys=True).encode()).hexdigest()
+    payload = {"run_id": run_id, "dataset_id": "economic_observations", "schema_version": ECONOMIC_OBSERVATIONS_SCHEMA_VERSION, "series_id": series_id, "provider": "fred", "connector_version": getattr(resolved_connector, "version", "1"), "input_hash": input_hash, "status": "pass", "row_count": len(rows), "min_date": min(r["observation_date"] for r in rows), "max_date": max(r["observation_date"] for r in rows), "path": str(path), "output_hash": output_hash, "created_at": datetime.now(timezone.utc).isoformat()}
     if ledger is not None:
         ledger.put(payload["run_id"], payload)
     return payload

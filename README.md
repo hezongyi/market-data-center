@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-Phase 0 只冻结边界与接口，不接入真实 provider。
+当前处于 production readiness 阶段：支持 fixture/FRED ingest，并逐步验收 Binance、yfinance 真实 provider、可靠 worker 和可观测性接口。
 
 ## 目录
 

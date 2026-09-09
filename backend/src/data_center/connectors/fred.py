@@ -6,6 +6,7 @@ import requests
 
 class FredConnector:
     provider = "fred"
+    version = "fred-v1"
 
     def __init__(self, api_key: str | None = None, endpoint: str = "https://api.stlouisfed.org/fred/series/observations", metadata_endpoint: str = "https://api.stlouisfed.org/fred/series"):
         self.api_key = api_key or os.getenv("FRED_API_KEY")
@@ -15,7 +16,7 @@ class FredConnector:
     def fetch_metadata(self, series_id: str) -> dict:
         if not self.api_key:
             raise RuntimeError("FRED_API_KEY is required")
-        response = requests.get(self.metadata_endpoint, params={"series_id": series_id, "api_key": self.api_key, "file_type": "json"}, timeout=20)
+        response = requests.get(self.metadata_endpoint, params={"series_id": series_id, "api_key": self.api_key, "file_type": "json"}, timeout=20, proxies=self._proxies())
         response.raise_for_status()
         series = (response.json().get("seriess") or [{}])[0]
         return {
@@ -32,7 +33,7 @@ class FredConnector:
             params["observation_start"] = start
         if end:
             params["observation_end"] = end
-        response = requests.get(self.endpoint, params=params, timeout=20)
+        response = requests.get(self.endpoint, params=params, timeout=20, proxies=self._proxies())
         response.raise_for_status()
         ingest_ts = datetime.now(timezone.utc).isoformat()
         metadata = self.fetch_metadata(series_id)
@@ -55,3 +56,8 @@ class FredConnector:
             }
             for item in response.json().get("observations", [])
         ]
+
+    @staticmethod
+    def _proxies() -> dict | None:
+        proxy = os.getenv("FRED_PROXY_URL") or os.getenv("DATACENTER_PROXY_URL")
+        return {"http": proxy, "https": proxy} if proxy else None

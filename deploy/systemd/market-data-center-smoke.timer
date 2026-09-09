@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Market Data Center smoke check
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=market-data-center-smoke.service
+
+[Install]
+WantedBy=timers.target

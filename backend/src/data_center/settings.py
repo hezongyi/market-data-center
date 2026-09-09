@@ -12,3 +12,4 @@ class Settings(BaseSettings):
     ledger_path: Path = Path("/home/quant/market_lake/canonical/audit/data_center.sqlite")
     api_key: str | None = None
     webui_dist: Path | None = None
+    worker_timeout_seconds: float = 120.0

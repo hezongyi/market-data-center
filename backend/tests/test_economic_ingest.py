@@ -13,4 +13,6 @@ def test_fred_ingest_writes_receipt_and_canonical_part(tmp_path) -> None:
     assert receipt["status"] == "pass"
     assert receipt["schema_version"] == "economic_observations.v1"
     assert receipt["output_hash"]
+    assert receipt["connector_version"] == "1"
+    assert receipt["input_hash"]
     assert ledger.get(receipt["run_id"]) == receipt

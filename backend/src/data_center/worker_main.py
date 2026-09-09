@@ -8,8 +8,9 @@ from data_center.settings import Settings
 def main() -> None:
     print("market-data-center worker ready", flush=True)
     settings = Settings()
-    worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path))
+    worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path), timeout_seconds=settings.worker_timeout_seconds)
     while True:
+        worker.ledger.heartbeat()
         if not worker.run_next():
             time.sleep(1)
 
