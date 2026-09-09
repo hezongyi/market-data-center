@@ -1,0 +1,29 @@
+import importlib.util
+from pathlib import Path
+
+_MODULE_PATH = Path(__file__).parents[2] / "scripts" / "secret_scan.py"
+_SPEC = importlib.util.spec_from_file_location("secret_scan", _MODULE_PATH)
+assert _SPEC and _SPEC.loader
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+has_secret = _MODULE.has_secret
+
+
+def test_secret_scan_detects_credential_shapes() -> None:
+    assert has_secret(b'DATACENTER_API_KEY="a-secure-value-123"')
+    assert has_secret(b"FRED_API_KEY = 'abc12345'")
+    assert has_secret(b"-----BEGIN PRIVATE KEY-----")
+    assert has_secret(b"ghp_" + b"a" * 20)
+    assert has_secret(b"github_pat_" + b"a" * 20)
+    assert has_secret(b"sk-" + b"a" * 20)
+    assert has_secret(b"xoxb-" + b"a" * 20)
+
+
+def test_secret_scan_ignores_lookup_source_and_short_prefixes() -> None:
+    browser_lookup = Path("scripts/browser_acceptance.cjs").read_bytes()
+    scanner_source = Path("scripts/secret_scan.py").read_bytes()
+
+    assert not has_secret(browser_lookup)
+    assert not has_secret(scanner_source)
+    assert not has_secret(b'DATACENTER_API_KEY="')
+    assert not has_secret(b"ghp_")
