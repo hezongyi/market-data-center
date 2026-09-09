@@ -1,7 +1,7 @@
 # Production Hardening and Consumer Migration Specification
 
 日期：2026-09-10  
-状态：in progress，H1-H5 已实现并完成本机真实验收；托管 CI 最近运行与全量 consumer 切换仍保持未完成
+状态：in progress；H1-H5 已实现并完成本机真实验收，当前 commit `9e572e8` 的统一 CI 入口已通过；GitHub Actions hosted run 仍无法取得权威证据，economic/ingest/quality/maintenance consumer 仍按契约保持 `not_migrated`
 前置 spec：`2026-09-08-data-center-foundation`、`2026-09-09-production-readiness-design`
 
 ## 目标
