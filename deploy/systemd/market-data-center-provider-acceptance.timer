@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily real provider acceptance
+
+[Timer]
+OnActiveSec=15s
+OnCalendar=*-*-* 01:00:00 UTC
+Persistent=true
+Unit=market-data-center-provider-acceptance.service
+
+[Install]
+WantedBy=timers.target

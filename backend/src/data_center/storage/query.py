@@ -38,7 +38,7 @@ def query_economic_observations(root: Path, *, provider: str, series_id: str, st
     if end is not None:
         frame = frame.filter(pl.col("observation_date") <= end)
     latest = (
-        frame.sort(["observation_date", "vintage_start", "asof_ts"], nulls_last=True)
+        frame.sort(["observation_date", "vintage_start", "asof_ts"], nulls_last=False)
         .group_by("observation_date", maintain_order=True)
         .last()
         .sort("observation_date")

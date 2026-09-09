@@ -1,0 +1,11 @@
+[Unit]
+Description=Market Data Center real provider acceptance
+After=market-data-center-api.service market-data-center-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/quant/repos/market-data-center
+EnvironmentFile=/home/quant/repos/market-data-center/.env.local
+ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.acceptance
+ExecStartPost=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.operations retention-audit
+TimeoutStartSec=30min

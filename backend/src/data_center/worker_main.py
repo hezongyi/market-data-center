@@ -10,7 +10,6 @@ def main() -> None:
     settings = Settings()
     worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path), timeout_seconds=settings.worker_timeout_seconds)
     while True:
-        worker.ledger.heartbeat()
         if not worker.run_next():
             time.sleep(1)
 

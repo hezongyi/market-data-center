@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import sqlite3
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -12,15 +15,23 @@ class RunLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(path) as conn:
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
-            conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0)")
+            conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
             if "attempts" not in columns:
                 conn.execute("alter table jobs add column attempts integer not null default 0")
+            if "available_at" not in columns:
+                conn.execute("alter table jobs add column available_at real")
 
     def put(self, run_id: str, payload: dict) -> None:
         with sqlite3.connect(self.path) as conn:
-            conn.execute("insert or replace into runs values (?, ?)", (run_id, json.dumps(payload)))
+            conn.execute("begin immediate")
+            row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
+            original = json.loads(row[0]) if row else {}
+            if original.get("status") in {"pass", "failed", "dead_letter"} and original != payload:
+                raise ValueError("terminal receipt is immutable")
+            conn.execute("insert into runs values (?, ?) on conflict(run_id) do update set payload=excluded.payload",
+                         (run_id, json.dumps({**original, **payload})))
 
     def update(self, run_id: str, **fields) -> None:
         payload = self.get(run_id)
@@ -51,24 +62,14 @@ class RunLedger:
             conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
 
     def enqueue_provider_bars(self, job_payload: dict) -> str:
-        import json
-
-        run_id = str(uuid4())
-        run_payload = {
-            "run_id": run_id,
-            "job_id": job_payload["job_id"],
-            "dataset_id": job_payload["dataset_id"],
-            "status": "queued",
-        }
-        with sqlite3.connect(self.path) as conn:
-            conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
-            conn.execute("insert into jobs(job_id, run_id, status, payload) values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
-        return run_id
+        return self.enqueue_job(job_payload)
 
     def enqueue_job(self, job_payload: dict) -> str:
         import json
         run_id = str(uuid4())
-        run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"], "status": "queued"}
+        run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
+                       "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
+                       "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
         with sqlite3.connect(self.path) as conn:
             conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
             conn.execute("insert into jobs(job_id, run_id, status, payload) values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
@@ -79,7 +80,7 @@ class RunLedger:
 
         with sqlite3.connect(self.path) as conn:
             conn.execute("begin immediate")
-            row = conn.execute("select job_id, run_id, payload from jobs where status = 'queued' order by rowid limit 1").fetchone()
+            row = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid limit 1", (time.time(),)).fetchone()
             if row is None:
                 return None
             conn.execute("update jobs set status = 'running' where job_id = ?", (row[0],))
@@ -89,30 +90,68 @@ class RunLedger:
             run["started_at"] = datetime.now(timezone.utc).isoformat()
             conn.execute("update runs set payload = ? where run_id = ?", (json.dumps(run), row[1]))
             conn.execute("update jobs set attempts = attempts + 1 where job_id = ?", (row[0],))
-            return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2])}
+            return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
 
-    def recover_running_jobs(self) -> int:
-        """Requeue jobs left running by a worker process that stopped."""
+    def running_jobs(self) -> list[dict]:
         with sqlite3.connect(self.path) as conn:
-            rows = conn.execute("select run_id from jobs where status = 'running'").fetchall()
-            conn.execute("update jobs set status = 'queued' where status = 'running'")
-            for (run_id,) in rows:
-                run = json.loads(conn.execute("select payload from runs where run_id = ?", (run_id,)).fetchone()[0])
-                run.update(status="queued", recovered_at=datetime.now(timezone.utc).isoformat())
-                conn.execute("update runs set payload = ? where run_id = ?", (json.dumps(run), run_id))
-        return len(rows)
+            rows = conn.execute("select job_id, run_id, payload, attempts from jobs where status='running'").fetchall()
+        return [{"job_id": r[0], "run_id": r[1], "payload": json.loads(r[2]), "attempts": r[3]} for r in rows]
 
     def complete_job(self, job_id: str) -> None:
         with sqlite3.connect(self.path) as conn:
             conn.execute("update jobs set status = 'completed' where job_id = ?", (job_id,))
 
-    def fail_job(self, job_id: str, run_id: str, error: str) -> None:
+    def finish_job(self, job_id: str, run_id: str, receipt: dict) -> None:
         with sqlite3.connect(self.path) as conn:
+            conn.execute("begin immediate")
+            original = json.loads(conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()[0])
+            if original.get("status") != "running":
+                raise ValueError("only a running job can finish")
+            payload = {**original, **receipt, "created_at": original.get("created_at"),
+                       "finished_at": datetime.now(timezone.utc).isoformat(), "error": None, "retryable": False}
+            conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
+            conn.execute("update jobs set status='completed' where job_id=?", (job_id,))
+
+    def fail_job(self, job_id: str, run_id: str, error: str, *, error_type: str | None = None, retryable: bool = True, delay_seconds: float = 0.0) -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("begin immediate")
             row = conn.execute("select attempts from jobs where job_id = ?", (job_id,)).fetchone()
             attempts = row[0] if row else 1
-            status = "dead_letter" if attempts >= 3 else "queued"
-            conn.execute("update jobs set status = ? where job_id = ?", (status, job_id))
-        self.update(run_id, status=status, error=error, retry_count=attempts, retryable=status != "dead_letter")
+            original = json.loads(conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()[0])
+            if original.get("status") != "running":
+                raise ValueError("only a running job can fail")
+            status = "failed" if not retryable else ("dead_letter" if attempts >= 3 else "queued")
+            available = time.time() + delay_seconds * (2 ** max(0, attempts - 1))
+            failure = {"attempt": attempts, "error_type": error_type or "IngestError", "error": error,
+                       "retryable": retryable, "at": datetime.now(timezone.utc).isoformat()}
+            payload = {**original, **failure, "status": status, "retry_count": max(0, attempts - 1),
+                       "attempt_count": attempts, "attempt_errors": original.get("attempt_errors", []) + [failure],
+                       "next_attempt_at": available if status == "queued" else None}
+            if status != "queued":
+                payload["finished_at"] = failure["at"]
+            conn.execute("update jobs set status = ?, available_at = ? where job_id = ?", (status, available, job_id))
+            conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
+
+    def retry_run(self, run_id: str) -> str:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            original = json.loads(row[0])
+            if original["status"] not in {"failed", "dead_letter"}:
+                raise ValueError("only failed or dead-letter runs can be retried")
+            job = conn.execute("select payload from jobs where run_id=?", (run_id,)).fetchone()
+            if job is None:
+                raise ValueError("original job request unavailable")
+            new_id = str(uuid4())
+            request = json.loads(job[0])
+            payload = {"run_id": new_id, "job_id": request["job_id"], "dataset_id": request["dataset_id"],
+                       "provider": request.get("provider"), "status": "queued", "retry_of": run_id,
+                       "created_at": datetime.now(timezone.utc).isoformat()}
+            conn.execute("insert into runs values (?, ?)", (new_id, json.dumps(payload)))
+            conn.execute("insert into jobs(job_id,run_id,status,payload) values (?,?,?,?)", (str(uuid4()), new_id, "queued", job[0]))
+        return new_id
 
     def heartbeat(self) -> str:
         stamp = datetime.now(timezone.utc).isoformat()
