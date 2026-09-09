@@ -38,10 +38,18 @@ def daily_chunks(start: date, end: date):
 
 def backfill(base_url, provider, symbol, asset_class, start, end, output):
     chunks = list(daily_chunks(start, end))
-    report = {"status": "running", "provider": provider, "symbol": symbol, "runs": []}
+    if output.exists():
+        report = json.loads(output.read_text())
+        if report.get("status") == "pass":
+            return report
+        if report.get("provider") != provider or report.get("symbol") != symbol:
+            raise ValueError("existing backfill receipt has different request")
+        report["status"] = "running"
+    else:
+        report = {"status": "running", "provider": provider, "symbol": symbol,
+                  "requested_start": start.isoformat(), "requested_end": end.isoformat(), "runs": []}
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x") as stream:
-        json.dump(report, stream)
+    output.write_text(json.dumps(report, indent=2))
     with requests.Session() as session:
         session.trust_env = False
         if os.getenv("DATACENTER_API_KEY"):
@@ -53,12 +61,19 @@ def backfill(base_url, provider, symbol, asset_class, start, end, output):
             return response.json()["data"]
 
         try:
-            for first, last in chunks:
+            for index, (first, last) in enumerate(chunks):
+                if index < len(report["runs"]) and report["runs"][index].get("receipt", {}).get("status") == "pass":
+                    continue
                 job = {"job_id": "backfill-" + output.stem, "provider": provider, "symbol": symbol,
                        "asset_class": asset_class, "timeframe": "1d",
                        "start": first.isoformat() + "T00:00:00Z", "end": last.isoformat() + "T00:00:00Z"}
                 receipt = call("POST", "/ingest/runs", json=job)
-                report["runs"].append({"request": job, "receipt": receipt})
+                entry = {"request": job, "requested_range": {"start": first.isoformat(), "end": last.isoformat()},
+                         "receipt": receipt}
+                if index < len(report["runs"]):
+                    report["runs"][index] = entry
+                else:
+                    report["runs"].append(entry)
                 output.write_text(json.dumps(report, indent=2))
                 deadline = time.monotonic() + 480
                 while receipt["status"] in {"queued", "running"}:
@@ -66,10 +81,15 @@ def backfill(base_url, provider, symbol, asset_class, start, end, output):
                         raise TimeoutError("backfill polling deadline; inspect recorded run before resubmitting")
                     time.sleep(1)
                     receipt = call("GET", "/runs/" + receipt["run_id"])
-                report["runs"][-1]["receipt"] = receipt
+                report["runs"][index]["receipt"] = receipt
                 output.write_text(json.dumps(report, indent=2))
                 if receipt["status"] != "pass" or not receipt.get("row_count"):
                     raise ValueError("backfill run did not pass")
+                report["runs"][index]["actual_range"] = {"start": receipt.get("min_ts") or receipt.get("min_date"),
+                                                           "end": receipt.get("max_ts") or receipt.get("max_date")}
+                report["runs"][index]["row_count"] = receipt.get("row_count")
+                report["runs"][index]["output_hash"] = receipt.get("output_hash")
+                report["runs"][index]["quality_summary"] = receipt.get("quality_summary")
                 time.sleep(5)
             report["status"] = "pass"
         except Exception as exc:

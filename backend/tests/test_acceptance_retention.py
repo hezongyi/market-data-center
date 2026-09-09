@@ -60,3 +60,30 @@ def test_daily_backfill_chunks_are_bounded_and_contiguous():
     assert all(left[1] == right[0] for left, right in pairwise(chunks))
     with pytest.raises(ValueError):
         list(daily_chunks(date(2026, 1, 1), date(2024, 1, 1)))
+
+
+def test_completed_backfill_receipt_is_idempotent_without_network(tmp_path):
+    import json
+    from datetime import date
+
+    from data_center.operations import backfill
+
+    output = tmp_path / "backfill.json"
+    output.write_text(json.dumps({"status": "pass", "provider": "fixture", "symbol": "TEST", "runs": []}))
+    assert backfill("http://127.0.0.1:1", "fixture", "TEST", "crypto",
+                     date(2026, 1, 1), date(2026, 1, 2), output)["status"] == "pass"
+
+
+def test_backfill_resume_rejects_different_request(tmp_path):
+    import json
+    from datetime import date
+
+    import pytest
+
+    from data_center.operations import backfill
+
+    output = tmp_path / "backfill.json"
+    output.write_text(json.dumps({"status": "failed", "provider": "fixture", "symbol": "OTHER", "runs": []}))
+    with pytest.raises(ValueError, match="different request"):
+        backfill("http://127.0.0.1:1", "fixture", "TEST", "crypto",
+                 date(2026, 1, 1), date(2026, 1, 2), output)
