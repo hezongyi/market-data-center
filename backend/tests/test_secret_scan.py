@@ -10,9 +10,9 @@ has_secret = _MODULE.has_secret
 
 
 def test_secret_scan_detects_credential_shapes() -> None:
-    assert has_secret(b'DATACENTER_API_KEY="a-secure-value-123"')
-    assert has_secret(b"FRED_API_KEY = 'abc12345'")
-    assert has_secret(b"-----BEGIN PRIVATE KEY-----")
+    assert has_secret(b"DATACENTER_API_KEY" + b'="' + b"a-secure-value-123" + b'"')
+    assert has_secret(b"FRED_API_KEY" + b" = '" + b"abc12345" + b"'")
+    assert has_secret(b"-----" + b"BEGIN " + b"PRIVATE KEY-----")
     assert has_secret(b"ghp_" + b"a" * 20)
     assert has_secret(b"github_pat_" + b"a" * 20)
     assert has_secret(b"sk-" + b"a" * 20)
@@ -25,5 +25,5 @@ def test_secret_scan_ignores_lookup_source_and_short_prefixes() -> None:
 
     assert not has_secret(browser_lookup)
     assert not has_secret(scanner_source)
-    assert not has_secret(b'DATACENTER_API_KEY="')
-    assert not has_secret(b"ghp_")
+    assert not has_secret(b"DATACENTER_API_KEY" + b'="')
+    assert not has_secret(b"ghp" + b"_")
