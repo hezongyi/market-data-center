@@ -5,8 +5,10 @@ After=network.target
 [Service]
 WorkingDirectory=/home/quant/repos/market-data-center/backend
 Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
+Environment=DATACENTER_CANONICAL_ROOT=/home/quant/market_lake/canonical
+Environment=DATACENTER_LEDGER_PATH=/home/quant/market_lake/canonical/audit/data_center.sqlite
 Environment=DATACENTER_WEBUI_DIST=/home/quant/repos/market-data-center/webui/dist
-ExecStart=/usr/bin/python3 -m data_center.api
+ExecStart=/home/quant/miniforge3/envs/macro-market-lab/bin/python -m data_center.api
 Restart=on-failure
 
 [Install]

@@ -1,6 +1,6 @@
 # 本地 systemd
 
-将 `market-data-center-api.service` 复制到 `~/.config/systemd/user/` 后执行：
+将两个 service 文件复制到 `~/.config/systemd/user/` 后执行（需要先构建 `webui/dist`）：
 
 ```bash
 systemctl --user daemon-reload

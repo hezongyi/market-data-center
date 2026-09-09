@@ -5,9 +5,10 @@ After=network.target
 [Service]
 WorkingDirectory=/home/quant/repos/market-data-center/backend
 Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
-ExecStart=/usr/bin/python3 -m data_center.worker_main
+Environment=DATACENTER_CANONICAL_ROOT=/home/quant/market_lake/canonical
+Environment=DATACENTER_LEDGER_PATH=/home/quant/market_lake/canonical/audit/data_center.sqlite
+ExecStart=/home/quant/miniforge3/envs/macro-market-lab/bin/python -m data_center.worker_main
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
-
