@@ -64,6 +64,15 @@ class RunLedger:
             conn.execute("insert into jobs values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
         return run_id
 
+    def enqueue_job(self, job_payload: dict) -> str:
+        import json
+        run_id = str(uuid4())
+        run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"], "status": "queued"}
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
+            conn.execute("insert into jobs values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
+        return run_id
+
     def claim_next_job(self) -> dict | None:
         import json
 

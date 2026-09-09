@@ -15,7 +15,6 @@ from data_center.storage.query import economic_observations_coverage, provider_b
 from data_center.quality.checks import check_provider_bars
 from data_center.catalog.registry import DATASETS
 from data_center.ingest.worker import LocalWorker
-from data_center.ingest.economic import run_fred_ingest
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -125,7 +124,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and x_api_key != config.api_key:
             raise HTTPException(status_code=401, detail="invalid api key")
-        payload = run_fred_ingest(series_id=series_id, root=config.canonical_root, start=start, end=end, ledger=ledger)
+        run_id = worker.submit_economic(series_id=series_id, start=start, end=end)
+        payload = {"run_id": run_id, "dataset_id": "economic_observations", "series_id": series_id, "status": "queued"}
         return {"data": payload, "meta": {"request_id": str(uuid4()), "schema_version": "v1"}, "errors": []}
 
     if config.webui_dist is not None and config.webui_dist.is_dir():

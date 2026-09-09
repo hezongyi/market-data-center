@@ -14,3 +14,12 @@ def test_worker_consumes_durable_queued_run(tmp_path) -> None:
     assert worker.run_next() is True
     assert ledger.get(run_id)["status"] == "pass"
     assert worker.run_next() is False
+
+
+def test_worker_consumes_economic_job_with_same_run_id(tmp_path, monkeypatch) -> None:
+    ledger = RunLedger(tmp_path / "audit.sqlite")
+    worker = LocalWorker(tmp_path / "lake", ledger)
+    monkeypatch.setattr("data_center.ingest.worker.run_fred_ingest", lambda **kwargs: ledger.put(kwargs["run_id"], {"run_id": kwargs["run_id"], "status": "pass", "dataset_id": "economic_observations"}))
+    run_id = worker.submit_economic(series_id="PAYEMS")
+    assert worker.run_next() is True
+    assert ledger.get(run_id)["status"] == "pass"

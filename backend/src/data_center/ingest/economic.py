@@ -12,8 +12,8 @@ from data_center.storage.economic import write_economic_observations
 ECONOMIC_OBSERVATIONS_SCHEMA_VERSION = "economic_observations.v1"
 
 
-def run_fred_ingest(*, series_id: str, root: Path, connector: FredConnector | None = None, start: str | None = None, end: str | None = None, ledger=None) -> dict:
-    run_id = str(uuid4())
+def run_fred_ingest(*, series_id: str, root: Path, connector: FredConnector | None = None, start: str | None = None, end: str | None = None, ledger=None, run_id: str | None = None) -> dict:
+    run_id = run_id or str(uuid4())
     rows = (connector or FredConnector()).fetch_observations(series_id, start=start, end=end)
     if not rows:
         raise ValueError("FRED returned no observations")

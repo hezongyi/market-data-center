@@ -24,3 +24,5 @@ Phase 0 只冻结边界与接口，不接入真实 provider。
 后端依赖：`cd backend && python -m pip install -e '.[dev]'`
 
 API smoke：`cd backend && PYTHONPATH=src python -c "from data_center.api.app import app; print(app.title)"`
+
+配置模板：复制 `.env.example` 后设置 `DATACENTER_*` 环境变量；服务验收：`bash scripts/smoke.sh`。
