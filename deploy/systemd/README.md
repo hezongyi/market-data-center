@@ -20,8 +20,9 @@ python -m venv .venv
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now market-data-center-api.service market-data-center-worker.service market-data-center-smoke.timer
-curl http://127.0.0.1:18380/api/v1/health
+systemctl --user enable --now market-data-center-api.service market-data-center-worker.service
+systemctl --user enable --now market-data-center-smoke.timer market-data-center-provider-acceptance.timer
+curl -fsS http://127.0.0.1:18380/api/v1/health/ready
 ```
 
 API 将 ingest 请求写入 SQLite durable queue；`market-data-center-worker.service` 领取任务并更新同一 `run_id` 的状态。API 与 worker 必须使用相同的 `DATACENTER_CANONICAL_ROOT` 和 `DATACENTER_LEDGER_PATH`。
@@ -29,9 +30,10 @@ API 将 ingest 请求写入 SQLite durable queue；`market-data-center-worker.se
 在具备网络、`httpx`、`yfinance` 和 `FRED_API_KEY` 的环境执行生产验收：
 
 ```bash
-PYTHONPATH=backend/src python scripts/provider_acceptance.py
+set -a; source .env.local; set +a
+.venv/bin/python -m data_center.acceptance --output acceptance-receipts/manual
 bash scripts/smoke.sh
-systemctl --user status market-data-center-api.service market-data-center-worker.service market-data-center-smoke.timer
+systemctl --user status market-data-center-api.service market-data-center-worker.service market-data-center-provider-acceptance.timer
 ```
 
-`provider_acceptance.py` 将 Binance `BTCUSDT`、yfinance `SPY` 与 FRED `PAYEMS` 的成功或受控失败 receipt 写入 `acceptance-receipts/`。
+验收通过时，API/worker 写入同一 `run_id`，并保存 Binance `BTCUSDT`、yfinance `SPY` 与 FRED `PAYEMS` 的 receipt。timer 使用每日调度和 acceptance 内置的一小时最小间隔；失败会写入 `alerts.jsonl`，成功或失败 receipt 都保留在 `acceptance-receipts/scheduled/`。

@@ -11,6 +11,7 @@ def test_fred_ingest_writes_receipt_and_canonical_part(tmp_path) -> None:
     ledger = RunLedger(tmp_path / "audit.sqlite")
     receipt = run_fred_ingest(series_id="PAYEMS", root=tmp_path / "lake", connector=FakeFredConnector(), ledger=ledger)
     assert receipt["status"] == "pass"
+    assert receipt["quality_summary"] == {"status": "pass", "finding_count": 0, "findings": []}
     assert receipt["schema_version"] == "economic_observations.v1"
     assert receipt["output_hash"]
     assert receipt["connector_version"] == "1"

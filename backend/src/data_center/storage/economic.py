@@ -1,6 +1,8 @@
 from pathlib import Path
 from uuid import uuid4
 
+from data_center.catalog.paths import economic_observations_path
+
 
 def write_economic_observations(root: Path, rows: list[dict], *, part_id: str | None = None) -> Path:
     if not rows:
@@ -8,8 +10,10 @@ def write_economic_observations(root: Path, rows: list[dict], *, part_id: str | 
     import polars as pl
     series = rows[0]["series_id"]
     provider = rows[0]["provider"]
-    target = root / "economic_observations" / f"provider={provider}" / f"series_id={series}"
+    target = economic_observations_path(root, provider=provider, series_id=series)
     target.mkdir(parents=True, exist_ok=True)
     path = target / f"part-{part_id or uuid4().hex}.parquet"
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite immutable part: {path}")
     pl.DataFrame(rows).write_parquet(path)
     return path

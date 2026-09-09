@@ -14,3 +14,10 @@
 当前仓库没有配置 Git remote。CI 将提供可在本机运行的同一入口，并保存本地结果；不能据此宣称 GitHub 托管 CI 已执行。
 
 保留策略只自动处理定时验收 receipt 与临时运行产物。canonical 历史数据与原始 run receipt 不自动删除；数据回补通过正式入队接口产生新 run 和新 part。
+
+## 正式 spec 收口证据
+
+- `provider_bars` 与 `economic_observations` writer 均经过 catalog path resolver，并拒绝复用已有 part ID；查询层使用 DuckDB 内存连接读取 Parquet，不创建可变查询库。
+- 成功 receipt 统一包含 `quality_summary`、`attempt_count`、`retry_count`；质量失败记录 `failure_stage=quality` 和结构化 findings，执行失败记录 `failure_stage=execute`。
+- 仓库声明的 systemd acceptance unit（无临时 drop-in）于 `2026-09-09 09:53 UTC` 实际执行成功，Binance、yfinance、FRED 均 `pass`；receipt 为 `acceptance-receipts/scheduled/receipt-9f326e90938c42c5aaa8556224a0b6e6.json`。
+- 最新本机 CI 为 39 tests passed、Web UI build 和 service acceptance passed；浏览器验收覆盖 1440px 与 390px。GitHub 托管 CI 仍因无 Git remote 未执行。

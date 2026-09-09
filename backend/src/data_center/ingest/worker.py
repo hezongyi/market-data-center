@@ -2,12 +2,12 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from data_center.domain.models import IngestJob
 
@@ -69,7 +69,7 @@ class LocalWorker:
                 self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
             else:
                 self.ledger.fail_job(job["job_id"], job["run_id"], "worker interrupted", error_type="WorkerInterrupted",
-                                     delay_seconds=self.retry_delay_seconds)
+                                     failure_stage="recovery", delay_seconds=self.retry_delay_seconds)
 
     def run_next(self):
         with self._ownership() as lock:
@@ -100,7 +100,8 @@ class LocalWorker:
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], receipt)
                 else:
                     self.ledger.fail_job(claimed["job_id"], claimed["run_id"], result["error"],
-                                         error_type=result["error_type"], retryable=result["retryable"],
+                                         error_type=result["error_type"], failure_stage=result.get("failure_stage", "execute"), retryable=result["retryable"],
+                                         quality_summary=result.get("quality_summary"),
                                          delay_seconds=self.retry_delay_seconds)
             except Exception as exc:
                 if process is not None and process.poll() is None:
@@ -110,7 +111,7 @@ class LocalWorker:
                     # Preserve the staged result for recovery after publication/ledger failure.
                     raise
                 self.ledger.fail_job(claimed["job_id"], claimed["run_id"], "ingest execution failed",
-                                     error_type=type(exc).__name__, delay_seconds=self.retry_delay_seconds)
+                                     error_type=type(exc).__name__, failure_stage="supervise", delay_seconds=self.retry_delay_seconds)
             finally:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)

@@ -1,10 +1,10 @@
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from data_center.runs.ledger import RunLedger
-from data_center.ingest.worker import LocalWorker
 from data_center.domain.models import IngestJob
-from datetime import datetime, timezone
-import time
+from data_center.ingest.worker import LocalWorker
+from data_center.runs.ledger import RunLedger
 
 
 def test_failed_jobs_retry_then_dead_letter(tmp_path: Path):
@@ -28,6 +28,7 @@ def test_heartbeat_age_is_recorded(tmp_path: Path):
 def test_worker_timeout_kills_child_and_prevents_late_write(tmp_path: Path, monkeypatch):
     import os
     import sys
+
     import pytest
 
     ledger = RunLedger(tmp_path / "ledger.sqlite")
@@ -47,6 +48,7 @@ def test_worker_timeout_kills_child_and_prevents_late_write(tmp_path: Path, monk
     assert not (directory / 'late').exists()
     assert ledger.get(run_id)["status"] == "queued"
     assert ledger.get(run_id)["error_type"] == "TimeoutError"
+    assert ledger.get(run_id)["failure_stage"] == "supervise"
     assert ledger.claim_next_job() is None
 
 

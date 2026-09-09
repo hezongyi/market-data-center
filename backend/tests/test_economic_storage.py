@@ -1,6 +1,9 @@
+import pytest
 from data_center.storage.economic import write_economic_observations
-from data_center.storage.query import query_economic_observations
-from data_center.storage.query import economic_observations_coverage
+from data_center.storage.query import (
+    economic_observations_coverage,
+    query_economic_observations,
+)
 
 
 def test_economic_observation_storage(tmp_path) -> None:
@@ -28,3 +31,11 @@ def test_unknown_old_vintage_does_not_override_known_current_vintage(tmp_path):
         "ingest_ts": "2026-09-09T08:00:00+00:00", "asof_ts": "2026-09-09T08:00:00+00:00"}], part_id="known")
     rows = query_economic_observations(tmp_path, provider="fred", series_id="TEST")
     assert len(rows) == 1 and rows[0]["value"] == 2.0
+
+
+def test_economic_writer_refuses_to_overwrite_immutable_part(tmp_path):
+    row = {"series_id": "TEST", "provider": "fred", "observation_date": "2026-01-01", "value": 1.0,
+           "ingest_ts": "2026-01-02T00:00:00+00:00"}
+    write_economic_observations(tmp_path, [row], part_id="immutable")
+    with pytest.raises(FileExistsError, match="immutable part"):
+        write_economic_observations(tmp_path, [row], part_id="immutable")

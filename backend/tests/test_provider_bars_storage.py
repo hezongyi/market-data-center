@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 
+import pytest
 from data_center.domain.models import ProviderBar
 from data_center.storage.parquet import write_provider_bars
-from data_center.storage.query import query_provider_bars
-from data_center.storage.query import provider_bars_coverage
+from data_center.storage.query import provider_bars_coverage, query_provider_bars
 
 
 def _bar(*, bar_ts: datetime, close: float, ingest_ts: datetime) -> ProviderBar:
@@ -23,3 +23,11 @@ def test_provider_bars_are_year_partitioned_and_current_state_is_deduplicated(tm
     assert coverage["row_count"] == 2
     assert coverage["min_ts"] == original.bar_ts
     assert coverage["max_ts"] == next_year.bar_ts
+
+
+def test_provider_writer_refuses_to_overwrite_immutable_part(tmp_path) -> None:
+    record = _bar(bar_ts=datetime(2026, 1, 1, tzinfo=timezone.utc), close=100.0,
+                  ingest_ts=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    write_provider_bars(tmp_path, [record], part_id="immutable")
+    with pytest.raises(FileExistsError, match="immutable part"):
+        write_provider_bars(tmp_path, [record], part_id="immutable")

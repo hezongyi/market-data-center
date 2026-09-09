@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
+import builtins
 import json
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
 from uuid import uuid4
 
 
@@ -50,13 +50,13 @@ class RunLedger:
             raise KeyError(run_id)
         return json.loads(row[0])
 
-    def findings(self) -> List[dict]:
+    def findings(self) -> builtins.list[dict]:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             rows = conn.execute("select payload from quality_findings order by id desc").fetchall()
         return [json.loads(row[0]) for row in rows]
 
-    def add_findings(self, payloads: List[dict]) -> None:
+    def add_findings(self, payloads: builtins.list[dict]) -> None:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
@@ -105,14 +105,21 @@ class RunLedger:
         with sqlite3.connect(self.path) as conn:
             conn.execute("begin immediate")
             original = json.loads(conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()[0])
+            attempt_row = conn.execute("select attempts from jobs where job_id=?", (job_id,)).fetchone()
+            attempts = attempt_row[0] if attempt_row else 1
             if original.get("status") != "running":
                 raise ValueError("only a running job can finish")
             payload = {**original, **receipt, "created_at": original.get("created_at"),
-                       "finished_at": datetime.now(timezone.utc).isoformat(), "error": None, "retryable": False}
+                       "attempt_count": attempts, "retry_count": max(0, attempts - 1),
+                       "attempt_errors": original.get("attempt_errors", []),
+                       "finished_at": datetime.now(timezone.utc).isoformat(), "error": None, "error_type": None,
+                       "failure_stage": None, "retryable": False}
             conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
             conn.execute("update jobs set status='completed' where job_id=?", (job_id,))
 
-    def fail_job(self, job_id: str, run_id: str, error: str, *, error_type: str | None = None, retryable: bool = True, delay_seconds: float = 0.0) -> None:
+    def fail_job(self, job_id: str, run_id: str, error: str, *, error_type: str | None = None,
+                 failure_stage: str = "execute", retryable: bool = True, quality_summary: dict | None = None,
+                 delay_seconds: float = 0.0) -> None:
         with sqlite3.connect(self.path) as conn:
             conn.execute("begin immediate")
             row = conn.execute("select attempts from jobs where job_id = ?", (job_id,)).fetchone()
@@ -122,10 +129,11 @@ class RunLedger:
                 raise ValueError("only a running job can fail")
             status = "failed" if not retryable else ("dead_letter" if attempts >= 3 else "queued")
             available = time.time() + delay_seconds * (2 ** max(0, attempts - 1))
-            failure = {"attempt": attempts, "error_type": error_type or "IngestError", "error": error,
+            failure = {"attempt": attempts, "error_type": error_type or "IngestError", "failure_stage": failure_stage, "error": error,
                        "retryable": retryable, "at": datetime.now(timezone.utc).isoformat()}
             payload = {**original, **failure, "status": status, "retry_count": max(0, attempts - 1),
                        "attempt_count": attempts, "attempt_errors": original.get("attempt_errors", []) + [failure],
+                       "quality_summary": quality_summary or {"status": "not_run", "finding_count": 0, "findings": []},
                        "next_attempt_at": available if status == "queued" else None}
             if status != "queued":
                 payload["finished_at"] = failure["at"]

@@ -13,6 +13,8 @@ def test_worker_consumes_durable_queued_run(tmp_path) -> None:
     assert ledger.get(run_id)["status"] == "queued"
     assert worker.run_next() is True
     assert ledger.get(run_id)["status"] == "pass"
+    assert ledger.get(run_id)["quality_summary"] == {"status": "pass", "finding_count": 0, "findings": []}
+    assert ledger.get(run_id)["attempt_count"] == 1
     assert worker.run_next() is False
 
 

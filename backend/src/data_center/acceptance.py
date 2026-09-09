@@ -1,12 +1,12 @@
 """Scheduled production acceptance through the public API; receipts and local alerts."""
 import argparse
-from datetime import datetime, timedelta, timezone
 import fcntl
 import gzip
 import json
 import os
-from pathlib import Path
 import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import requests
@@ -54,7 +54,9 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
             return response.json()["data"]
 
         now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        report = {"acceptance_id": uuid4().hex, "checked_at": datetime.now(timezone.utc).isoformat(), "status": "pass", "providers": []}
+        report = {"acceptance_id": uuid4().hex, "checked_at": datetime.now(timezone.utc).isoformat(),
+                  "validation_command": "python -m data_center.acceptance", "base_url": base_url,
+                  "status": "pass", "providers": []}
         for index, (provider, symbol) in enumerate((("binance", "BTCUSDT"), ("yfinance", "SPY"), ("fred", "PAYEMS"))):
             if index:
                 time.sleep(spacing_seconds)
@@ -80,7 +82,8 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                         raise TimeoutError("run polling deadline")
                     time.sleep(1)
                 result["receipt"] = receipt
-                if receipt["status"] != "pass" or not receipt.get("row_count"):
+                quality = receipt.get("quality_summary") or {}
+                if receipt["status"] != "pass" or not receipt.get("row_count") or quality.get("status") != "pass":
                     raise ValueError("non-pass receipt")
                 rows = call("GET", read_path, params=query)
                 if len(rows) < receipt["row_count"]:
@@ -90,7 +93,7 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                 if len(fresh) < receipt["row_count"]:
                     raise ValueError("API readback does not include newly ingested rows")
                 result.update(status="pass", read_count=len(rows), fresh_read_count=len(fresh))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - acceptance must record every provider failure
                 report["status"] = "failed"
                 result.update(status="failed", error_type=type(exc).__name__)
             report["providers"].append(result)
