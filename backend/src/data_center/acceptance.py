@@ -11,8 +11,13 @@ from uuid import uuid4
 
 import requests
 
+from data_center.observability import AlertSink
+from data_center.settings import Settings
 
-def archive_receipts(root: Path, keep_days: int = 30):
+
+def archive_receipts(root: Path, keep_days: int = 90):
+    if keep_days < 90:
+        raise ValueError("evidence retention must be at least 90 days")
     cutoff = time.time() - keep_days * 86400
     archived = []
     for path in root.glob("receipt-*.json"):
@@ -100,6 +105,11 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
         path = root / ("receipt-" + report["acceptance_id"] + ".json")
         path.write_text(json.dumps(report, indent=2))
         if report["status"] != "pass":
+            settings = Settings()
+            AlertSink(settings.evidence_root / "alerts", settings.alerts_enabled).emit(
+                "provider_acceptance_failed", identity=report["acceptance_id"],
+                fields={"receipt": str(path), "status": "failed",
+                        "providers": [r["provider"] for r in report["providers"] if r["status"] != "pass"]})
             with (root / "alerts.jsonl").open("a") as stream:
                 stream.write(json.dumps({"event": "provider_acceptance_failed", "at": report["checked_at"],
                                          "receipt": path.name, "providers": [r["provider"] for r in report["providers"] if r["status"] != "pass"]}) + "\n")
@@ -111,7 +121,7 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:18380")
-    parser.add_argument("--output", type=Path, default=Path("acceptance-receipts/scheduled"))
+    parser.add_argument("--output", type=Path, default=Settings().evidence_root / "acceptance")
     parser.add_argument("--interval-seconds", type=float, default=3600)
     args = parser.parse_args()
     report = run_acceptance(args.base_url, args.output, args.interval_seconds)

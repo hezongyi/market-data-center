@@ -1,8 +1,8 @@
 from data_center.connectors.base import MarketConnector
-from data_center.connectors.fixture import fetch_bars
-from data_center.connectors.yfinance import YFinanceConnector
 from data_center.connectors.binance import BinanceConnector
+from data_center.connectors.fixture import fetch_bars
 from data_center.connectors.fred import FredConnector
+from data_center.connectors.yfinance import YFinanceConnector
 
 
 class FixtureConnector:

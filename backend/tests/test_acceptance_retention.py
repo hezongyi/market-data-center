@@ -10,7 +10,7 @@ def test_old_receipts_are_losslessly_archived(tmp_path):
     old = tmp_path / 'receipt-old.json'
     old.write_text('{"status":"failed"}')
     data = old.read_bytes()
-    os.utime(old, (time.time() - 31 * 86400,) * 2)
+    os.utime(old, (time.time() - 91 * 86400,) * 2)
     fresh = tmp_path / 'receipt-new.json'
     fresh.write_text('{}')
     other = tmp_path / 'ledger.sqlite'
@@ -50,11 +50,13 @@ def test_retention_audit_does_not_change_data(tmp_path):
 
 def test_daily_backfill_chunks_are_bounded_and_contiguous():
     from datetime import date
+    from itertools import pairwise
+
     import pytest
 
     chunks = list(daily_chunks(date(2024, 1, 1), date(2026, 1, 1)))
     assert chunks[0][0] == date(2024, 1, 1) and chunks[-1][1] == date(2026, 1, 1)
     assert all(0 < (end - start).days <= 365 for start, end in chunks)
-    assert all(left[1] == right[0] for left, right in zip(chunks, chunks[1:]))
+    assert all(left[1] == right[0] for left, right in pairwise(chunks))
     with pytest.raises(ValueError):
         list(daily_chunks(date(2026, 1, 1), date(2024, 1, 1)))

@@ -1,12 +1,11 @@
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
+from storage_fixtures import write_economic_observations, write_provider_bars
 
 from data_center.api.app import create_app
 from data_center.domain.models import ProviderBar
 from data_center.settings import Settings
-from data_center.storage.economic import write_economic_observations
-from data_center.storage.parquet import write_provider_bars
 
 
 def test_api_reads_canonical_bars_and_economic_observations(tmp_path) -> None:

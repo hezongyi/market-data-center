@@ -12,7 +12,8 @@ def write_economic_observations(root: Path, rows: list[dict], *, part_id: str | 
     provider = rows[0]["provider"]
     target = economic_observations_path(root, provider=provider, series_id=series)
     target.mkdir(parents=True, exist_ok=True)
-    path = target / f"part-{part_id or uuid4().hex}.parquet"
+    resolved_part_id = part_id or uuid4().hex
+    path = target / f"part-{resolved_part_id}.parquet"
     if path.exists():
         raise FileExistsError(f"refusing to overwrite immutable part: {path}")
     pl.DataFrame(rows).write_parquet(path)

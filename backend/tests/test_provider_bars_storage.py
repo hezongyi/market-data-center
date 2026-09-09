@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
 import pytest
+from storage_fixtures import write_provider_bars
+
 from data_center.domain.models import ProviderBar
-from data_center.storage.parquet import write_provider_bars
 from data_center.storage.query import provider_bars_coverage, query_provider_bars
 
 

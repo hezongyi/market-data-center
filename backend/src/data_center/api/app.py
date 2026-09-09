@@ -1,24 +1,30 @@
-from uuid import uuid4
-from contextvars import ContextVar
+import hmac
+import json
 import sqlite3
 import tempfile
-import json
 import time
+from contextvars import ContextVar
+from uuid import uuid4
 
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
-from data_center.settings import Settings
-from data_center.domain.models import IngestJob
-from data_center.runs.ledger import RunLedger
-from data_center.storage.query import query_provider_bars
-from data_center.storage.query import query_economic_observations
-from data_center.storage.query import economic_observations_coverage, provider_bars_coverage
-from data_center.quality.checks import check_provider_bars
+from data_center.catalog.manifest import PublicationError
 from data_center.catalog.registry import DATASETS
+from data_center.domain.models import IngestJob
+from data_center.observability import run_metrics
+from data_center.quality.checks import check_provider_bars
+from data_center.runs.ledger import RunLedger
+from data_center.settings import Settings
+from data_center.storage.query import (
+    economic_observations_coverage,
+    provider_bars_coverage,
+    query_economic_observations,
+    query_provider_bars,
+)
 
 _request_id = ContextVar("request_id", default="")
 
@@ -47,6 +53,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "duration_seconds": round(time.monotonic() - started, 4)}), flush=True)
         return response
 
+    @app.exception_handler(PublicationError)
+    async def publication_error_handler(request: Request, exc: PublicationError):
+        return JSONResponse(status_code=503, content={"data": None,
+            "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+            "errors": [{"code": "integrity_error", "message": "published data integrity check failed"}]})
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
@@ -65,7 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={
                 "data": None,
                 "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": [{"code": "validation_error", "message": error["msg"]} for error in exc.errors()],
+                "errors": [{"code": "validation_error", "message": "invalid request field"} for error in exc.errors()],
             },
         )
 
@@ -105,12 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/metrics")
     def metrics() -> dict:
-        runs = ledger.list()
-        counts = {status: sum(1 for run in runs if run.get("status") == status) for status in ("queued", "running", "pass", "failed", "dead_letter")}
-        return {"data": {"runs_total": len(runs), "runs_by_status": counts,
-                         "retry_attempts_total": sum(run.get("retry_count", 0) for run in runs),
-                         "timeouts_total": sum(sum(e.get("error_type") == "TimeoutError" for e in run.get("attempt_errors", [])) for run in runs),
-                         "worker_heartbeat_age_seconds": ledger.heartbeat_age_seconds()}, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return {"data": run_metrics(ledger), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/runs")
     def runs(request: Request, status: str | None = None) -> dict:
@@ -119,7 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
     def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and x_api_key != config.api_key:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         try:
             new_id = ledger.retry_run(run_id)
@@ -144,7 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/ingest/runs")
     def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and x_api_key != config.api_key:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         run_id = ledger.enqueue_job({**job.model_dump(mode="json"), "request_id": current_request_id()})
         payload = {"status": "queued", "job_id": job.job_id, "run_id": run_id}
@@ -165,7 +172,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/quality/checks")
     def quality_check(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and x_api_key != config.api_key:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         from data_center.connectors.fixture import fetch_bars
         findings = check_provider_bars(fetch_bars(job))
@@ -180,8 +187,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": findings, "meta": {"request_id": current_request_id(), "schema_version": "v1", "count": len(findings)}, "errors": []}
 
     @app.get(f"{config.api_prefix}/economic/observations")
-    def economic_observations(series_id: str, provider: str = "fred", start: str | None = None, end: str | None = None) -> dict:
-        rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id, start=start, end=end)
+    def economic_observations(series_id: str, provider: str = "fred", start: str | None = None,
+                              end: str | None = None, asof_ts: str | None = None) -> dict:
+        rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id,
+                                           start=start, end=end, asof_ts=asof_ts)
         return {"data": rows, "meta": {"request_id": current_request_id(), "schema_version": "v1", "count": len(rows)}, "errors": []}
 
     @app.get(f"{config.api_prefix}/economic/coverage")
@@ -191,7 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/economic/ingest")
     def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and x_api_key != config.api_key:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         run_id = ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
                                     "provider": "fred", "series_id": series_id, "start": start, "end": end,

@@ -1,10 +1,10 @@
 """Read-only retention audit and bounded daily backfill via the ingest API."""
 import argparse
-from datetime import date, datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import time
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
 

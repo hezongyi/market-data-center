@@ -1,6 +1,8 @@
 import uvicorn
-import os
 
+from data_center.settings import Settings
 
 if __name__ == "__main__":
-    uvicorn.run("data_center.api.app:app", host="127.0.0.1", port=int(os.getenv("DATACENTER_PORT", "18380")), reload=False)
+    config = Settings()
+    uvicorn.run("data_center.api.app:app", host=config.host, port=config.port, reload=False,
+                access_log=False)

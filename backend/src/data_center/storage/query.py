@@ -3,6 +3,8 @@ from pathlib import Path
 
 import duckdb
 
+from data_center.catalog.manifest import published_files
+
 
 def _read_current(files: list[Path], partition_columns: list[str], order_columns: str,
                   where: str = "", params: list | None = None, *, bars: bool = False) -> list[dict]:
@@ -23,8 +25,8 @@ def _read_current(files: list[Path], partition_columns: list[str], order_columns
 
 
 def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: str, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
-    pattern = root / "provider_bars" / f"provider={provider}" / "**" / f"symbol={symbol}" / f"timeframe={timeframe}" / "**" / "*.parquet"
-    files = list(root.glob(str(pattern.relative_to(root))))
+    files = [path for path in published_files(root, "provider_bars")
+             if f"provider={provider}" in path.parts and f"symbol={symbol}" in path.parts and f"timeframe={timeframe}" in path.parts]
     clauses, params = [], []
     if start is not None:
         clauses.append("bar_ts >= ?")
@@ -36,9 +38,10 @@ def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: st
     return _read_current(files, ["provider", "symbol", "asset_class", "timeframe", "bar_ts"], "ingest_ts desc", where, params, bars=True)
 
 
-def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None, end: str | None = None) -> list[dict]:
-    base = root / "economic_observations" / f"provider={provider}" / f"series_id={series_id}"
-    files = sorted(base.glob("*.parquet"))
+def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None,
+                                end: str | None = None, asof_ts: str | None = None) -> list[dict]:
+    files = [path for path in published_files(root, "economic_observations")
+             if f"provider={provider}" in path.parts and f"series_id={series_id}" in path.parts]
     if not files:
         return []
     clauses, params = [], []
@@ -48,8 +51,15 @@ def query_economic_observations(root: Path, *, provider: str, series_id: str, st
     if end is not None:
         clauses.append("observation_date <= ?")
         params.append(end)
+    if asof_ts is not None:
+        # PIT reads exclude unknown release timing instead of treating ingest time as release time.
+        clauses.append("asof_ts <= ? and ((availability_policy = 'realtime_vintage' and vintage_start <= ?) or (availability_policy = 'release_date_known' and release_ts <= ?))")
+        params.extend([asof_ts, asof_ts[:10], asof_ts])
+        order = "case when availability_policy = 'realtime_vintage' then vintage_start else release_ts end desc, asof_ts desc"
+    else:
+        order = "case when vintage_start is null then 0 else 1 end desc, vintage_start desc nulls last, asof_ts desc"
     where = "where " + " and ".join(clauses) if clauses else ""
-    return _read_current(files, ["observation_date"], "case when vintage_start is null then 0 else 1 end desc, vintage_start desc nulls last, asof_ts desc", where, params)
+    return _read_current(files, ["observation_date"], order, where, params)
 
 
 def provider_bars_coverage(root: Path, *, provider: str, symbol: str, timeframe: str) -> dict:

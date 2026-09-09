@@ -1,14 +1,22 @@
 import fcntl
-import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from data_center.catalog.manifest import (
+    PublicationError,
+    file_hash,
+    manifest_path,
+    validate_manifest,
+    write_manifest,
+)
 from data_center.domain.models import IngestJob
 
 
@@ -43,20 +51,42 @@ class LocalWorker:
 
     def _publish(self, directory, receipt):
         staged_root = directory / "parts"
-        paths = receipt.get("paths") or [receipt["path"]]
+        manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
+        paths = validate_manifest(staged_root, manifest)
+        if any(manifest[key] != receipt[key] for key in
+               ("run_id", "dataset_id", "schema_version", "row_count", "quality_summary")):
+            raise PublicationError("receipt does not match staged manifest")
+        if {Path(p).resolve() for p in receipt.get("paths", [receipt.get("path")])} != {p.resolve() for p in paths}:
+            raise PublicationError("receipt part list does not match staged manifest")
         published = []
-        for value in paths:
-            source = Path(value)
-            relative = source.resolve().relative_to(staged_root.resolve())
-            target = self.root / relative
+        for source, item in zip(paths, manifest["parts"]):
+            target = self.root / item["path"]
             target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(source, target)
-            except FileExistsError:
-                if hashlib.sha256(source.read_bytes()).digest() != hashlib.sha256(target.read_bytes()).digest():
-                    raise ValueError("existing part differs from staged result")
+            # Copy to a fresh inode: staged files must not mutate a published part.
+            if not target.exists():
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    with source.open("rb") as input_stream:
+                        shutil.copyfileobj(input_stream, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    if target.exists():
+                        if file_hash(target) != item["sha256"]:
+                            raise PublicationError("existing part differs from staged result")
+                    else:
+                        os.rename(temporary, target)
+                        temporary = None
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+            elif file_hash(target) != item["sha256"]:
+                raise PublicationError("existing part differs from staged result")
             published.append(str(target))
-        return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]})}
+        # Same bytes on every recovery; generated_at comes from the staged manifest.
+        published_manifest = write_manifest(self.root, manifest)
+        return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]}),
+                "manifest": str(published_manifest)}
 
     def _recover(self):
         # The child inherits the lock so a replacement cannot recover a live child.
@@ -65,8 +95,14 @@ class LocalWorker:
             result_path = directory / "result.json"
             result = json.loads(result_path.read_text()) if result_path.exists() else {}
             if "receipt" in result:
-                receipt = self._publish(directory, result["receipt"])
-                self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
+                try:
+                    receipt = self._publish(directory, result["receipt"])
+                    self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
+                except PublicationError:
+                    if manifest_path(self.root, job["run_id"]).exists():
+                        raise
+                    self.ledger.fail_job(job["job_id"], job["run_id"], "publication validation failed",
+                                         error_type="PublicationError", failure_stage="publish", retryable=False)
             else:
                 self.ledger.fail_job(job["job_id"], job["run_id"], "worker interrupted", error_type="WorkerInterrupted",
                                      failure_stage="recovery", delay_seconds=self.retry_delay_seconds)
@@ -107,6 +143,11 @@ class LocalWorker:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
+                if isinstance(exc, PublicationError) and not manifest_path(self.root, claimed["run_id"]).exists():
+                    self.ledger.fail_job(claimed["job_id"], claimed["run_id"], "publication validation failed",
+                                         error_type="PublicationError", failure_stage="publish", retryable=False)
+                    self.ledger.heartbeat()
+                    return True
                 if "receipt" in result:
                     # Preserve the staged result for recovery after publication/ledger failure.
                     raise
@@ -119,6 +160,7 @@ class LocalWorker:
             self.ledger.heartbeat()
             print(json.dumps({"event": "ingest_finished", "run_id": claimed["run_id"],
                               "request_id": claimed["payload"].get("request_id"), "attempt": claimed["attempts"],
+                              "job_id": claimed["payload"]["job_id"], "provider": claimed["payload"].get("provider"),
                               "status": self.ledger.get(claimed["run_id"])["status"],
                               "duration_seconds": round(time.monotonic() - started, 3)}), flush=True)
             return True

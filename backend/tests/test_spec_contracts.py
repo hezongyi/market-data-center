@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 import polars as pl
 import pytest
+from storage_fixtures import write_provider_bars
+
 from data_center.domain.models import IngestJob, ProviderBar
 from data_center.ingest.service import run_fixture_ingest
-from data_center.storage.parquet import write_provider_bars
 from data_center.storage.query import query_provider_bars
 
 
@@ -31,6 +32,8 @@ def test_duckdb_reads_mixed_legacy_timestamps_without_hive_columns(tmp_path):
     part = write_provider_bars(tmp_path, [bar()], part_id="typed")[0]
     legacy = bar(close=1.5, ingest_ts=datetime(2026, 1, 2, tzinfo=timezone.utc)).model_dump(mode="json")
     pl.DataFrame([legacy]).write_parquet(part.parent / "legacy.parquet")
+    from storage_fixtures import publish
+    publish(tmp_path, [part.parent / "legacy.parquet"], "provider_bars")
     rows = query_provider_bars(tmp_path, provider="fixture", symbol="TEST", timeframe="1d",
                                start=bar().bar_ts, end=bar().bar_ts)
     assert len(rows) == 1

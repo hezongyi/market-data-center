@@ -1,7 +1,7 @@
 # Production Hardening and Consumer Migration Specification
 
 日期：2026-09-10  
-状态：approved for implementation  
+状态：in progress，H1-H5 已实现并完成本机真实验收；托管 CI 最近运行与全量 consumer 切换仍保持未完成
 前置 spec：`2026-09-08-data-center-foundation`、`2026-09-09-production-readiness-design`
 
 ## 目标
@@ -135,4 +135,3 @@ manifest 是 run 级发布边界，至少包含 `run_id`、dataset、schema vers
 - acceptance、backfill、parity、quality、cleanup 和切换报告统一保存在受保护的 evidence 根目录，至少保留 90 天；过期归档必须可校验解压。
 - 每次门禁报告记录 commit、环境标识、命令、开始/结束时间、输入范围、结果和失败原因；不得只记录“通过”摘要。
 - 任何未满足的门禁都保持 spec 状态为 `in progress`，不得通过修改验收范围来宣称完成。
-

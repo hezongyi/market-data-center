@@ -19,7 +19,7 @@ def main():
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         env = {**os.environ, "DATACENTER_CANONICAL_ROOT": str(root / "lake"),
-               "DATACENTER_LEDGER_PATH": str(root / "ledger.sqlite"), "DATACENTER_PORT": str(port),
+               "DATACENTER_LEDGER_PATH": str(root / "ledger.sqlite"), "DATACENTER_EVIDENCE_ROOT": str(root / "evidence"), "DATACENTER_PORT": str(port),
                "DATACENTER_WEBUI_DIST": str(repo / "webui/dist"), "DATACENTER_API_KEY": "acceptance"}
         api = subprocess.Popen([sys.executable, "-m", "data_center.api"], env=env, stdout=subprocess.DEVNULL)
         worker = None
