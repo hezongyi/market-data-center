@@ -8,7 +8,10 @@ def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: st
     files = list(root.glob(str(pattern.relative_to(root))))
     if not files:
         return []
-    frame = pl.read_parquet(files)
+    frames = [pl.read_parquet(path) for path in files]
+    frame = pl.concat(frames, how="diagonal_relaxed")
+    if frame.schema.get("bar_ts") == pl.String:
+        frame = frame.with_columns(pl.col("bar_ts").str.to_datetime(time_zone="UTC", strict=False))
     if start is not None:
         frame = frame.filter(pl.col("bar_ts") >= start)
     if end is not None:
