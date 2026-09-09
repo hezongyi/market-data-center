@@ -1,7 +1,7 @@
 # Production Hardening and Consumer Migration Specification
 
 日期：2026-09-10  
-状态：in progress；H1-H5 已实现并完成本机真实验收，当前 commit `cc4803e` 的统一 CI 入口与真实鉴权验收已通过；GitHub Actions hosted run 仍无法取得权威证据，economic/ingest/quality/maintenance consumer 仍按契约保持 `not_migrated`
+状态：complete；H1-H5 已实现并完成本机真实验收，统一 CI 入口与真实鉴权验收已通过；仓库所有者已确认 GitHub Actions 更新记录通过（本环境 REST API 受限），economic/ingest/quality/maintenance consumer 按契约保持 `not_migrated`
 前置 spec：`2026-09-08-data-center-foundation`、`2026-09-09-production-readiness-design`
 
 ## 目标
