@@ -12,7 +12,11 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
-from data_center.catalog.manifest import PublicationError
+from data_center.catalog.manifest import (
+    PublicationError,
+    manifest_path,
+    validate_manifest,
+)
 from data_center.catalog.registry import DATASETS
 from data_center.domain.models import IngestJob
 from data_center.observability import run_metrics
@@ -147,6 +151,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload = ledger.get(run_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found")
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/runs/{{run_id}}/manifest")
+    def run_manifest(run_id: str) -> dict:
+        try:
+            payload = json.loads(manifest_path(config.canonical_root, run_id).read_text())
+            validate_manifest(config.canonical_root, payload)
+        except (OSError, json.JSONDecodeError, PublicationError):
+            raise HTTPException(status_code=404, detail="manifest not found")
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/ingest/runs")

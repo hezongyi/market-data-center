@@ -21,11 +21,13 @@ python -m venv .venv
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now market-data-center-api.service market-data-center-worker.service
-systemctl --user enable --now market-data-center-smoke.timer market-data-center-provider-acceptance.timer
+systemctl --user enable --now market-data-center-smoke.timer market-data-center-provider-acceptance.timer market-data-center-monitor.timer
 curl -fsS http://127.0.0.1:18380/api/v1/health/ready
 ```
 
 API 将 ingest 请求写入 SQLite durable queue；`market-data-center-worker.service` 领取任务并更新同一 `run_id` 的状态。API 与 worker 必须使用相同的 `DATACENTER_CANONICAL_ROOT` 和 `DATACENTER_LEDGER_PATH`。
+
+`market-data-center-monitor.timer` 每分钟运行一次 `data_center.observability`，检查 heartbeat、积压和质量失败并写入幂等 alert outbox；配置 `DATACENTER_ALERT_WEBHOOK_URL` 才会发送外部 webhook。monitor 不改变数据写入结果。
 
 在具备网络、`httpx`、`yfinance` 和 `FRED_API_KEY` 的环境执行生产验收：
 

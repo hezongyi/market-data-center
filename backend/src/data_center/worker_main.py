@@ -2,6 +2,7 @@ import json
 import time
 
 from data_center.ingest.worker import LocalWorker
+from data_center.observability import AlertSink
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 
@@ -9,7 +10,8 @@ from data_center.settings import Settings
 def main() -> None:
     print(json.dumps({"event": "worker_started", "request_id": None}), flush=True)
     settings = Settings()
-    worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path), timeout_seconds=settings.worker_timeout_seconds)
+    worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path), timeout_seconds=settings.worker_timeout_seconds,
+                         alert_sink=AlertSink(settings.evidence_root / "alerts", settings.alerts_enabled))
     while True:
         if not worker.run_next():
             time.sleep(1)

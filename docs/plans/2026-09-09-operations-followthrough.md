@@ -9,7 +9,7 @@
 | 进程超时与恢复 | 超时杀死执行进程，重启不重复领取；验证无迟到写盘、心跳持续更新 | 已完成；进程超时、互斥、恢复测试及隔离服务通过 |
 | 失败管理 | failed/dead-letter 查询、授权重试、原 receipt 保留、UI 操作 | 已完成；API/UI 浏览器验收桌面和 390px 通过 |
 | 下游接入 | macro-market-lab 只读 adapter parity，迁移低风险数据预览；经济 PIT 不冒充兼容 | 已完成；provider bars adapter parity 通过并保留 feature flag/回滚；economic consumer 明确 `not_migrated` |
-| 保留、回补、日志指标 | receipt 归档保留、canonical 保留审计、显式日期回补、结构化 request/run 日志及指标 | 已完成；回补真实 Binance 通过，审计只读，request/run 日志与 metrics 可读 |
+| 保留、回补、日志指标 | receipt 归档保留、canonical 保留审计、显式日期回补、结构化 request/run 日志及指标 | 已完成；回补真实 Binance 两区间通过且重复执行幂等，审计只读，request/run 日志、metrics、monitor timer 可读 |
 
 仓库已配置 `origin`，`.github/workflows/ci.yml` 与 `scripts/ci.sh` 使用同一入口；本轮未触发托管 workflow，因此不把本机结果当作托管 CI 证据。
 
@@ -21,3 +21,4 @@
 - 成功 receipt 统一包含 `quality_summary`、`attempt_count`、`retry_count`；质量失败记录 `failure_stage=quality` 和结构化 findings，执行失败记录 `failure_stage=execute`。
 - 仓库声明的 systemd acceptance unit（无临时 drop-in）于 `2026-09-09 09:53 UTC` 实际执行成功，Binance、yfinance、FRED 均 `pass`；receipt 为 `acceptance-receipts/scheduled/receipt-9f326e90938c42c5aaa8556224a0b6e6.json`。
 - 最新本机 CI 为 48 tests passed、ruff、Web UI build 和 service acceptance passed；systemd 重启后 services/timers 保持 active+enabled，真实 Binance、yfinance、FRED receipt 与 manifest 保存在 `/home/quant/market_lake/evidence/data-center/`。托管 CI 与 economic consumer 全量切换仍未宣称完成。
+- 追加验证：monitor oneshot/timer 已安装并实际执行；`/api/v1/runs/<run_id>/manifest` 真实读取通过；回补 receipt `backfill-binance-20250101-20260901.json` 含 2 个 run、610 行、区间、hash 与 quality 摘要。

@@ -1,0 +1,11 @@
+[Unit]
+Description=Market Data Center alert monitor timer
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Persistent=true
+Unit=market-data-center-monitor.service
+
+[Install]
+WantedBy=timers.target

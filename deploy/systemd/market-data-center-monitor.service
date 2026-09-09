@@ -1,0 +1,13 @@
+[Unit]
+Description=Market Data Center alert monitor
+After=market-data-center-api.service market-data-center-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/quant/repos/market-data-center/backend
+EnvironmentFile=-/home/quant/repos/market-data-center/.env.local
+Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
+ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.observability
+
+[Install]
+WantedBy=default.target

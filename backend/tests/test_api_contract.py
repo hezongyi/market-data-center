@@ -66,3 +66,25 @@ def test_retry_authorization_and_request_correlation(tmp_path):
     assert retried.json()["data"]["retry_of"] == run_id
     assert ledger.get(run_id) == original
     assert len(client.get("/api/v1/runs?status=failed").json()["data"]) == 1
+
+
+def test_published_manifest_endpoint_is_read_only_and_validated(tmp_path):
+    from data_center.catalog.manifest import build_manifest, write_manifest
+    from data_center.domain.models import ProviderBar
+    from data_center.storage.parquet import write_provider_bars
+
+    root = tmp_path / "lake"
+    rows = [ProviderBar(symbol="TEST", asset_class="crypto", provider="fixture", timeframe="1d",
+                        bar_ts=datetime(2026, 1, 1, tzinfo=timezone.utc), open=1, high=2, low=0, close=1,
+                        volume=1, ingest_ts=datetime(2026, 1, 2, tzinfo=timezone.utc), source_hash="x")]
+    path = write_provider_bars(root, rows, part_id="manifest-api")
+    write_manifest(root, build_manifest(root, run_id="manifest-api", dataset_id="provider_bars",
+                                        schema_version="provider_bars.v1", paths=path, row_count=1,
+                                        quality_summary={"status": "pass", "finding_count": 0, "findings": []}))
+    # Endpoint only exposes a manifest after the publication boundary has been recorded.
+    app = create_app(Settings(canonical_root=root, ledger_path=tmp_path / "runs.sqlite"))
+    response = TestClient(app).get("/api/v1/runs/manifest-api/manifest")
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["status"] == "published" and payload["parts"][0]["bytes"] == path[0].stat().st_size
+    assert TestClient(app).get("/api/v1/runs/missing/manifest").status_code == 404
