@@ -42,6 +42,10 @@ def archive_receipts(root: Path, keep_days: int = 90):
 def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, deadline_seconds=480):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
     with (root / ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         last = root / "last-attempt"

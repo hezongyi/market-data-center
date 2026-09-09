@@ -20,6 +20,10 @@ def cleanup_staging(root: Path, ledger: RunLedger, evidence_root: Path, *, apply
     if Path(operation_id).name != operation_id or operation_id in {".", ".."}:
         raise ValueError("invalid operation id")
     evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        evidence_root.chmod(0o700)
+    except OSError:
+        pass
     report_path = evidence_root / "cleanup" / (operation_id + ".json")
     if report_path.exists():
         return json.loads(report_path.read_text())

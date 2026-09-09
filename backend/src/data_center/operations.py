@@ -41,6 +41,11 @@ def backfill(base_url, provider, symbol, asset_class, start, end, output):
     if output.exists():
         report = json.loads(output.read_text())
         if report.get("status") == "pass":
+            if "run_count" not in report:
+                report["run_count"] = len(report.get("runs", []))
+                report["row_count"] = sum(entry.get("row_count", 0) for entry in report.get("runs", []))
+                report["output_hashes"] = [entry.get("output_hash") for entry in report.get("runs", [])]
+                output.write_text(json.dumps(report, indent=2))
             return report
         if report.get("provider") != provider or report.get("symbol") != symbol:
             raise ValueError("existing backfill receipt has different request")
@@ -92,6 +97,9 @@ def backfill(base_url, provider, symbol, asset_class, start, end, output):
                 report["runs"][index]["quality_summary"] = receipt.get("quality_summary")
                 time.sleep(5)
             report["status"] = "pass"
+            report["run_count"] = len(report["runs"])
+            report["row_count"] = sum(entry.get("row_count", 0) for entry in report["runs"])
+            report["output_hashes"] = [entry.get("output_hash") for entry in report["runs"]]
         except Exception as exc:
             report.update(status="failed", error_type=type(exc).__name__)
             raise
