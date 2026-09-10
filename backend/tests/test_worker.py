@@ -26,3 +26,12 @@ def test_worker_records_economic_failure_with_same_run_id(tmp_path, monkeypatch)
     assert worker.run_next() is True
     assert ledger.get(run_id)["status"] == "queued"
     assert ledger.get(run_id)["error_type"] == "RuntimeError"
+
+
+def test_worker_economic_submission_defaults_to_pit_schema(tmp_path):
+    ledger = RunLedger(tmp_path / "audit.sqlite")
+    worker = LocalWorker(tmp_path / "lake", ledger)
+    run_id = worker.submit_economic(series_id="PAYEMS")
+    assert ledger.get(run_id)["status"] == "queued"
+    claim = ledger.claim_next_job()
+    assert claim["payload"]["schema_version"] == "economic_observations.v2"

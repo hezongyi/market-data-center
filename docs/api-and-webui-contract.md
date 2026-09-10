@@ -9,4 +9,4 @@ metrics 只返回聚合状态，不返回 provider 原始响应、URL 或密钥�
 
 Web UI 只调用 API，不直接读取 Parquet 或 SQLite。MVP 页面：Overview、Datasets、Runs、Quality、Data Explorer。
 
-经济数据：`POST /api/v1/economic/ingest` 触发受鉴权的 FRED ingest；`GET /api/v1/economic/observations` 只读取 canonical Parquet，支持 `provider`、`series_id`、`start` 和 `end`。查询接口绝不在请求中直接调用 provider。
+经济数据：`POST /api/v1/economic/ingest` 触发受鉴权的 FRED ingest，并写入 `economic_observations.v2`；`GET /api/v1/economic/observations` 只读取 canonical Parquet，支持 `provider`、`series_id`、`start`、`end`、`mode=current|pit` 和 PIT 所需的 `asof_ts`。响应 `meta.economic_schema_version` 标明 v2 契约。查询接口绝不在请求中直接调用 provider。

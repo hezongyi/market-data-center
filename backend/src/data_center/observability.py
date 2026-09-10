@@ -77,9 +77,12 @@ def check_alerts(ledger, sink: AlertSink, *, heartbeat_limit=60, backlog_limit=3
     return [event_id for event_id in event_ids if event_id]
 
 
-def deliver_alerts(sink: AlertSink, webhook_url: str | None = None) -> dict:
+def deliver_alerts(sink: AlertSink, webhook_url: str | None = None, *, max_attempts: int = 3,
+                   backoff_seconds: float = 0.0) -> dict:
     """Explicit maintenance delivery. Receiver deduplicates by Idempotency-Key after a crash."""
     import requests
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
     if not webhook_url or not sink.enabled:
         return {'status': 'disabled', 'delivered': 0, 'failed': 0}
     sent = failed = 0
@@ -89,12 +92,20 @@ def deliver_alerts(sink: AlertSink, webhook_url: str | None = None) -> dict:
         for event in events:
             if conn.execute('select 1 from deliveries where event_id=?', (event['event_id'],)).fetchone():
                 continue
-            try:
-                response = requests.post(webhook_url, json=event, timeout=5,
-                                         headers={'Idempotency-Key': event['event_id']}, allow_redirects=False)
-                if not 200 <= response.status_code < 300:
-                    raise RuntimeError('alert delivery failed')
-            except (requests.RequestException, RuntimeError):
+            delivered = False
+            for attempt in range(max_attempts):
+                try:
+                    response = requests.post(webhook_url, json=event, timeout=5,
+                                             headers={'Idempotency-Key': event['event_id']}, allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        raise RuntimeError('alert delivery failed')
+                    delivered = True
+                    break
+                except (requests.RequestException, RuntimeError):
+                    if backoff_seconds and attempt + 1 < max_attempts:
+                        import time
+                        time.sleep(backoff_seconds * (2 ** attempt))
+            if not delivered:
                 failed += 1
                 continue
             conn.execute('insert or ignore into deliveries values (?,?)',

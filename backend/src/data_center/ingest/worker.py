@@ -34,9 +34,10 @@ class LocalWorker:
     def submit(self, job: IngestJob):
         return self.ledger.enqueue_job(job.model_dump(mode="json"))
 
-    def submit_economic(self, *, series_id, start=None, end=None):
+    def submit_economic(self, *, series_id, start=None, end=None, schema_version="economic_observations.v2"):
         return self.ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
-                                        "provider": "fred", "series_id": series_id, "start": start, "end": end})
+                                        "provider": "fred", "series_id": series_id, "start": start, "end": end,
+                                        "schema_version": schema_version})
 
     @contextmanager
     def _ownership(self):

@@ -201,10 +201,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/economic/observations")
     def economic_observations(series_id: str, provider: str = "fred", start: str | None = None,
-                              end: str | None = None, asof_ts: str | None = None) -> dict:
+                              end: str | None = None, asof_ts: str | None = None,
+                              mode: str = "current") -> dict:
+        if mode not in {"current", "pit"}:
+            raise HTTPException(status_code=422, detail="mode must be current or pit")
+        if mode == "pit" and not asof_ts:
+            raise HTTPException(status_code=422, detail="pit mode requires asof_ts")
+        effective_mode = "pit" if mode == "current" and asof_ts is not None else mode
         rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id,
-                                           start=start, end=end, asof_ts=asof_ts)
-        return {"data": rows, "meta": {"request_id": current_request_id(), "schema_version": "v1", "count": len(rows)}, "errors": []}
+                                           start=start, end=end, asof_ts=asof_ts, mode=mode)
+        economic_versions = {"v2" if "source" in row else "v1" for row in rows}
+        economic_schema_version = next(iter(economic_versions)) if len(economic_versions) == 1 else "mixed"
+        return {"data": rows, "meta": {"request_id": current_request_id(), "schema_version": "v1", "economic_schema_version": economic_schema_version, "query_mode": effective_mode, "count": len(rows)}, "errors": []}
 
     @app.get(f"{config.api_prefix}/economic/coverage")
     def economic_dataset_coverage(series_id: str, provider: str = "fred") -> dict:
@@ -217,6 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid api key")
         run_id = ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
                                     "provider": "fred", "series_id": series_id, "start": start, "end": end,
+                                    "schema_version": "economic_observations.v2",
                                     "request_id": current_request_id()})
         payload = {"run_id": run_id, "dataset_id": "economic_observations", "series_id": series_id, "status": "queued"}
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}

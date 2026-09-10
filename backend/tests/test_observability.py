@@ -36,6 +36,27 @@ def test_alerts_idempotent_disabled_and_delivery_failure(tmp_path, monkeypatch):
     assert len(sink.events()) == 1
 
 
+def test_alert_delivery_retries_with_stable_idempotency_key(tmp_path, monkeypatch):
+    sink = AlertSink(tmp_path)
+    sink.emit("quality_failed", identity="run-2", fields={"run_id": "run-2", "request_id": "req-2"})
+    calls = []
+
+    class Response:
+        status_code = 200
+
+    def post(url, **kwargs):
+        calls.append(kwargs["headers"]["Idempotency-Key"])
+        if len(calls) < 3:
+            raise RuntimeError("temporary")
+        return Response()
+
+    monkeypatch.setattr("requests.post", post)
+    assert deliver_alerts(sink, "http://example.test", max_attempts=3) == {
+        "status": "pass", "delivered": 1, "failed": 0,
+    }
+    assert len(calls) == 3 and len(set(calls)) == 1
+
+
 def test_metrics_and_monitor_detect_backlog_and_quality(tmp_path):
     ledger = RunLedger(tmp_path / 'ledger.sqlite')
     run_id = ledger.enqueue_job({'job_id': 'job', 'dataset_id': 'provider_bars'})

@@ -4,6 +4,6 @@ canonical root 由配置注入，默认不写入代码仓库。Parquet 是数据
 
 建议分区：`provider_bars/provider={provider}/asset_class={asset_class}/symbol={symbol}/timeframe={timeframe}/year={year}`。
 
-经济数据分区为 `economic_observations/provider={provider}/series_id={series_id}`。每个 ingest 写入带 `run_id` 的新 Parquet part，不覆盖已存在的数据版本。
+经济数据分区为 `economic_observations/provider={provider}/series_id={series_id}`。每个 ingest 写入带 `run_id` 的新 Parquet part，不覆盖已存在的数据版本。新 FRED ingest 使用 `economic_observations.v2`，历史 v1 manifest 保持只读兼容；查询只读取已验证发布的 v1/v2 manifest。
 
 写入必须经过 catalog path resolver；应用层不得拼接 canonical 路径。每次写入产生不可变 output hash 和 receipt。`provider_bars` 每个 run 按年写入独立 Parquet part；读取 current state 时按 dataset 主键取最新 `ingest_ts`，不覆盖历史 part。

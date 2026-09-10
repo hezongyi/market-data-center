@@ -4,6 +4,8 @@ import fcntl
 import gzip
 import json
 import os
+import platform
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +15,16 @@ import requests
 
 from data_center.observability import AlertSink
 from data_center.settings import Settings
+
+
+def evidence_context() -> dict:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True,
+                                         stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = os.getenv("GIT_COMMIT", "unknown")
+    return {"commit": commit, "python": platform.python_version(), "host": platform.node()}
 
 
 def archive_receipts(root: Path, keep_days: int = 90):
@@ -47,7 +59,10 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
     except OSError:
         pass
     with (root / ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "skipped", "reason": "acceptance_busy"}
         last = root / "last-attempt"
         if last.exists() and time.time() - float(last.read_text()) < interval_seconds:
             return {"status": "skipped", "reason": "minimum_interval"}
@@ -65,6 +80,7 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
         now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         report = {"acceptance_id": uuid4().hex, "checked_at": datetime.now(timezone.utc).isoformat(),
                   "validation_command": "python -m data_center.acceptance", "base_url": base_url,
+                  "environment": evidence_context(),
                   "status": "pass", "providers": []}
         for index, (provider, symbol) in enumerate((("binance", "BTCUSDT"), ("yfinance", "SPY"), ("fred", "PAYEMS"))):
             if index:

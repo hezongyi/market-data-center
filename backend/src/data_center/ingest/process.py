@@ -16,7 +16,8 @@ def main():
     try:
         if job["dataset_id"] == "economic_observations":
             receipt = run_fred_ingest(series_id=job["series_id"], root=directory / "parts",
-                                      start=job.get("start"), end=job.get("end"), run_id=request["run_id"])
+                                      start=job.get("start"), end=job.get("end"), run_id=request["run_id"],
+                                      schema_version=job.get("schema_version", "economic_observations.v2"))
         else:
             receipt = run_fixture_ingest(IngestJob.model_validate(job), directory / "parts", run_id=request["run_id"])
         result = {"receipt": receipt}

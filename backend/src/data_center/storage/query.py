@@ -39,7 +39,15 @@ def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: st
 
 
 def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None,
-                                end: str | None = None, asof_ts: str | None = None) -> list[dict]:
+                                end: str | None = None, asof_ts: str | None = None,
+                                mode: str = "current") -> list[dict]:
+    if mode not in {"current", "pit"}:
+        raise ValueError("economic query mode must be current or pit")
+    # Preserve the v1 client contract where supplying asof_ts selected PIT mode.
+    if mode == "current" and asof_ts is not None:
+        mode = "pit"
+    if mode == "pit" and not asof_ts:
+        raise ValueError("pit query requires asof_ts")
     files = [path for path in published_files(root, "economic_observations")
              if f"provider={provider}" in path.parts and f"series_id={series_id}" in path.parts]
     if not files:
@@ -51,9 +59,10 @@ def query_economic_observations(root: Path, *, provider: str, series_id: str, st
     if end is not None:
         clauses.append("observation_date <= ?")
         params.append(end)
-    if asof_ts is not None:
+    if mode == "pit":
         # PIT reads exclude unknown release timing instead of treating ingest time as release time.
-        clauses.append("asof_ts <= ? and ((availability_policy = 'realtime_vintage' and vintage_start <= ?) or (availability_policy = 'release_date_known' and release_ts <= ?))")
+        # A declared lag is applied to the provider release/vintage boundary.
+        clauses.append("cast(asof_ts as timestamptz) <= cast(? as timestamptz) and ((availability_policy = 'realtime_vintage' and cast(vintage_start as date) + coalesce(availability_lag_days, 0) * interval '1 day' <= cast(? as date)) or (availability_policy = 'release_date_known' and cast(release_ts as timestamptz) + coalesce(availability_lag_days, 0) * interval '1 day' <= cast(? as timestamptz)))")
         params.extend([asof_ts, asof_ts[:10], asof_ts])
         order = "case when availability_policy = 'realtime_vintage' then vintage_start else release_ts end desc, asof_ts desc"
     else:
