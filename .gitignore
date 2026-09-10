@@ -6,4 +6,4 @@ node_modules/
 dist/
 acceptance-receipts/
 .env.local
-.venv/
+.venv*/

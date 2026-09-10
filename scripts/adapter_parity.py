@@ -1,13 +1,13 @@
 """Compare the installed macro-market-lab read adapter with canonical current state."""
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-from data_center.storage.query import query_provider_bars
 from data_center.settings import Settings
+from data_center.storage.query import query_provider_bars
 
 
 def main():

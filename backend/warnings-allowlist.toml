@@ -1,0 +1,7 @@
+[[warning]]
+dependency = "starlette==1.6.0 / anyio==4.15.1"
+message = "The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead."
+category = "DeprecationWarning"
+module = "starlette.testclient"
+reason = "Upstream Starlette 1.6.0 still imports the deprecated AnyIO alias; the warning is isolated to TestClient typing."
+expires = "2026-12-10"

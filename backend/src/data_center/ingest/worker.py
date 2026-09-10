@@ -24,12 +24,14 @@ from data_center.observability import check_alerts
 class LocalWorker:
     """Durable submitter and a single supervisor per ledger, guarded by flock."""
 
-    def __init__(self, root, ledger, timeout_seconds=120.0, retry_delay_seconds=30.0, alert_sink=None):
+    def __init__(self, root, ledger, timeout_seconds=120.0, retry_delay_seconds=30.0, alert_sink=None,
+                 capacity_policy=None):
         self.root = Path(root)
         self.ledger = ledger
         self.timeout_seconds = timeout_seconds
         self.retry_delay_seconds = retry_delay_seconds
         self.alert_sink = alert_sink
+        self.capacity_policy = capacity_policy
 
     def submit(self, job: IngestJob):
         return self.ledger.enqueue_job(job.model_dump(mode="json"))
@@ -117,7 +119,10 @@ class LocalWorker:
             self._recover()
             self.ledger.heartbeat()
             if self.alert_sink is not None:
-                check_alerts(self.ledger, self.alert_sink)
+                check_alerts(self.ledger, self.alert_sink, canonical_root=self.root,
+                             capacity_policy=self.capacity_policy)
+            if self.capacity_policy is not None and self.capacity_policy.inspect(self.root).status == "critical":
+                return False
             claimed = self.ledger.claim_next_job()
             if claimed is None:
                 return False
@@ -164,7 +169,8 @@ class LocalWorker:
                     process.wait()
             self.ledger.heartbeat()
             if self.alert_sink is not None:
-                check_alerts(self.ledger, self.alert_sink)
+                check_alerts(self.ledger, self.alert_sink, canonical_root=self.root,
+                             capacity_policy=self.capacity_policy)
             print(json.dumps({"event": "ingest_finished", "run_id": claimed["run_id"],
                               "request_id": claimed["payload"].get("request_id"), "attempt": claimed["attempts"],
                               "job_id": claimed["payload"]["job_id"], "provider": claimed["payload"].get("provider"),

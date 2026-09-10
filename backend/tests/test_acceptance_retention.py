@@ -1,17 +1,34 @@
 import gzip
 import os
+import tarfile
 import time
+import tracemalloc
 
 import pytest
 
 from data_center.acceptance import archive_receipts, run_acceptance
 from data_center.operations import (
+    BACKUP_FORMAT_V2,
     create_backup,
     daily_chunks,
     recovery_drill,
     restore_backup,
     retention_audit,
+    verify_backup,
 )
+
+
+def publish_test_part(root, part):
+    import hashlib
+    import json
+
+    manifest = root / ".manifests" / "test-run.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({
+        "run_id": "test-run", "status": "published",
+        "parts": [{"path": str(part.relative_to(root)), "bytes": part.stat().st_size,
+                   "sha256": hashlib.sha256(part.read_bytes()).hexdigest()}],
+    }))
 
 
 def test_old_receipts_are_losslessly_archived(tmp_path):
@@ -50,6 +67,7 @@ def test_acceptance_unreachable_service_persists_alert(tmp_path):
 def test_retention_audit_does_not_change_data(tmp_path):
     part = tmp_path / "part.parquet"
     part.write_bytes(b"unchanged")
+    publish_test_part(tmp_path, part)
     os.utime(part, (time.time() - 40 * 86400,) * 2)
     report = retention_audit(tmp_path)
     assert report["canonical"]["old_files"] == 1
@@ -105,24 +123,143 @@ def test_backup_restore_is_verified_and_never_overwrites_conflicts(tmp_path):
     part.parent.mkdir(parents=True)
     ledger.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(b"canonical-bytes")
+    publish_test_part(root, part)
     ledger.write_bytes(b"ledger-bytes")
     (root / ".ingest-staging" / "running" / "part.parquet").parent.mkdir(parents=True)
     (root / ".ingest-staging" / "running" / "part.parquet").write_bytes(b"live")
     archive = tmp_path / "backup.tar.gz"
     report = create_backup(root, ledger, archive)
-    assert report["status"] == "pass" and report["file_count"] == 2
+    assert report["status"] == "pass" and report["file_count"] == 3
+    assert report["format"] == BACKUP_FORMAT_V2
+    assert report["source_commit"]
+    assert verify_backup(archive)["status"] == "pass"
     restored = tmp_path / "restored"
     restored_ledger = restored / "audit" / "data_center.sqlite"
-    assert restore_backup(archive, restored, restored_ledger)["restored"] == 2
+    assert restore_backup(archive, restored, restored_ledger)["restored"] == 3
     assert (restored / "provider_bars/part.parquet").read_bytes() == b"canonical-bytes"
-    assert (restored / "audit/ledger.sqlite").read_bytes() == b"ledger-bytes"
+    assert restored_ledger.read_bytes() == b"ledger-bytes"
     with pytest.raises(ValueError, match="differs"):
         (restored / "provider_bars/part.parquet").write_bytes(b"changed")
         restore_backup(archive, restored, restored_ledger)
     drill = recovery_drill(root, ledger, tmp_path / "drill")
-    assert drill["status"] == "pass" and drill["file_count"] == 2
+    assert drill["status"] == "pass" and drill["file_count"] == 3
 
 
 def test_backup_rejects_ledger_outside_canonical_root(tmp_path):
     with pytest.raises(ValueError, match="inside"):
         create_backup(tmp_path / "canonical", tmp_path / "outside.sqlite", tmp_path / "backup.tar.gz")
+
+
+def test_backup_failure_keeps_only_identifiable_temporary_artifact(tmp_path, monkeypatch):
+    root = tmp_path / "canonical"
+    ledger = root / "audit" / "ledger.sqlite"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger")
+    destination = tmp_path / "backup.tar.gz"
+    monkeypatch.setattr("data_center.operations._verify_backup",
+                        lambda path: (_ for _ in ()).throw(ValueError("stop")))
+    with pytest.raises(ValueError, match="stop"):
+        create_backup(root, ledger, destination)
+    assert not destination.exists()
+    partials = list(tmp_path.glob(".*.partial"))
+    assert len(partials) == 1
+    with pytest.raises(ValueError, match="temporary"):
+        restore_backup(partials[0], tmp_path / "restore", tmp_path / "restore/audit/ledger.sqlite")
+
+
+def test_backup_directory_sync_failure_reverts_final_to_partial(tmp_path, monkeypatch):
+    root = tmp_path / "canonical"
+    ledger = root / "audit" / "ledger.sqlite"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger")
+    destination = tmp_path / "backup.tar.gz"
+    monkeypatch.setattr("data_center.operations._fsync_directory",
+                        lambda path: (_ for _ in ()).throw(OSError("sync failed")))
+    with pytest.raises(OSError, match="sync failed"):
+        create_backup(root, ledger, destination)
+    assert not destination.exists()
+    assert len(list(tmp_path.glob(".*.partial"))) == 1
+
+
+def test_restore_v1_compatibility_and_streaming_memory(tmp_path):
+    root = tmp_path / "source"
+    ledger = root / "audit" / "ledger.sqlite"
+    part = root / "provider_bars" / "large.parquet"
+    ledger.parent.mkdir(parents=True)
+    part.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger")
+    part.write_bytes(os.urandom(12 * 1024 * 1024))
+    entries = [
+        {"path": "canonical/provider_bars/large.parquet", "bytes": part.stat().st_size,
+         "sha256": __import__("hashlib").sha256(part.read_bytes()).hexdigest()},
+        {"path": "ledger.sqlite", "bytes": ledger.stat().st_size,
+         "sha256": __import__("hashlib").sha256(ledger.read_bytes()).hexdigest()},
+    ]
+    archive = tmp_path / "v1.tar.gz"
+    metadata = {"format": "market-data-center-backup.v1", "files": entries}
+    with tarfile.open(archive, "w:gz") as output:
+        output.add(part, arcname=entries[0]["path"])
+        output.add(ledger, arcname=entries[1]["path"])
+        encoded = __import__("json").dumps(metadata).encode()
+        info = tarfile.TarInfo("backup.json")
+        info.size = len(encoded)
+        output.addfile(info, __import__("io").BytesIO(encoded))
+    tracemalloc.start()
+    report = restore_backup(archive, tmp_path / "restored", tmp_path / "restored/audit/ledger.sqlite")
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert report["format"] == "market-data-center-backup.v1"
+    assert peak < 8 * 1024 * 1024
+
+
+def test_backup_can_enforce_distinct_fault_domain(tmp_path):
+    root = tmp_path / "canonical"
+    ledger = root / "audit" / "ledger.sqlite"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger")
+    with pytest.raises(ValueError, match="distinct storage device"):
+        create_backup(root, ledger, tmp_path / "backup.tar.gz", require_distinct_device=True)
+
+
+def test_failed_verify_and_restore_write_safe_receipts(tmp_path):
+    evidence = tmp_path / "evidence"
+    invalid = tmp_path / "invalid.tar.gz"
+    invalid.write_bytes(b"not-a-tar")
+    with pytest.raises(tarfile.ReadError):
+        verify_backup(invalid, evidence_root=evidence)
+    with pytest.raises(tarfile.ReadError):
+        restore_backup(invalid, tmp_path / "restore", tmp_path / "restore/audit/ledger.sqlite",
+                       evidence_root=evidence)
+    receipts = [__import__("json").loads(path.read_text()) for path in evidence.rglob("*.json")]
+    assert {receipt["action"] for receipt in receipts} == {"backup_verify", "restore"}
+    assert all(receipt["result"] == "failed" and receipt["error_category"] == "ReadError"
+               for receipt in receipts)
+
+
+def test_restore_atomic_publish_never_replaces_racing_target(tmp_path, monkeypatch):
+    root = tmp_path / "canonical"
+    ledger = root / "audit" / "ledger.sqlite"
+    part = root / "provider_bars" / "part.parquet"
+    ledger.parent.mkdir(parents=True)
+    part.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger")
+    part.write_bytes(b"canonical")
+    publish_test_part(root, part)
+    archive = tmp_path / "backup.tar.gz"
+    create_backup(root, ledger, archive)
+    restore_root = tmp_path / "restore"
+    target = restore_root / "provider_bars" / "part.parquet"
+
+    from data_center import operations
+
+    original = operations._atomic_publish_no_replace
+
+    def racing_publish(temporary, destination):
+        if destination == target and not destination.exists():
+            destination.write_bytes(b"racing-writer")
+        return original(temporary, destination)
+
+    monkeypatch.setattr(operations, "_atomic_publish_no_replace", racing_publish)
+    with pytest.raises(ValueError, match="differs"):
+        restore_backup(archive, restore_root, restore_root / "audit/ledger.sqlite")
+    assert target.read_bytes() == b"racing-writer"

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/market-data-center/release-receipt.v1.json",
+  "title": "Market Data Center release receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_version", "version", "tag", "commit", "released_at", "result",
+    "hosted_ci", "runtime_matrix", "dependency_artifacts", "compatibility",
+    "backup_format", "migration_status", "rollback", "evidence"
+  ],
+  "properties": {
+    "receipt_version": {"const": "release-receipt.v1"},
+    "version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "tag": {"type": "string"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "released_at": {"type": "string", "format": "date-time"},
+    "result": {"enum": ["pass", "failed"]},
+    "hosted_ci": {"type": "object"},
+    "runtime_matrix": {"type": "object"},
+    "dependency_artifacts": {"type": "array", "items": {"type": "string"}},
+    "compatibility": {"type": "string"},
+    "backup_format": {"type": "string"},
+    "migration_status": {"type": "object"},
+    "rollback": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}}
+  }
+}

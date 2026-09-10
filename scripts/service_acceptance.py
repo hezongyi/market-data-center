@@ -1,12 +1,12 @@
 """Start isolated real API/worker processes and verify durable restart and retry."""
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import requests
 

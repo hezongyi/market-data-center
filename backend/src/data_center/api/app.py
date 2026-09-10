@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
+from data_center.capacity import CapacityProtectedError
 from data_center.catalog.manifest import (
     PublicationError,
     manifest_path,
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     query_engine = QueryEngine(config.canonical_root)
+    capacity_policy = config.capacity_policy()
 
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
@@ -100,6 +102,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.exception_handler(CapacityProtectedError)
+    async def capacity_protected_handler(request: Request, exc: CapacityProtectedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=507,
+            content={
+                "data": {"write_status": "protected", "capacity": exc.snapshot.as_dict()},
+                "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                "errors": [{"code": "capacity_protected", "message": str(exc)}],
+            },
+        )
+
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
         return {
@@ -128,15 +141,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conn.rollback()
             age = ledger.heartbeat_age_seconds()
             ready = age is not None and age < 60
+            capacity = capacity_policy.inspect(config.canonical_root)
             status_code = 200 if ready else 503
             status = "ready" if ready else "not_ready"
         except (OSError, sqlite3.Error):
-            status_code, status, age = 503, "not_ready", None
-        return JSONResponse(status_code=status_code, content={"data": {"status": status, "worker_heartbeat_age_seconds": age}, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []})
+            status_code, status, age, capacity = 503, "not_ready", None, None
+        return JSONResponse(status_code=status_code, content={"data": {
+            "status": status, "read_status": "available" if ready else "unavailable",
+            "write_status": "protected" if capacity and capacity.status == "critical" else "available",
+            "capacity_status": capacity.status if capacity else "unknown",
+            "worker_heartbeat_age_seconds": age,
+        }, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []})
 
     @app.get(f"{config.api_prefix}/metrics")
     def metrics() -> dict:
-        payload = run_metrics(ledger)
+        payload = run_metrics(
+            ledger, canonical_root=config.canonical_root, evidence_root=config.evidence_root,
+            backup_root=config.backup_root, capacity_policy=capacity_policy,
+        )
         payload["query"] = query_engine.metrics.snapshot(query_engine.catalog)
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
@@ -149,6 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
+        capacity_policy.require_ingest_capacity(config.canonical_root)
         try:
             new_id = ledger.retry_run(run_id)
         except KeyError:
@@ -183,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
+        capacity_policy.require_ingest_capacity(config.canonical_root)
         run_id = ledger.enqueue_job({**job.model_dump(mode="json"), "request_id": current_request_id()})
         payload = {"status": "queued", "job_id": job.job_id, "run_id": run_id}
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
@@ -274,6 +298,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
+        capacity_policy.require_ingest_capacity(config.canonical_root)
         run_id = ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
                                     "provider": "fred", "series_id": series_id, "start": start, "end": end,
                                     "schema_version": "economic_observations.v2",
