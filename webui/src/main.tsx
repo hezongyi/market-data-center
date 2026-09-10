@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./style.css";
 
 type Tab = "overview" | "datasets" | "runs" | "quality" | "explorer";
-type Envelope<T> = { data: T; errors: Array<{ message: string }> };
+type Envelope<T> = { data: T; meta: { next_cursor?: string | null }; errors: Array<{ message: string }> };
 type Dataset = { dataset_id: string; schema_version: string; description: string; partitioning: string[] };
 type Run = { run_id: string; dataset_id: string; status: string; job_id?: string; row_count?: number; created_at?: string; error_type?: string; retry_count?: number; retry_of?: string; error?: string };
 type Finding = { severity: string; code: string; dataset_id?: string; observation_date?: string; bar_ts?: string };
@@ -40,6 +40,21 @@ function App() {
     return payload.data;
   };
 
+  const pagedRequest = async <T,>(path: string): Promise<T[]> => {
+    const rows: T[] = [];
+    let cursor: string | null = null;
+    do {
+      const separator = path.includes("?") ? "&" : "?";
+      const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const response = await fetch(`/api/v1${path}${separator}page_size=1000${cursorQuery}`);
+      const payload = await response.json() as Envelope<T[]>;
+      if (!response.ok) throw new Error(payload.errors.map((error) => error.message).join(", ") || "Request failed");
+      rows.push(...payload.data);
+      cursor = payload.meta.next_cursor ?? null;
+    } while (cursor);
+    return rows;
+  };
+
   const refresh = async () => {
     try {
       const [service, registry, runList, quality] = await Promise.all([
@@ -64,7 +79,7 @@ function App() {
   const loadBars = async () => {
     try {
       const query = `provider=${encodeURIComponent(provider)}&symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`;
-      const [rows, currentCoverage] = await Promise.all([request<Bar[]>(`/bars?${query}`), request<Record<string, unknown>>(`/provider-bars/coverage?${query}`)]);
+      const [rows, currentCoverage] = await Promise.all([pagedRequest<Bar>(`/bars?${query}`), request<Record<string, unknown>>(`/provider-bars/coverage?${query}`)]);
       setBars(rows); setCoverage(currentCoverage); setMessage("");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to load bars"); }
   };
