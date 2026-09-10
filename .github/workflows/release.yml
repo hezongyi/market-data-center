@@ -43,6 +43,15 @@ jobs:
           git rev-parse "refs/tags/$tag" >/dev/null
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-list -n 1 "$tag")" >> "$GITHUB_OUTPUT"
+      - name: Verify tag belongs to protected main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          commit="${{ steps.release.outputs.commit }}"
+          git merge-base --is-ancestor "$commit" origin/main || {
+            echo "release tag commit $commit is not reachable from protected main" >&2
+            exit 1
+          }
       - name: Verify protected-main required check
         id: check
         shell: bash
