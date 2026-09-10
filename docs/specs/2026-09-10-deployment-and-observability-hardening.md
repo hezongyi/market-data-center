@@ -1,7 +1,7 @@
 # Deployment and Observability Hardening Specification
 
 日期：2026-09-10
-状态：proposed
+状态：implemented / accepted
 前置 spec：`2026-09-10-production-hardening-and-consumer-migration`、`2026-09-10-release-and-operational-sustainability`、`2026-09-10-query-contract-and-scalability`
 
 ## 目标
