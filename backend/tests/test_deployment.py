@@ -8,6 +8,7 @@ from data_center.deployment import (
     MANIFEST_HASH_FILE,
     DeploymentManifest,
     DeploymentService,
+    _configured_data_hash,
     runtime_identity,
     sha256_path,
     validated_runtime_identity,
@@ -113,6 +114,27 @@ def test_activation_failure_restores_previous_release_and_records_receipt(tmp_pa
     assert ledger.read_bytes() == ledger_before
 
 
+def test_activation_failure_can_recover_pre_sidecar_current_release(tmp_path, monkeypatch):
+    root = tmp_path / "releases"
+    previous = release(root, "legacy-current")
+    (previous / MANIFEST_HASH_FILE).unlink()
+    release(root, "candidate")
+    (root / "current").symlink_to(previous)
+    service = DeploymentService(tmp_path, root, evidence_root=tmp_path / "evidence")
+    calls = []
+
+    def verify(identity):
+        calls.append(identity["deployment_id"])
+        if identity["deployment_id"] == "candidate":
+            raise RuntimeError("injected readiness failure")
+
+    monkeypatch.setattr(service, "_restart_and_verify", verify)
+    with pytest.raises(RuntimeError, match="injected"):
+        service.activate("candidate")
+    assert (root / "current").resolve() == previous.resolve()
+    assert calls == ["candidate", "legacy-current"]
+
+
 def test_initial_activation_failure_removes_current_pointer(tmp_path, monkeypatch):
     root = tmp_path / "releases"
     release(root, "candidate")
@@ -162,6 +184,20 @@ def test_successful_activation_preserves_canonical_and_ledger(tmp_path, monkeypa
     assert result["ledger_hash_unchanged"] is True
     assert manifest.read_text() == '{"stable": true}\n'
     assert ledger.read_bytes() == b"stable-ledger"
+
+
+def test_logical_ledger_hash_ignores_heartbeat_but_detects_run_changes(tmp_path, monkeypatch):
+    from data_center.runs.ledger import RunLedger
+
+    path = tmp_path / "ledger.sqlite"
+    ledger = RunLedger(path)
+    run_id = ledger.enqueue_job({"job_id": "x", "dataset_id": "provider_bars"})
+    monkeypatch.setenv("DATACENTER_LEDGER_PATH", str(path))
+    before = _configured_data_hash("DATACENTER_LEDGER_PATH")
+    ledger.heartbeat()
+    assert _configured_data_hash("DATACENTER_LEDGER_PATH") == before
+    ledger.update(run_id, request_id="changed")
+    assert _configured_data_hash("DATACENTER_LEDGER_PATH") != before
 
 
 def test_dirty_checkout_is_rejected_before_build(tmp_path):

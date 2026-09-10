@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -213,7 +214,7 @@ class DeploymentService:
             if previous is not None:
                 self._point_current(previous)
                 try:
-                    self._restart_and_verify(runtime_identity(previous / "deployment.json"))
+                    self._restart_and_verify(self._recovery_identity(previous))
                 except Exception as recovery_exc:
                     self._receipt(action, started, "failed", {
                         "deployment_id": release_id,
@@ -308,7 +309,26 @@ class DeploymentService:
 
     def _current_target(self) -> Path | None:
         current = self.release_root / "current"
-        return current.resolve() if current.is_symlink() else None
+        if not current.is_symlink():
+            return None
+        target = current.resolve()
+        if target.parent != self.release_root or not target.is_dir():
+            raise RuntimeError("current release pointer escapes release root")
+        return target
+
+    @staticmethod
+    def _recovery_identity(target: Path) -> dict:
+        """Allow recovery to the pre-hardening current release, never activation to it."""
+        try:
+            return runtime_identity(target / "deployment.json")
+        except RuntimeError as exc:
+            if "manifest hash mismatch" not in str(exc):
+                raise
+        path = target / "deployment.json"
+        manifest = DeploymentManifest.load(path)
+        if sha256_path(target) != manifest.artifact_sha256 or (target / ".git").exists():
+            raise RuntimeError("legacy recovery release failed artifact validation")
+        return manifest.as_dict()
 
     def _point_current(self, target: Path) -> None:
         link = self.release_root / f".current-{uuid4().hex}"
@@ -399,11 +419,35 @@ def _configured_data_hash(name: str) -> str | None:
     if not path or not path.exists():
         return None
     if path.is_file():
+        if name == "DATACENTER_LEDGER_PATH":
+            try:
+                return _sqlite_logical_hash(path)
+            except sqlite3.Error:
+                pass
         return sha256_path(path)
     digest = hashlib.sha256()
     for item in sorted(path.glob("**/manifest.json")):
         digest.update(str(item.relative_to(path)).encode())
         digest.update(sha256_path(item).encode())
+    return digest.hexdigest()
+
+
+def _sqlite_logical_hash(path: Path) -> str:
+    """Hash ledger state while excluding the expected mutable worker heartbeat."""
+    digest = hashlib.sha256()
+    tables = ("runs", "jobs", "quality_findings", "dead_letter_state", "dead_letter_audit")
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+        existing = {row[0] for row in database.execute(
+            "select name from sqlite_master where type='table' and name not like 'sqlite_%'"
+        )}
+        for table in tables:
+            if table not in existing:
+                continue
+            digest.update(table.encode())
+            columns = [row[1] for row in database.execute(f"pragma table_info({table})")]
+            order = ",".join(f'"{column}"' for column in columns)
+            for row in database.execute(f'select * from "{table}" order by {order}'):
+                digest.update(json.dumps(row, sort_keys=True, default=str).encode())
     return digest.hexdigest()
 
 
