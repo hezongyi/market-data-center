@@ -74,6 +74,25 @@ def test_metrics_and_monitor_detect_backlog_and_quality(tmp_path):
     assert any(e['event'] == 'quality_failed' and e['run_id'] == run_id for e in sink.events())
 
 
+def test_metrics_include_capacity_backup_recovery_and_temporary_counts(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    evidence = tmp_path / "evidence"
+    backup_root = tmp_path / "backups"
+    backup_root.mkdir()
+    (backup_root / ".incomplete.partial").write_bytes(b"partial")
+    for action, completed in (("backup", "2026-09-10T01:00:00+00:00"),
+                              ("recovery_drill", "2026-09-10T02:00:00+00:00")):
+        target = evidence / "operations" / action / "receipt.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"action": action, "result": "pass", "completed_at": completed}))
+    metrics = run_metrics(ledger, canonical_root=tmp_path, evidence_root=evidence,
+                          backup_root=backup_root)
+    assert metrics["capacity"]["status"] in {"ok", "warning", "critical"}
+    assert metrics["temporary_backup_count"] == 1
+    assert metrics["last_successful_backup_at"] == "2026-09-10T01:00:00+00:00"
+    assert metrics["last_successful_recovery_drill_at"] == "2026-09-10T02:00:00+00:00"
+
+
 def test_all_write_endpoints_refuse_unauthorized_requests(tmp_path):
     client = TestClient(create_app(Settings(canonical_root=tmp_path/'lake', ledger_path=tmp_path/'ledger', api_key='test-key')))
     job = {'job_id': 'test', 'symbol': 'TEST', 'start': '2026-01-01T00:00:00Z', 'end': '2026-01-02T00:00:00Z'}

@@ -1,0 +1,59 @@
+name: Dependency Refresh
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Resolve candidate transitive locks
+        run: |
+          python -m pip install uv
+          for version in 3.10 3.11 3.12; do
+            uv pip compile backend/pyproject.toml --extra dev --python-version "$version" --universal \
+              --no-emit-index-url --no-emit-find-links --output-file "backend/constraints/py${version//./}.txt"
+          done
+      - name: Validate all supported Python runtimes
+        run: |
+          for version in 3.10 3.11 3.12; do
+            suffix="${version//./}"
+            uv venv --seed --python "$version" ".venv-$suffix"
+            uv pip install --python ".venv-$suffix/bin/python" -c "backend/constraints/py$suffix.txt" -e './backend[dev]'
+            DATACENTER_PYTHON=".venv-$suffix/bin/python" \
+              DATACENTER_CI_RECEIPT="acceptance-receipts/dependency-refresh-python-$version.json" \
+              DATACENTER_CI_ACTION=dependency_refresh bash scripts/ci.sh backend
+          done
+      - run: npm --prefix webui ci
+      - run: npx --prefix webui playwright install --with-deps chromium
+      - name: Validate service and browser acceptance
+        env:
+          DATACENTER_PYTHON: .venv-311/bin/python
+          DATACENTER_CI_RECEIPT: acceptance-receipts/dependency-refresh.json
+          DATACENTER_CI_ACTION: dependency_refresh
+        run: bash scripts/ci.sh web
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-refresh-candidate-and-receipts
+          path: |
+            backend/constraints/
+            acceptance-receipts/dependency-refresh*.json
+            acceptance-receipts/browser/

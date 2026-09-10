@@ -7,8 +7,25 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from data_center.capacity import CapacityPolicy
 
-def run_metrics(ledger) -> dict:
+
+def _latest_success(root: Path | None, action: str) -> str | None:
+    if root is None or not root.exists():
+        return None
+    latest = None
+    for path in (root / "operations" / action).glob("*.json"):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("action") == action and payload.get("result") == "pass":
+            latest = max(filter(None, (latest, payload.get("completed_at"))), default=None)
+    return latest
+
+
+def run_metrics(ledger, *, canonical_root: Path | None = None, evidence_root: Path | None = None,
+                backup_root: Path | None = None, capacity_policy: CapacityPolicy | None = None) -> dict:
     runs = ledger.list()
     now = datetime.now(timezone.utc)
     counts = {status: sum(r.get('status') == status for r in runs)
@@ -18,7 +35,7 @@ def run_metrics(ledger) -> dict:
     queue_ages = [(now - datetime.fromisoformat(r['created_at'])).total_seconds()
                  for r in runs if r.get('status') == 'queued']
     terminal = sum(counts[s] for s in ('pass', 'failed', 'dead_letter'))
-    return {'runs_total': len(runs), 'runs_by_status': counts,
+    payload = {'runs_total': len(runs), 'runs_by_status': counts,
             'retry_attempts_total': sum(r.get('retry_count', 0) for r in runs),
             'timeouts_total': sum(sum(e.get('error_type') == 'TimeoutError' for e in r.get('attempt_errors', [])) for r in runs),
             'worker_heartbeat_age_seconds': ledger.heartbeat_age_seconds(),
@@ -27,6 +44,17 @@ def run_metrics(ledger) -> dict:
             'duration_seconds': {'count': len(durations), 'sum': sum(durations),
                                  'max': max(durations, default=0.0),
                                  'mean': sum(durations) / len(durations) if durations else None}}
+    if canonical_root is not None:
+        policy = capacity_policy or CapacityPolicy()
+        payload["capacity"] = policy.inspect(canonical_root).as_dict()
+        partial_roots = {backup_root, evidence_root / "backups" if evidence_root else None}
+        payload["temporary_backup_count"] = sum(
+            1 for parent in partial_roots if parent and parent.exists()
+            for path in parent.rglob("*.partial") if path.is_file()
+        )
+    payload["last_successful_backup_at"] = _latest_success(evidence_root, "backup")
+    payload["last_successful_recovery_drill_at"] = _latest_success(evidence_root, "recovery_drill")
+    return payload
 
 
 class AlertSink:
@@ -40,7 +68,8 @@ class AlertSink:
             return None
         # Accept only explicit operational fields, never arbitrary exception strings/URLs.
         allowed = {'run_id', 'job_id', 'request_id', 'attempt', 'provider', 'status', 'error_type',
-                   'failure_stage', 'queue_depth', 'receipt', 'providers', 'age_seconds'}
+                   'failure_stage', 'queue_depth', 'receipt', 'providers', 'age_seconds',
+                   'free_ratio', 'warning_free_ratio', 'critical_free_ratio'}
         safe = {key: value for key, value in fields.items() if key in allowed}
         event_id = hashlib.sha256(f'{event}:{identity}'.encode()).hexdigest()
         payload = {'event_id': event_id, 'event': event, 'created_at': datetime.now(timezone.utc).isoformat(),
@@ -58,8 +87,10 @@ class AlertSink:
             return [json.loads(row[0]) for row in conn.execute('select payload from events order by rowid')]
 
 
-def check_alerts(ledger, sink: AlertSink, *, heartbeat_limit=60, backlog_limit=300) -> list[str]:
-    metrics = run_metrics(ledger)
+def check_alerts(ledger, sink: AlertSink, *, heartbeat_limit=60, backlog_limit=300,
+                 canonical_root: Path | None = None,
+                 capacity_policy: CapacityPolicy | None = None) -> list[str]:
+    metrics = run_metrics(ledger, canonical_root=canonical_root, capacity_policy=capacity_policy)
     event_ids = []
     age = metrics['worker_heartbeat_age_seconds']
     # Bucket repeated monitoring evaluations while retaining a stable identity within the bucket.
@@ -71,6 +102,14 @@ def check_alerts(ledger, sink: AlertSink, *, heartbeat_limit=60, backlog_limit=3
         event_ids.append(sink.emit('queue_backlog', identity=bucket,
                                    fields={'queue_depth': metrics['queue_depth'],
                                            'age_seconds': metrics['queue_oldest_age_seconds'], 'status': 'warning'}))
+    capacity = metrics.get("capacity")
+    if capacity and capacity["status"] in {"warning", "critical"}:
+        # The identity describes the active condition, so repeated monitor runs cannot redeliver it.
+        root_identity = hashlib.sha256(str(Path(canonical_root).resolve()).encode()).hexdigest()
+        event_ids.append(sink.emit(
+            f"capacity_{capacity['status']}",
+            identity=f"{root_identity}:{capacity['status']}", fields=capacity,
+        ))
     for run in ledger.list():
         if (run.get('quality_summary') or {}).get('status') == 'fail':
             event_ids.append(sink.emit('quality_failed', identity=run['run_id'], fields=run))
@@ -120,7 +159,10 @@ def main():
     from data_center.settings import Settings
     settings = Settings()
     sink = AlertSink(settings.evidence_root / 'alerts', enabled=settings.alerts_enabled)
-    events = check_alerts(RunLedger(settings.ledger_path), sink)
+    events = check_alerts(
+        RunLedger(settings.ledger_path), sink, canonical_root=settings.canonical_root,
+        capacity_policy=settings.capacity_policy(),
+    )
     delivery = deliver_alerts(sink, settings.alert_webhook_url)
     print(json.dumps({'event': 'monitor_completed', 'request_id': None,
                       'event_ids': events, 'delivery': delivery}), flush=True)

@@ -11,7 +11,8 @@ def main() -> None:
     print(json.dumps({"event": "worker_started", "request_id": None}), flush=True)
     settings = Settings()
     worker = LocalWorker(settings.canonical_root, RunLedger(settings.ledger_path), timeout_seconds=settings.worker_timeout_seconds,
-                         alert_sink=AlertSink(settings.evidence_root / "alerts", settings.alerts_enabled))
+                         alert_sink=AlertSink(settings.evidence_root / "alerts", settings.alerts_enabled),
+                         capacity_policy=settings.capacity_policy())
     while True:
         if not worker.run_next():
             time.sleep(1)

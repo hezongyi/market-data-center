@@ -13,7 +13,10 @@ API 前缀固定为 `/api/v1`，响应包含 `data`、`meta.request_id`、`meta.
 `dead_letter_total`、`success_rate` 和 `duration_seconds`（含 `count`、`sum`、`max`、`mean`）。
 `query` 子对象包含 catalog refresh/cache、query duration、rows scanned/returned 和 rejected oversized
 query 计数。
+`capacity` 子对象包含 total/used/free bytes、free ratio、warning/critical thresholds 和 `ok|warning|critical`；稳定字段还包括 `last_successful_backup_at`、`last_successful_recovery_drill_at` 与 `temporary_backup_count`。
 metrics 只返回聚合状态，不返回 provider 原始响应、URL 或密钥。
+
+`GET /api/v1/health/ready` 同时返回 `read_status`、`write_status` 和 `capacity_status`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
 
 Web UI 只调用 API，不直接读取 Parquet 或 SQLite。MVP 页面：Overview、Datasets、Runs、Quality、Data Explorer。
 

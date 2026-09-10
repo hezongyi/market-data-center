@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable tag to publish
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+  checks: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="v0.1.0"
+          fi
+          git rev-parse "refs/tags/$tag" >/dev/null
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-list -n 1 "$tag")" >> "$GITHUB_OUTPUT"
+      - name: Verify protected-main required check
+        id: check
+        shell: bash
+        run: |
+          commit="${{ steps.release.outputs.commit }}"
+          check_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$commit/check-runs" \
+            --jq '.check_runs | map(select(.name == "verify" and .conclusion == "success")) | sort_by(.completed_at) | last')
+          test "$check_json" != "null"
+          echo "run_id=$(printf '%s' "$check_json" | jq -r '.details_url | capture("/runs/(?<id>[0-9]+)").id')" >> "$GITHUB_OUTPUT"
+          echo "url=$(printf '%s' "$check_json" | jq -r .details_url)" >> "$GITHUB_OUTPUT"
+      - name: Generate release receipt
+        run: |
+          python scripts/write_release_receipt.py \
+            --tag "${{ steps.release.outputs.tag }}" \
+            --commit "${{ steps.release.outputs.commit }}" \
+            --ci-run-id "${{ steps.check.outputs.run_id }}" \
+            --ci-url "${{ steps.check.outputs.url }}" \
+            --output release-receipt.json
+      - name: Publish immutable GitHub release
+        shell: bash
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; immutable release left unchanged"
+          else
+            gh release create "$tag" --verify-tag --title "$tag" \
+              --notes-file "docs/releases/$tag.md" release-receipt.json
+          fi

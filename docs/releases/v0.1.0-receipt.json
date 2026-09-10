@@ -1,0 +1,16 @@
+{
+  "receipt_version": "release-receipt.v1",
+  "version": "v0.1.0",
+  "tag": "v0.1.0",
+  "commit": "679dafff539d8e64938cd098f61088e173ae114d",
+  "released_at": "2026-09-10T08:04:56Z",
+  "result": "pass",
+  "hosted_ci": {"workflow": "Checks", "run_id": 34442430045, "required_check": "verify", "conclusion": "success"},
+  "runtime_matrix": {"python_declared": ">=3.10", "hosted_python": ["3.11"], "node": "22"},
+  "dependency_artifacts": ["backend/pyproject.toml", "webui/package-lock.json"],
+  "compatibility": "docs/version-compatibility.md",
+  "backup_format": "market-data-center-backup.v1",
+  "migration_status": {"provider_bars_read": "available", "economic_preview": "feature_flag", "other_consumers": "not_migrated"},
+  "rollback": ["checkout immutable prior tag", "install matching dependencies", "restart API and worker", "run smoke and parity"],
+  "evidence": ["docs/specs/2026-09-10-economic-pit-and-operations.md", "docs/operations-runbook.md"]
+}

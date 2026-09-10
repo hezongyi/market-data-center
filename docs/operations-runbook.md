@@ -10,6 +10,19 @@ systemctl --user is-active market-data-center-api.service market-data-center-wor
 
 If readiness is not `ready`, inspect the worker heartbeat and queue metrics first. Restart the API and worker together only after confirming the ledger and canonical root are the same configured paths.
 
+Readiness separates `read_status`, `write_status`, and `capacity_status`. `capacity_status=warning` keeps ordinary ingest available but blocks unattended backfills over 31 days. `capacity_status=critical` returns `507 capacity_protected` for new ingest while reads and restore remain available.
+
+## Capacity response
+
+Default free-space thresholds are warning 15% and critical 10%; production may configure stricter values with `DATACENTER_CAPACITY_WARNING_FREE_RATIO` and `DATACENTER_CAPACITY_CRITICAL_FREE_RATIO`.
+
+1. Run `python -m data_center.operations retention-audit` and retain the capacity receipt.
+2. At warning, pause broad backfills and schedule expansion or archival to a separately governed destination.
+3. At critical, keep ingest paused; do not delete canonical parts, manifests, terminal receipts, or ledger rows.
+4. Expand the filesystem or move approved archives under an explicit maintenance change. Automatic canonical cleanup is forbidden.
+5. Run backup verify and an isolated recovery drill, then confirm capacity is above the configured warning threshold before resuming writes.
+6. Re-run the monitor; the stable capacity event ID prevents duplicate webhook delivery for the same active condition.
+
 ## Economic PIT and parity
 
 Use `mode=current` for current-state reads. PIT reads require an explicit `asof_ts`:
@@ -24,14 +37,17 @@ Only set `MACRO_MARKET_USE_DATA_CENTER_ECONOMIC=1` after the parity receipt has 
 
 ## Backup and recovery
 
-Backups include published canonical files and the ledger, exclude live staging, and verify SHA-256 bytes on restore:
+Backups include published canonical files and the ledger, exclude live staging, and verify size/SHA-256 bytes. Production destinations must be outside canonical root and on a distinct mount or equivalent failure domain:
 
 ```bash
-PYTHONPATH=backend/src python -m data_center.operations backup --destination /path/to/evidence/backup.tar.gz
-PYTHONPATH=backend/src python -m data_center.operations recovery-drill --destination /path/to/evidence/recovery-drill
+PYTHONPATH=backend/src python -m data_center.operations backup --destination /independent-mount/backup.tar.gz
+PYTHONPATH=backend/src python -m data_center.operations verify --archive /independent-mount/backup.tar.gz
+PYTHONPATH=backend/src python -m data_center.operations recovery-drill --destination /independent-mount/recovery-drill
 ```
 
-Restore fails closed if an existing target differs. Never delete or rewrite canonical parts to recover a consumer; disable the feature flag and restore the previous reader.
+Backup v2 writes a same-directory `.partial`, fsyncs, verifies metadata and hashes, then publishes without overwrite. Restore streams through `.restore.partial`, verifies size/hash, and publishes without overwrite. Existing identical bytes are skipped; different bytes fail closed. Temporary artifacts are never valid archives. Backup v1 remains restorable.
+
+`--allow-same-device` is only for isolated development drills and cannot be used as the sole production recovery copy. Never delete or rewrite canonical parts to recover a consumer; disable the feature flag and restore the previous reader.
 
 ## Alerts
 
@@ -60,4 +76,4 @@ commit to prove paged/unpaged and `macro-market-lab` consumer parity on producti
 
 ## Acceptance evidence
 
-Keep parity, provider acceptance, backup/recovery, cleanup, and cutover reports under the protected evidence root for at least 90 days. Each report must include commit, environment, command, time range, result, and failure reason where applicable.
+Keep CI, dependency refresh, browser acceptance, capacity, parity, provider acceptance, backup/verify/recovery, cleanup, release, and cutover reports under the protected evidence root for at least 90 days. Release receipts and compatibility matrices are retained for the lifetime of the release. Each structured receipt includes commit, environment, action/command, start/completion time, software version, result, failure stage, and safe error category.
