@@ -1,7 +1,7 @@
 # Economic PIT and Operations Specification
 
 日期：2026-09-10
-状态：implementation and real-environment acceptance complete; hosted CI pending current PR
+状态：complete
 前置 spec：`2026-09-10-production-hardening-and-consumer-migration`
 
 ## 目标
@@ -76,15 +76,17 @@ economic consumer 只有在固定历史窗口完成双读 parity 后才允许切
 ## 实现记录（2026-09-10）
 
 - P1：`economic_observations.v2` 已实现并成为新 FRED ingest 默认 schema；保留 v1 manifest 读取兼容，v2 对 provider 缺失值要求 `missing_reason`。API 增加显式 `mode=current|pit`，PIT 必须提供 `asof_ts`，并应用 `availability_lag_days`。
-- P2/P3：`scripts/economic_parity.py` 对 PAYEMS（2025-05-01–2026-08-01）和 DGS10（2025-06-01–2026-08-01）生成成功 parity receipt，current-state 去重后的 row count、时间范围、稳定 hash、HTTP 延迟预算和错误预算一致；失败窗口也生成 `not_migrated` receipt。`macro-market-lab` commit `a1497e3` 通过 `MACRO_MARKET_USE_DATA_CENTER_ECONOMIC` 显式开关接入 economic preview 与 NFP economic loader，取消开关可回滚旧读取路径；NFP 事件读取保持 `bls_calendar` 优先，并用受治理的 `fred_release_calendar` 历史补齐缺失参考期。
+- P2/P3：`scripts/economic_parity.py` 对 PAYEMS（2025-05-01–2026-08-01）和 DGS10（2025-06-01–2026-08-01）生成成功 parity receipt，current-state 去重后的 row count、时间范围、稳定 hash、HTTP 延迟预算和错误预算一致；失败窗口也生成 `not_migrated` receipt。`macro-market-lab` commit `a1497e3` 通过 `MACRO_MARKET_USE_DATA_CENTER_ECONOMIC` 显式开关接入 economic preview 与 NFP economic loader，取消开关可回滚旧读取路径；NFP 事件读取保持 `bls_calendar` 优先，并用受治理的 `fred_release_calendar` 历史补齐缺失参考期。consumer PR 已合入 `main`，merge commit 为 `0d6fe3bb0ab45ce08fab24fdb9f2221aa4b7a31a`。
 - P3：生产环境启用 economic HTTP flag 后，NFP matrix 真实构建保留 10 个完整事件、生成 100 行 chart data；PAYEMS 与 DGS10 均从 `data-center://economic_observations/...` 读取。为完成真实交集，正式 Dukascopy raw-fetch/NY5 aggregation 将 EURUSD 补齐到 2026-09-09，Data Center worker 将 DGS10 补齐到 2026-09-08；2026-09-04 事件因验收时尚无完整 D0 close 被按契约剔除，不降低 `NFP_MIN_EVENTS=9`。
 - P4：`scripts/operations_acceptance.py` 完成隔离 ingest、备份、恢复、字节校验和告警事件演练；生产 `retention-audit` 增加磁盘容量证据（当前 free ratio 约 11.7%，需纳入容量告警阈值评审）。systemd API/worker 重启后 readiness 通过，三个 timer 均 enabled；三 provider acceptance（Binance、yfinance、FRED）均通过，最新 receipt 为 `/home/quant/market_lake/evidence/data-center/economic-pit-20260910/provider-acceptance-final/receipt-43ff51329fb949a5a7bc8ce722100bb5.json`。
 - P4：`docs/operations-runbook.md` 记录 readiness、PIT、parity、回滚、备份恢复和告警处置命令；本地 alert outbox 的 webhook 重试与稳定 `Idempotency-Key` 已有自动化测试。
 - P4：GitHub 仓库已切换为 public，`main` branch protection 于 2026-09-10 通过 API 写入并回读成功：必须经 PR，required check 为 `verify`，strict up-to-date 为 true，管理员不可绕过，force push 与 branch deletion 均禁用。workflow `Checks` 保持 active，实际 job/check 名称为 `verify`。
+- P4：Data Center PR Hosted CI run `34442038283` 已在 commit `4eeeb2255acc` 上通过，job/check `verify` 为 `success`；更早的 feature-branch push run `34441887123` 也通过。PR 合并后继续以受保护 `main` 上的 post-merge run 作为最终持续门禁确认。
 - P5：共享 `scripts/ci.sh` 增加 `pip check`、依赖/契约兼容检查和运维演练；Data Center 本地完整 CI 为 61 tests、lint、secret scan、Web UI build、运维演练和隔离 service acceptance 全部通过。`macro-market-lab` 全仓 2,894 tests 与 `ruff check src tests` 全部通过。Starlette 的弃用警告通过 dev dependency `httpx2` 消除，当前 Data Center 本地仅保留 anyio 兼容警告。
-- 最终本地/生产验收 receipt：`/home/quant/market_lake/evidence/data-center/economic-pit-20260910/final-local-acceptance.json`，包含两仓 commit、命令、生产数据覆盖、NFP matrix 输出、Data Center readiness、DGS10 ingest run 和 GitHub branch protection 回读结果；hosted CI 字段在当前 PR 通过前保持 `pending_current_pr`。
+- 最终本地/生产验收 receipt：`/home/quant/market_lake/evidence/data-center/economic-pit-20260910/final-local-acceptance.json`，包含两仓 commit、命令、生产数据覆盖、NFP matrix 输出、Data Center readiness、DGS10 ingest run 和 GitHub branch protection 回读结果。
+- Hosted CI 验收 receipt：`/home/quant/market_lake/evidence/data-center/economic-pit-20260910/hosted-ci-4eeeb22.json`，记录 Data Center PR、commit、run/job、结论和 required-check 配置。
 
-GitHub Actions API 已可读取，当前远端最近成功 run 为 `34421219129`（commit `c5a5c776ecac`），但它早于本 spec 实现提交。最终门禁只剩：将当前 feature branch 通过 PR 合入 `main`，确认受保护分支上的 `verify` 对本次提交成功；该 hosted run 取得前不得把历史 run 当作本次改动证据。
+截至 2026-09-10，P1–P5 的实现、本地 CI、真实环境 consumer 验收、consumer 合并、Data Center PR Hosted CI 和 required-check 配置均已有可追溯证据。Data Center PR 合并后须再确认受保护 `main` 的 post-merge `verify` 成功，作为持续运行状态核验；该核验不改变本 spec 已完成的实现与验收结论。
 
 ## 非目标
 
