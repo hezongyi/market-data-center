@@ -150,6 +150,27 @@ def test_backup_rejects_ledger_outside_canonical_root(tmp_path):
         create_backup(tmp_path / "canonical", tmp_path / "outside.sqlite", tmp_path / "backup.tar.gz")
 
 
+def test_recovery_drill_compares_archive_snapshot_when_live_ledger_changes(tmp_path, monkeypatch):
+    from data_center import operations
+
+    root = tmp_path / "canonical"
+    ledger = root / "audit" / "ledger.sqlite"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"ledger-before-backup")
+    original_create_backup = operations.create_backup
+
+    def create_then_mutate(*args, **kwargs):
+        report = original_create_backup(*args, **kwargs)
+        ledger.write_bytes(b"ledger-after-backup")
+        return report
+
+    monkeypatch.setattr(operations, "create_backup", create_then_mutate)
+    drill = operations.recovery_drill(root, ledger, tmp_path / "drill")
+    assert drill["status"] == "pass"
+    assert (tmp_path / "drill/restored-canonical/audit/data_center.sqlite").read_bytes() == b"ledger-before-backup"
+    assert ledger.read_bytes() == b"ledger-after-backup"
+
+
 def test_backup_failure_keeps_only_identifiable_temporary_artifact(tmp_path, monkeypatch):
     root = tmp_path / "canonical"
     ledger = root / "audit" / "ledger.sqlite"

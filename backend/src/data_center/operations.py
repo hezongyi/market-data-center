@@ -367,12 +367,12 @@ def _recovery_drill(root: Path, ledger_path: Path, destination: Path, *,
     restored_root = destination / "restored-canonical"
     restored_ledger = restored_root / "audit" / "data_center.sqlite"
     restored = restore_backup(archive, restored_root, restored_ledger, evidence_root=evidence_root)
-    original = {name: digest for path, name in _backup_files(root, ledger_path) for digest in [_sha256(path)]}
+    expected = {item["path"]: item["sha256"] for item in report["files"]}
     recovered_files = _backup_files(restored_root, restored_ledger)
     recovered = {name: digest for path, name in recovered_files for digest in [_sha256(path)]}
-    if original != recovered:
+    if expected != recovered:
         raise ValueError("backup recovery byte comparison failed")
-    result = {"status": "pass", "archive": report, "restore": restored, "file_count": len(original)}
+    result = {"status": "pass", "archive": report, "restore": restored, "file_count": len(expected)}
     return result
 
 
