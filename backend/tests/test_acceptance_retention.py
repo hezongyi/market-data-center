@@ -171,6 +171,31 @@ def test_recovery_drill_compares_archive_snapshot_when_live_ledger_changes(tmp_p
     assert ledger.read_bytes() == b"ledger-after-backup"
 
 
+def test_backup_uses_consistent_sqlite_snapshot_during_heartbeat(tmp_path):
+    from data_center.runs.ledger import RunLedger
+
+    root = tmp_path / "canonical"
+    ledger_path = root / "audit" / "ledger.sqlite"
+    ledger = RunLedger(ledger_path)
+    ledger.enqueue_job({"job_id": "snapshot", "dataset_id": "provider_bars"})
+    stop = False
+
+    def heartbeat_loop():
+        while not stop:
+            ledger.heartbeat()
+
+    import threading
+    thread = threading.Thread(target=heartbeat_loop)
+    thread.start()
+    try:
+        report = create_backup(root, ledger_path, tmp_path / "backup.tar.gz")
+        assert verify_backup(tmp_path / "backup.tar.gz")["status"] == "pass"
+        assert report["status"] == "pass"
+    finally:
+        stop = True
+        thread.join(timeout=2)
+
+
 def test_backup_failure_keeps_only_identifiable_temporary_artifact(tmp_path, monkeypatch):
     root = tmp_path / "canonical"
     ledger = root / "audit" / "ledger.sqlite"
