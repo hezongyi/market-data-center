@@ -148,7 +148,10 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "runs", exact: true }).click();
     await page.getByLabel("API key").fill(key);
     await page.getByLabel("Status").selectOption("failed");
-    const row = page.locator("tr").filter({ has: page.locator("td.mono", { hasText: failed.run_id }) });
+    const runIdCell = page.locator("td.mono").filter({
+      hasText: new RegExp(`^${failed.run_id}$`),
+    });
+    const row = page.locator("tr").filter({ has: runIdCell });
     await row.waitFor();
     const before = (await call("GET", "/runs")).filter(run => run.retry_of === failed.run_id).length;
     await row.getByRole("button", { name: "Retry", exact: true }).click();
