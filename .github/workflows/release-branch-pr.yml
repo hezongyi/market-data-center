@@ -1,0 +1,47 @@
+name: Release Branch PR
+
+on:
+  push:
+    branches: [release-operational-sustainability-20260910]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: release-operational-sustainability-pr
+  cancel-in-progress: true
+
+jobs:
+  create-and-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create protected-main PR
+        id: pr
+        shell: bash
+        run: |
+          url=$(gh pr list --head "$GITHUB_REF_NAME" --base main --state open --json url --jq '.[0].url // empty')
+          if [[ -z "$url" ]]; then
+            url=$(gh pr create --base main --head "$GITHUB_REF_NAME" \
+              --title "Release and operational sustainability" \
+              --body "Implements docs/specs/2026-09-10-release-and-operational-sustainability.md with runtime matrix, deterministic locks, isolated browser acceptance, capacity protection, backup v2, receipts, release automation, and real cross-fault-domain recovery evidence.")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: Wait for required verify check
+        shell: bash
+        run: |
+          for attempt in $(seq 1 120); do
+            conclusion=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+              --jq '.check_runs | map(select(.name == "verify")) | sort_by(.completed_at) | last | .conclusion // empty')
+            if [[ "$conclusion" == "success" ]]; then exit 0; fi
+            if [[ "$conclusion" == "failure" || "$conclusion" == "cancelled" ]]; then exit 1; fi
+            sleep 10
+          done
+          exit 1
+      - name: Merge through protected branch
+        run: gh pr merge "${{ steps.pr.outputs.url }}" --merge --delete-branch
