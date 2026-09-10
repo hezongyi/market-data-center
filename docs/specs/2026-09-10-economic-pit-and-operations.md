@@ -1,7 +1,7 @@
 # Economic PIT and Operations Specification
 
-日期：2026-09-10  
-状态：implementation and real-environment acceptance complete; hosted CI pending current PR  
+日期：2026-09-10
+状态：implementation and real-environment acceptance complete; hosted CI pending current PR
 前置 spec：`2026-09-10-production-hardening-and-consumer-migration`
 
 ## 目标
@@ -82,6 +82,7 @@ economic consumer 只有在固定历史窗口完成双读 parity 后才允许切
 - P4：`docs/operations-runbook.md` 记录 readiness、PIT、parity、回滚、备份恢复和告警处置命令；本地 alert outbox 的 webhook 重试与稳定 `Idempotency-Key` 已有自动化测试。
 - P4：GitHub 仓库已切换为 public，`main` branch protection 于 2026-09-10 通过 API 写入并回读成功：必须经 PR，required check 为 `verify`，strict up-to-date 为 true，管理员不可绕过，force push 与 branch deletion 均禁用。workflow `Checks` 保持 active，实际 job/check 名称为 `verify`。
 - P5：共享 `scripts/ci.sh` 增加 `pip check`、依赖/契约兼容检查和运维演练；Data Center 本地完整 CI 为 61 tests、lint、secret scan、Web UI build、运维演练和隔离 service acceptance 全部通过。`macro-market-lab` 全仓 2,894 tests 与 `ruff check src tests` 全部通过。Starlette 的弃用警告通过 dev dependency `httpx2` 消除，当前 Data Center 本地仅保留 anyio 兼容警告。
+- 最终本地/生产验收 receipt：`/home/quant/market_lake/evidence/data-center/economic-pit-20260910/final-local-acceptance.json`，包含两仓 commit、命令、生产数据覆盖、NFP matrix 输出、Data Center readiness、DGS10 ingest run 和 GitHub branch protection 回读结果；hosted CI 字段在当前 PR 通过前保持 `pending_current_pr`。
 
 GitHub Actions API 已可读取，当前远端最近成功 run 为 `34421219129`（commit `c5a5c776ecac`），但它早于本 spec 实现提交。最终门禁只剩：将当前 feature branch 通过 PR 合入 `main`，确认受保护分支上的 `verify` 对本次提交成功；该 hosted run 取得前不得把历史 run 当作本次改动证据。
 
