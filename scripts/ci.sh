@@ -56,13 +56,16 @@ run_web() {
     return 1
   fi
   if [[ -z "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" ]]; then
-    PLAYWRIGHT_BROWSER_EXECUTABLE="$(find "${HOME}/.cache/ms-playwright" -type f -path '*/chrome-linux/chrome' 2>/dev/null | sort -V | tail -1 || true)"
+    PLAYWRIGHT_BROWSER_EXECUTABLE="$(find "${HOME}/.cache/ms-playwright" -type f \
+      \( -path '*/chrome-linux/chrome' -o -path '*/chrome-linux64/chrome' \
+         -o -path '*/chrome-headless-shell-linux64/chrome-headless-shell' \) \
+      2>/dev/null | sort -V | tail -1 || true)"
     export PLAYWRIGHT_BROWSER_EXECUTABLE
   fi
   if [[ -n "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" && -x "$PLAYWRIGHT_BROWSER_EXECUTABLE" ]]; then
     export LD_LIBRARY_PATH="${HOME}/.local/share/playwright-deps-jammy/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   else
-    echo "Playwright Chromium is unavailable. Discover cache with: find \"\$HOME/.cache/ms-playwright\" -type f -path '*/chrome-linux/chrome'" >&2
+    echo "Playwright Chromium is unavailable. Discover cache under: \$HOME/.cache/ms-playwright" >&2
     echo "Or install it with: npx --prefix webui playwright install chromium" >&2
     return 1
   fi
