@@ -14,6 +14,10 @@
 
 Tag `v0.1.0` points to merge commit `679dafff539d8e64938cd098f61088e173ae114d`; required post-merge `verify` run `34442430045` succeeded on 2026-09-10. Release evidence is recorded in `docs/releases/v0.1.0.md` and `docs/releases/v0.1.0-receipt.json`.
 
+## v0.2.0 candidate evidence
+
+Candidate commit `ed8685108e0c24ee35bc85ac56f28cf8a92b5dfd` passed hosted `Checks` run `34455435757` on 2026-09-10. Python 3.10, 3.11, and 3.12 backend jobs, the Node 22 browser job, and the aggregate `verify` job all succeeded. The run retained `backend-receipt-3.10`, `backend-receipt-3.11`, `backend-receipt-3.12`, and `web-browser-receipts` artifacts. This is candidate evidence only; the release still requires a successful protected-main post-merge `verify` run.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
