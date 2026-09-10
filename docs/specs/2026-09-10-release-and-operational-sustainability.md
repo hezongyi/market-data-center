@@ -1,7 +1,7 @@
 # Release and Operational Sustainability Specification
 
 日期：2026-09-10
-状态：implementation complete；本地、真实环境与 feature-branch hosted CI 验收通过，等待 protected-main merge 与 release closure
+状态：implementation complete；本地、真实环境、protected-main CI 与 dependency refresh 验收通过，`v0.1.0` 已发布，等待 `v0.2.0` tag 与 post-release rehearsal
 前置 spec：`2026-09-10-economic-pit-and-operations`
 
 ## 目标
@@ -137,14 +137,15 @@
 
 ## 实施记录
 
-- R1：README、portable `.env.example`、release checklist、release receipt schema、compatibility matrix 和 runbook 已更新。`v0.1.0` annotated tag 已于 2026-09-10 创建并推送，指向已通过 required check run `34442430045` 的 protected-main commit `679dafff539d8e64938cd098f61088e173ae114d`；GitHub release 由合并后的 `Release` workflow 校验该 check 后创建。
+- R1：README、portable `.env.example`、release checklist、release receipt schema、compatibility matrix 和 runbook 已更新。`v0.1.0` annotated tag 指向已通过 required check run `34442430045` 的 protected-main commit `679dafff539d8e64938cd098f61088e173ae114d`；GitHub `Release` run `34461900956` 于 2026-09-10 发布 immutable `v0.1.0` release，并附加 `release-receipt.json`。
 - R2：提交 Python 3.10/3.11/3.12 完整传递 dependency locks；本机三个解释器分别运行统一 backend CI，均为 87 tests、ruff、`pip check`、compatibility、secret scan 和 operations acceptance 全部通过。Node 22 使用固定 `playwright==1.63.0`，隔离 browser acceptance 覆盖 readiness、dataset list、run filter、失败 retry、未授权写入、bars coverage 和 390px mobile layout。
 - R2：第三方 Starlette/AnyIO warning 使用精确 message/module allowlist，记录依赖、原因与 2026-12-10 到期日；其余 warning 作为错误处理。Hosted `Checks` 使用最小权限、timeout、并发取消和 `verify` 汇总 required check；`Dependency Refresh` 定期重建候选 locks 并执行三 Python 版本、service 与 browser acceptance。
 - R2：feature commit `ed8685108e0c24ee35bc85ac56f28cf8a92b5dfd` 的 hosted `Checks` run `34455435757` 于 2026-09-10 成功；`backend-python-3.10`、`backend-python-3.11`、`backend-python-3.12`、`web-node-22-browser` 和汇总 `verify` 五个 job 均为 `success`，并保留三个 backend receipt artifact 与 `web-browser-receipts` artifact。
+- R2：PR #4 合并为 protected-main commit `35c7ab71c52372d7cb94e5614f95b7271a4bc210`；post-merge `Checks` run `34461900713` 的三 Python job、Node 22 browser job 与 required `verify` 全部成功。首次正式 `Dependency Refresh` run `34461959295` 成功，生成的 Python 3.10/3.11/3.12 constraints 与 committed locks 逐字节一致，并保留四份 dependency/browser receipt 与两张 viewport screenshot。
 - R3：共享 `CapacityPolicy` 已接入 Settings、readiness、metrics、monitor、worker、retention audit、ingest/retry 和 backfill。warning/critical 边界、warning 阻止超过 31 天无人值守 backfill、critical 阻止新 ingest/retry、read path 可用和稳定 capacity event ID 均有测试与 operations receipt。
 - R4：Backup v2 仅枚举 Data Center published manifests、其 immutable parts 与 ledger；同目录 `.partial` 完成 fsync、流式 size/hash verify 后以 `renameat2(RENAME_NOREPLACE)` 原子发布。Restore 固定 1 MiB buffer 写 `.restore.partial`，校验后 no-replace 发布；v1 compatibility、竞态冲突、中断、目录 fsync 失败和 12 MiB memory-bound restore 均有测试。
 - R4：真实环境 capacity receipt 位于 `/home/quant/market_lake/evidence/data-center/release-sustainability-20260910/operations/capacity_check/`，记录 free ratio 约 11.69%、状态 warning、28 个 published parts。跨故障域 recovery drill 从 `market_lake` NFS 到独立 `appdata` NFS，Backup v2 共恢复并逐字节核对 56 个文件，receipt 位于同一 evidence root 的 `operations/recovery_drill/`。
-- R5：package/Web UI semantic version 已提升为 `0.2.0`，release note 和自动化 release receipt 生成器已提交。候选分支 hosted CI 已全绿；最终 closure 仍需通过 protected PR 合并、确认 protected-main `verify` 全绿、自动创建 `v0.1.0` GitHub release、推送 immutable `v0.2.0` tag，并从该 tag 执行 post-release smoke/rollback rehearsal。
+- R5：package/Web UI semantic version 已提升为 `0.2.0`，release note 和自动化 release receipt 生成器已提交。PR #4、protected-main `verify`、`v0.1.0` GitHub release 与正式 dependency refresh 已完成；最终 closure 仅剩本证据更新通过 protected PR 合并、推送 immutable `v0.2.0` tag，并从该 tag 执行 install/start/smoke/browser/rollback rehearsal。
 
 ## 非目标
 
