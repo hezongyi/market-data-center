@@ -1,7 +1,7 @@
 # Release and Operational Sustainability Specification
 
 日期：2026-09-10
-状态：implementation complete；本地、真实环境、protected-main CI 与 dependency refresh 验收通过，`v0.1.0` 已发布，等待 `v0.2.0` tag 与 post-release rehearsal
+状态：complete；R1-R5、本地与 hosted CI、真实容量/恢复、dependency refresh、immutable release 与 post-release rollback rehearsal 全部通过
 前置 spec：`2026-09-10-economic-pit-and-operations`
 
 ## 目标
@@ -145,7 +145,8 @@
 - R3：共享 `CapacityPolicy` 已接入 Settings、readiness、metrics、monitor、worker、retention audit、ingest/retry 和 backfill。warning/critical 边界、warning 阻止超过 31 天无人值守 backfill、critical 阻止新 ingest/retry、read path 可用和稳定 capacity event ID 均有测试与 operations receipt。
 - R4：Backup v2 仅枚举 Data Center published manifests、其 immutable parts 与 ledger；同目录 `.partial` 完成 fsync、流式 size/hash verify 后以 `renameat2(RENAME_NOREPLACE)` 原子发布。Restore 固定 1 MiB buffer 写 `.restore.partial`，校验后 no-replace 发布；v1 compatibility、竞态冲突、中断、目录 fsync 失败和 12 MiB memory-bound restore 均有测试。
 - R4：真实环境 capacity receipt 位于 `/home/quant/market_lake/evidence/data-center/release-sustainability-20260910/operations/capacity_check/`，记录 free ratio 约 11.69%、状态 warning、28 个 published parts。跨故障域 recovery drill 从 `market_lake` NFS 到独立 `appdata` NFS，Backup v2 共恢复并逐字节核对 56 个文件，receipt 位于同一 evidence root 的 `operations/recovery_drill/`。
-- R5：package/Web UI semantic version 已提升为 `0.2.0`，release note 和自动化 release receipt 生成器已提交。PR #4、protected-main `verify`、`v0.1.0` GitHub release 与正式 dependency refresh 已完成；最终 closure 仅剩本证据更新通过 protected PR 合并、推送 immutable `v0.2.0` tag，并从该 tag 执行 install/start/smoke/browser/rollback rehearsal。
+- R5：package/Web UI semantic version 已提升为 `0.2.0`。最终证据 PR #5 合并为 protected-main commit `54f002580a5c72cdd3da57ef12ffa14ea0f6c8c4`，post-merge `Checks` run `34462588514` 的三 Python job、Node 22 browser job 与 required `verify` 全部成功。Annotated tag `v0.2.0` immutable 指向该 commit；`Release` run `34462830609` 成功发布 GitHub release 与 `release-receipt.json`。
+- R5：从全新 detached `v0.2.0` checkout 使用 committed py311 constraints 安装后，统一 CI 的 87 tests、dependency/compatibility/secret checks、operations recovery、Web build、Playwright 1440/390、API/worker restart 与 smoke 全部通过。随后从独立 `v0.1.0` checkout 完成 61 tests、operations recovery、Web build、API/worker restart、smoke 与双 viewport browser rollback rehearsal。结构化总 receipt 位于 `/home/quant/market_lake/evidence/data-center/release-sustainability-20260910/operations/post_release_rehearsal/post-release-rehearsal.json`，SHA-256 为 `4d21d45612188d1412c175a2cf2d437bb530fd6bb850ee0859687d5d6c926ebf`。
 
 ## 非目标
 
