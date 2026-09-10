@@ -1,7 +1,7 @@
 # Query Contract and Scalability Specification
 
 日期：2026-09-10  
-状态：proposed  
+状态：implemented，等待 hosted CI / protected main 收口  
 前置 spec：`2026-09-10-economic-pit-and-operations`
 
 ## 目标
@@ -113,6 +113,26 @@ Query module 对 bars 和 economic 暴露统一的 page result 概念：
 - DataCenterClient、Web UI 与 `macro-market-lab` pagination parity；
 - 百万行/千 part benchmark receipt；
 - 统一 CI 与受保护 `main` post-merge run 成功。
+
+## 实施记录
+
+- Data Center commit `d19695c17e4fb16818734d34e5775ff5c59704e7` 实现 manifest-derived
+  schema provenance、cached immutable catalog snapshot、HMAC opaque cursor、stable keyset pagination、
+  API additive metadata、query metrics/logging、Python client 与 Web UI 显式分页。
+- `macro-market-lab` commit `25707938d4894fb58c8f5ea47da0c26a12bae0f2` 将
+  `DataCenterReadClient` 迁移为显式分页并增加 opaque cursor 回归测试。
+- 统一本地 CI 于 2026-09-10 通过：74 tests、backend/scripts lint、dependency/contract check、
+  secret scan、operations acceptance、Web UI build 与隔离 API/worker service acceptance 全部成功。
+- 百万行/千 part 基准 receipt：
+  `/home/quant/market_lake/evidence/data-center/query-contract-20260910/query-benchmark-d19695c.json`。
+  数据规模 1,000 parts / 1,000,000 rows，1,000-row query cold 1.1094s、warm P95 0.4392s、
+  additional peak RSS 257.26 MiB，全部低于预算。
+- 生产分页与 consumer parity receipt：
+  `/home/quant/market_lake/evidence/data-center/query-contract-20260910/query-pagination-d19695c-2570793.json`。
+  SPY bars、PAYEMS current/PIT 的 paged/unpaged row count、min/max、稳定 hash 和 snapshot 均一致；
+  `macro-market-lab` bars/economic consumer parity 通过。
+- 本机 systemd API 已加载实现并通过 readiness；生产 PAYEMS mixed fixture 返回
+  `schema_versions=[economic_observations.v1,economic_observations.v2]` 和兼容字段 `mixed`。
 
 ## 非目标
 

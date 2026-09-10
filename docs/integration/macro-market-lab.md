@@ -9,8 +9,8 @@ client = DataCenterClient(
     base_url="http://127.0.0.1:18380",
     api_key=None,
 )
-bars = client.bars(provider="fixture", symbol="BTCUSDT", timeframe="1d")
-observations = client.economic_observations(series_id="PAYEMS", provider="fred")
+bars = client.bars(provider="fixture", symbol="BTCUSDT", timeframe="1d", page_size=1000)
+observations = client.economic_observations(series_id="PAYEMS", provider="fred", page_size=1000)
 ```
 
 迁移到真实 consumer 前，使用同一时间范围比较 output hash、行数、时间范围和 quality status。`economic_observations.v2` 已冻结 PIT 字段；使用 `mode="pit"` 时必须提供 `asof_ts`，未知 release time 的版本不会被伪装成可见数据。
