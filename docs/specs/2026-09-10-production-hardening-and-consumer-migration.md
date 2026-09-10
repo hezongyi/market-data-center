@@ -1,7 +1,7 @@
 # Production Hardening and Consumer Migration Specification
 
 日期：2026-09-10  
-状态：complete；H1-H5 已实现并完成本机真实验收，统一 CI 入口与真实鉴权验收已通过；GitHub Actions `Checks` run `34420547496`（run 15，job `verify`）在 commit `fb5b94f` 上成功，economic/ingest/quality/maintenance consumer 按契约保持 `not_migrated`
+状态：complete；H1-H5 已实现并完成本机真实验收，统一 CI 入口与真实鉴权验收已通过；GitHub Actions `Checks` run `34420773480`（run 16，job `verify`）在 commit `2f3c743` 上成功，economic/ingest/quality/maintenance consumer 按契约保持 `not_migrated`
 前置 spec：`2026-09-08-data-center-foundation`、`2026-09-09-production-readiness-design`
 
 ## 目标
