@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import sqlite3
 import tarfile
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -67,6 +69,23 @@ def _backup_files(root: Path, ledger_path: Path) -> list[tuple[Path, str]]:
             and ledger_path not in selected):
         files.append((ledger_path, "ledger.sqlite"))
     return files
+
+
+def _snapshot_ledger(path: Path, directory: Path) -> Path:
+    """Take a consistent SQLite snapshot while the worker heartbeat may be writing."""
+    snapshot = directory / f".ledger-{uuid4().hex}.snapshot"
+    try:
+        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        target = sqlite3.connect(snapshot)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+    except sqlite3.DatabaseError:
+        snapshot.unlink(missing_ok=True)
+        shutil.copyfile(path, snapshot)
+    return snapshot
 
 
 def _check_backup_path(path: Path, *, base: Path, label: str) -> Path:
@@ -205,7 +224,11 @@ def create_backup(root: Path, ledger_path: Path, destination: Path, *,
     distinct_device = root.stat().st_dev != destination.parent.stat().st_dev
     if require_distinct_device and not distinct_device:
         raise ValueError("backup destination must use a distinct storage device")
+    ledger_snapshot = _snapshot_ledger(ledger_path, destination.parent) if ledger_path.is_file() else None
     files = _backup_files(root, ledger_path)
+    if ledger_snapshot is not None:
+        files = [(ledger_snapshot if archive_path == "ledger.sqlite" else path, archive_path)
+                 for path, archive_path in files]
     entries = [{"path": archive_path, "bytes": path.stat().st_size, "sha256": _sha256(path)}
                for path, archive_path in files]
     metadata = {
@@ -247,6 +270,9 @@ def create_backup(root: Path, ledger_path: Path, destination: Path, *,
         )
         write_receipt(evidence_root, receipt)
         raise
+    finally:
+        if ledger_snapshot is not None:
+            ledger_snapshot.unlink(missing_ok=True)
     report = {**metadata, "status": "pass", "archive": str(destination),
               "archive_sha256": verified["archive_sha256"], "file_count": len(entries),
               "bytes": sum(item["bytes"] for item in entries)}
