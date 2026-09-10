@@ -4,10 +4,12 @@ After=market-data-center-api.service market-data-center-worker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/quant/repos/market-data-center/backend
-EnvironmentFile=-/home/quant/repos/market-data-center/.env.local
-Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
-ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.observability
+RuntimeMaxSec=45s
+WorkingDirectory=%h/market-data-center/releases/current
+EnvironmentFile=-%h/.config/market-data-center/env
+Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
+Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.observability
 
 [Install]
 WantedBy=default.target

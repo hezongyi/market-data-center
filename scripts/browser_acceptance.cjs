@@ -104,12 +104,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   }, "isolated service did not become ready");
 
   const unauthorized = await envelope("POST", "/ingest/runs", {
-    job_id: "unauthorized", symbol: "UI_TEST", start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z",
+    job_id: "unauthorized", run_scope: "acceptance", symbol: "UI_TEST", start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z",
   }, false);
   assert.equal(unauthorized.response.status, 401);
 
   const fixture = await call("POST", "/ingest/runs", {
-    job_id: "browser-bars", provider: "fixture", symbol: "UI_TEST", asset_class: "test",
+    job_id: "browser-bars", run_scope: "acceptance", provider: "fixture", symbol: "UI_TEST", asset_class: "test",
     timeframe: "1d", start: "2026-01-01T00:00:00Z", end: "2026-01-03T00:00:00Z",
   });
   const fixtureReceipt = await waitFor(async () => {
@@ -121,7 +121,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   assert.ok(coverage.row_count > 0);
 
   const failed = await call("POST", "/ingest/runs", {
-    job_id: "browser-failure", provider: "acceptance_invalid", symbol: "UI_TEST",
+    job_id: "browser-failure", run_scope: "acceptance", provider: "acceptance_invalid", symbol: "UI_TEST",
     start: "2026-01-01T00:00:00Z", end: "2026-01-02T00:00:00Z",
   });
   const failedReceipt = await waitFor(async () => {
@@ -141,6 +141,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(base);
     await page.locator("header .status.ok").waitFor();
+    await page.getByText("development", { exact: false }).first().waitFor();
 
     await page.getByRole("button", { name: "datasets", exact: true }).click();
     await page.getByText("provider_bars", { exact: true }).waitFor();
@@ -176,7 +177,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   }
   const report = writeReceipt("pass", {
     checks: ["readiness", "dataset_list", "run_filter", "failed_retry", "original_immutable",
-      "unauthorized_write", "bars_coverage", "mobile_layout", "no_javascript_errors"],
+      "unauthorized_write", "bars_coverage", "mobile_layout", "no_javascript_errors",
+      "webui_api_deployment_identity"],
     original_run_id: failed.run_id,
     fixture_run_id: fixture.run_id,
     viewports: results,

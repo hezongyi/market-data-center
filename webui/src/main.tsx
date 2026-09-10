@@ -18,6 +18,7 @@ function App() {
   const [runFilter, setRunFilter] = useState("all");
   const [retrying, setRetrying] = useState<string | null>(null);
   const [workerAge, setWorkerAge] = useState<number | null>(null);
+  const [deployment, setDeployment] = useState({deployment_id: "unknown", software_version: "unknown", source_commit: "unknown"});
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -58,9 +59,9 @@ function App() {
   const refresh = async () => {
     try {
       const [service, registry, runList, quality] = await Promise.all([
-        fetch("/api/v1/health/ready").then(response => response.json()).then(payload => payload.data as {status: string; worker_heartbeat_age_seconds: number | null}), request<Dataset[]>("/datasets"), request<Run[]>("/runs"), request<Finding[]>("/quality/findings"),
+        fetch("/api/v1/health/ready").then(response => response.json()).then(payload => payload.data as {status: string; worker_heartbeat_age_seconds: number | null; deployment_id: string; software_version: string; source_commit: string}), request<Dataset[]>("/datasets"), request<Run[]>("/runs"), request<Finding[]>("/quality/findings"),
       ]);
-      setHealth(service.status); setWorkerAge(service.worker_heartbeat_age_seconds); setDatasets(registry); setRuns(runList); setFindings(quality);
+      setHealth(service.status); setWorkerAge(service.worker_heartbeat_age_seconds); setDeployment(service); setDatasets(registry); setRuns(runList); setFindings(quality);
     } catch (error) { setHealth("unavailable"); setMessage(error instanceof Error ? error.message : "Unable to refresh data center"); }
   };
 
@@ -94,7 +95,7 @@ function App() {
 
   return <div className="app-shell">
     <aside><div className="brand"><span>MD</span>Market Data Center</div><nav>{(["overview", "datasets", "runs", "quality", "explorer"] as Tab[]).map((item) => <button className={tab === item ? "selected" : ""} onClick={() => setTab(item)} key={item}>{item}</button>)}</nav><div className="api-key"><label>API key<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Optional" /></label><button className="secondary" onClick={() => void refresh()}>Refresh</button></div></aside>
-    <main><header><div><p>Operations</p><h1>{tab}</h1></div><span className={health === "ready" ? "status ok" : "status"}>{health}</span></header>{message && <div className="notice">{message}</div>}
+    <main><header><div><p>Operations · {deployment.software_version} · {deployment.deployment_id}</p><h1>{tab}</h1></div><span className={health === "ready" ? "status ok" : "status"}>{health}</span></header>{message && <div className="notice">{message}</div>}
       {tab === "overview" && <><section className="metrics"><Metric label="Datasets" value={datasets.length} /><Metric label="Active runs" value={activeRunCount} /><Metric label="Open findings" value={findings.length} /><Metric label="Service" value={health} /></section><section className="panel"><h2>Recent runs</h2><RunTable runs={runs.slice(0, 8)} /></section></>}
       {tab === "datasets" && <section className="panel"><h2>Dataset registry</h2>{datasets.map((dataset) => <article className="dataset" key={dataset.dataset_id}><div><h3>{dataset.dataset_id}</h3><p>{dataset.description}</p></div><div><b>{dataset.schema_version}</b><p>{dataset.partitioning.join(" / ")}</p></div></article>)}</section>}
       {tab === "runs" && <section className="panel"><h2>Ingest runs</h2><div className="run-tools"><label>Status <select value={runFilter} onChange={event => setRunFilter(event.target.value)}>{["all", "queued", "running", "pass", "failed", "dead_letter"].map(status => <option key={status} value={status}>{status}</option>)}</select></label><button onClick={() => void refresh()}>Refresh</button><span>Worker: {workerAge === null ? "unavailable" : `${Math.round(workerAge)}s ago`}</span></div><RunTable runs={runs.filter(run => runFilter === "all" || run.status === runFilter)} retry={retryRun} retrying={retrying} /></section>}

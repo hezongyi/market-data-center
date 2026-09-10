@@ -3,13 +3,14 @@ Description=Market Data Center API
 After=network.target
 
 [Service]
-EnvironmentFile=-/home/quant/repos/market-data-center/.env.local
-WorkingDirectory=/home/quant/repos/market-data-center/backend
-Environment=PYTHONPATH=/home/quant/repos/market-data-center/backend/src
+EnvironmentFile=-%h/.config/market-data-center/env
+WorkingDirectory=%h/market-data-center/releases/current
+Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
 Environment=DATACENTER_CANONICAL_ROOT=/home/quant/market_lake/canonical
 Environment=DATACENTER_LEDGER_PATH=/home/quant/market_lake/canonical/audit/data_center.sqlite
-Environment=DATACENTER_WEBUI_DIST=/home/quant/repos/market-data-center/webui/dist
-ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.api
+Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
+Environment=DATACENTER_WEBUI_DIST=%h/market-data-center/releases/current/webui/dist
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.api
 Restart=on-failure
 
 [Install]

@@ -17,17 +17,24 @@ class RunLedger:
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
+            conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
+            conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
             if "attempts" not in columns:
                 conn.execute("alter table jobs add column attempts integer not null default 0")
             if "available_at" not in columns:
                 conn.execute("alter table jobs add column available_at real")
+            dead_letter_columns = {row[1] for row in conn.execute("pragma table_info(dead_letter_state)")}
+            if "resolved_at" not in dead_letter_columns:
+                conn.execute("alter table dead_letter_state add column resolved_at text")
 
     def put(self, run_id: str, payload: dict) -> None:
         with sqlite3.connect(self.path) as conn:
             conn.execute("begin immediate")
             row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
             original = json.loads(row[0]) if row else {}
+            if original and payload.get("run_scope", original.get("run_scope")) != original.get("run_scope"):
+                raise ValueError("run_scope is immutable")
             if original.get("status") in {"pass", "failed", "dead_letter"} and original != payload:
                 raise ValueError("terminal receipt is immutable")
             conn.execute("insert into runs values (?, ?) on conflict(run_id) do update set payload=excluded.payload",
@@ -41,14 +48,26 @@ class RunLedger:
     def list(self) -> list[dict]:
         with sqlite3.connect(self.path) as conn:
             rows = conn.execute("select payload from runs order by rowid desc").fetchall()
-        return [json.loads(row[0]) for row in rows]
+            states = {row[0]: {"state": row[1], "acknowledged_at": row[2], "resolved_by_run_id": row[3],
+                               "resolved_at": row[4]}
+                      for row in conn.execute("select run_id,state,acknowledged_at,resolved_by_run_id,resolved_at from dead_letter_state")}
+        payloads = [json.loads(row[0]) for row in rows]
+        for payload in payloads:
+            if payload["run_id"] in states:
+                payload["dead_letter_state"] = states[payload["run_id"]]
+        return payloads
 
     def get(self, run_id: str) -> dict:
         with sqlite3.connect(self.path) as conn:
             row = conn.execute("select payload from runs where run_id = ?", (run_id,)).fetchone()
+            state = conn.execute("select state,acknowledged_at,resolved_by_run_id,resolved_at from dead_letter_state where run_id=?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(run_id)
-        return json.loads(row[0])
+        payload = json.loads(row[0])
+        if state:
+            payload["dead_letter_state"] = {"state": state[0], "acknowledged_at": state[1],
+                                            "resolved_by_run_id": state[2], "resolved_at": state[3]}
+        return payload
 
     def findings(self) -> builtins.list[dict]:
         with sqlite3.connect(self.path) as conn:
@@ -69,6 +88,7 @@ class RunLedger:
         run_id = str(uuid4())
         run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
                        "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
+                       "run_scope": job_payload.get("run_scope", "production"),
                        "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
         with sqlite3.connect(self.path) as conn:
             conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
@@ -116,6 +136,18 @@ class RunLedger:
                        "failure_stage": None, "retryable": False}
             conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
             conn.execute("update jobs set status='completed' where job_id=?", (job_id,))
+            if original.get("retry_of"):
+                resolved_at = payload["finished_at"]
+                updated = conn.execute(
+                    "update dead_letter_state set state='resolved', resolved_by_run_id=?, resolved_at=? "
+                    "where run_id=? and state in ('active','acknowledged')",
+                    (run_id, resolved_at, original["retry_of"]),
+                ).rowcount
+                if updated:
+                    conn.execute(
+                        "insert or ignore into dead_letter_audit(run_id,action,at,related_run_id) values (?,?,?,?)",
+                        (original["retry_of"], "resolved", resolved_at, run_id),
+                    )
 
     def fail_job(self, job_id: str, run_id: str, error: str, *, error_type: str | None = None,
                  failure_stage: str = "execute", retryable: bool = True, quality_summary: dict | None = None,
@@ -139,6 +171,8 @@ class RunLedger:
                 payload["finished_at"] = failure["at"]
             conn.execute("update jobs set status = ?, available_at = ? where job_id = ?", (status, available, job_id))
             conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
+            if status == "dead_letter":
+                conn.execute("insert or ignore into dead_letter_state(run_id,state) values (?,'active')", (run_id,))
 
     def retry_run(self, run_id: str) -> str:
         with sqlite3.connect(self.path) as conn:
@@ -155,11 +189,42 @@ class RunLedger:
             new_id = str(uuid4())
             request = json.loads(job[0])
             payload = {"run_id": new_id, "job_id": request["job_id"], "dataset_id": request["dataset_id"],
-                       "provider": request.get("provider"), "status": "queued", "retry_of": run_id,
+                       "provider": request.get("provider"), "run_scope": original.get("run_scope", "legacy_unclassified"),
+                       "status": "queued", "retry_of": run_id,
                        "created_at": datetime.now(timezone.utc).isoformat()}
             conn.execute("insert into runs values (?, ?)", (new_id, json.dumps(payload)))
             conn.execute("insert into jobs(job_id,run_id,status,payload) values (?,?,?,?)", (str(uuid4()), new_id, "queued", job[0]))
         return new_id
+
+    def acknowledge_dead_letter(self, run_id: str) -> dict:
+        stamp = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if json.loads(row[0]).get("status") != "dead_letter":
+                raise ValueError("only dead-letter runs can be acknowledged")
+            state = conn.execute("select state from dead_letter_state where run_id=?", (run_id,)).fetchone()
+            if state and state[0] == "resolved":
+                raise ValueError("resolved dead-letter runs cannot return to acknowledged")
+            if state and state[0] == "acknowledged":
+                return self.get(run_id)
+            conn.execute("insert into dead_letter_state(run_id,state,acknowledged_at) values (?,'acknowledged',?) "
+                         "on conflict(run_id) do update set state='acknowledged', acknowledged_at=excluded.acknowledged_at",
+                         (run_id, stamp))
+            conn.execute(
+                "insert or ignore into dead_letter_audit(run_id,action,at,related_run_id) values (?,?,?,null)",
+                (run_id, "acknowledged", stamp),
+            )
+        return self.get(run_id)
+
+    def dead_letter_audit(self, run_id: str) -> list[dict]:
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute(
+                "select action,at,related_run_id from dead_letter_audit where run_id=? order by id", (run_id,),
+            ).fetchall()
+        return [{"action": row[0], "at": row[1], "related_run_id": row[2]} for row in rows]
 
     def heartbeat(self) -> str:
         stamp = datetime.now(timezone.utc).isoformat()

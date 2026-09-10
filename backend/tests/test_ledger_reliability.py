@@ -64,6 +64,19 @@ def test_retry_keeps_original_receipt(tmp_path):
     assert ledger.get(replacement)["status"] == "queued"
 
 
+def test_run_scope_is_immutable_before_and_after_terminal_state(tmp_path):
+    import pytest
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    run_id = ledger.enqueue_job({"job_id": "x", "dataset_id": "provider_bars", "run_scope": "production"})
+    with pytest.raises(ValueError, match="run_scope is immutable"):
+        ledger.update(run_id, run_scope="acceptance")
+    claim = ledger.claim_next_job()
+    ledger.finish_job(claim["job_id"], run_id, {"status": "pass"})
+    with pytest.raises(ValueError, match="run_scope is immutable"):
+        ledger.update(run_id, run_scope="migration")
+
+
 def test_worker_construction_does_not_recover_running_jobs(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     run_id = ledger.enqueue_job({"job_id": "x", "dataset_id": "provider_bars"})
@@ -117,3 +130,26 @@ def test_interrupted_attempt_is_delayed_then_retried(tmp_path):
     assert receipt["status"] == "queued"
     assert receipt["error_type"] == "WorkerInterrupted"
     assert receipt["next_attempt_at"] > time.time()
+
+
+def test_dead_letter_acknowledgment_and_resolution_preserve_terminal_run(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    run_id = ledger.enqueue_job({"job_id": "original", "dataset_id": "provider_bars", "run_scope": "production"})
+    claim = ledger.claim_next_job()
+    for _ in range(2):
+        ledger.fail_job(claim["job_id"], run_id, "retry", delay_seconds=0)
+        claim = ledger.claim_next_job()
+    ledger.fail_job(claim["job_id"], run_id, "terminal")
+    original = ledger.get(run_id)
+    assert original["dead_letter_state"]["state"] == "active"
+    assert ledger.acknowledge_dead_letter(run_id)["dead_letter_state"]["state"] == "acknowledged"
+    retry_id = ledger.retry_run(run_id)
+    retry = ledger.claim_next_job()
+    ledger.finish_job(retry["job_id"], retry_id, {"status": "pass"})
+    resolved = ledger.get(run_id)
+    assert resolved["status"] == "dead_letter" and resolved["error"] == original["error"]
+    assert resolved["dead_letter_state"]["resolved_by_run_id"] == retry_id
+    assert resolved["dead_letter_state"]["resolved_at"] is not None
+    assert [entry["action"] for entry in ledger.dead_letter_audit(run_id)] == ["acknowledged", "resolved"]
+    with __import__("pytest").raises(ValueError, match="cannot return"):
+        ledger.acknowledge_dead_letter(run_id)

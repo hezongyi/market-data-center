@@ -4,6 +4,6 @@ After=market-data-center-api.service market-data-center-worker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/quant/repos/market-data-center
+WorkingDirectory=%h/market-data-center/releases/current
 Environment=DATACENTER_SMOKE_URL=http://127.0.0.1:18380
-ExecStart=/bin/bash /home/quant/repos/market-data-center/scripts/smoke.sh
+ExecStart=/bin/bash %h/market-data-center/releases/current/scripts/smoke.sh

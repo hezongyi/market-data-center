@@ -45,7 +45,7 @@ def main():
 
         try:
             wait(lambda: call("GET", "/health/live")["status"] == "ok")
-            job = {"job_id": "restart-acceptance", "symbol": "TEST", "provider": "fixture",
+            job = {"job_id": "restart-acceptance", "symbol": "TEST", "provider": "fixture", "run_scope": "acceptance",
                    "start": "2026-01-01T00:00:00Z", "end": "2026-01-02T00:00:00Z"}
             run = call("POST", "/ingest/runs", json=job)
             api.terminate()

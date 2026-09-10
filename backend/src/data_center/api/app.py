@@ -20,11 +20,13 @@ from data_center.catalog.manifest import (
 )
 from data_center.catalog.registry import DATASETS
 from data_center.catalog.snapshot import selector_hash
+from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import IngestJob
 from data_center.observability import run_metrics
 from data_center.quality.checks import check_provider_bars
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
+from data_center.snapshot import ReceiptIndex, build_snapshot
 from data_center.storage.query import (
     CursorError,
     QueryEngine,
@@ -46,6 +48,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ledger = RunLedger(config.ledger_path)
     query_engine = QueryEngine(config.canonical_root)
     capacity_policy = config.capacity_policy()
+    receipt_index = ReceiptIndex(config.evidence_root)
+    identity = validated_runtime_identity(
+        config.deployment_manifest, config.evidence_root, component="api", webui_dist=config.webui_dist,
+    ) if config.deployment_manifest else {
+        "deployment_id": "development", "software_version": __version__, "source_commit": "unknown"
+    }
+    print(json.dumps({"event": "api_started", "request_id": None,
+                      **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
+          flush=True)
 
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
@@ -130,6 +141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/health/ready")
     def health_ready(request: Request) -> JSONResponse:
+        storage_ready = False
         try:
             config.canonical_root.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryFile(dir=config.canonical_root) as probe:
@@ -139,18 +151,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conn.execute("begin immediate")
                 conn.execute("update worker_heartbeat set heartbeat=heartbeat where id=1")
                 conn.rollback()
-            age = ledger.heartbeat_age_seconds()
-            ready = age is not None and age < 60
-            capacity = capacity_policy.inspect(config.canonical_root)
+            storage_ready = True
+            snapshot = build_snapshot(
+                ledger, capacity_policy=capacity_policy, canonical_root=config.canonical_root,
+                receipt_index=receipt_index, backup_root=config.backup_root,
+                restore_staging_root=config.restore_staging_root, evidence_root=config.evidence_root,
+            )
+            age = snapshot.metrics["worker_heartbeat_age_seconds"]
+            ready = age is not None and age < 60 and snapshot.status == "fresh"
+            capacity = snapshot.capacity
             status_code = 200 if ready else 503
             status = "ready" if ready else "not_ready"
         except (OSError, sqlite3.Error):
-            status_code, status, age, capacity = 503, "not_ready", None, None
+            status_code, status, age, capacity, ready, snapshot = 503, "not_ready", None, None, False, None
         return JSONResponse(status_code=status_code, content={"data": {
-            "status": status, "read_status": "available" if ready else "unavailable",
-            "write_status": "protected" if capacity and capacity.status == "critical" else "available",
-            "capacity_status": capacity.status if capacity else "unknown",
+            "status": status, "read_status": "available" if storage_ready else "unavailable",
+            "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
+            "capacity_status": capacity["status"] if capacity else "unknown",
+            "operational_snapshot_status": snapshot.status if snapshot else "unknown",
             "worker_heartbeat_age_seconds": age,
+            "software_version": identity["software_version"], "source_commit": identity["source_commit"],
+            "deployment_id": identity["deployment_id"],
         }, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []})
 
     @app.get(f"{config.api_prefix}/metrics")
@@ -158,7 +179,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = run_metrics(
             ledger, canonical_root=config.canonical_root, evidence_root=config.evidence_root,
             backup_root=config.backup_root, capacity_policy=capacity_policy,
+            receipt_index=receipt_index, restore_staging_root=config.restore_staging_root,
         )
+        payload.update({key: identity[key] for key in ("deployment_id", "software_version", "source_commit")})
         payload["query"] = query_engine.metrics.snapshot(query_engine.catalog)
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
@@ -179,6 +202,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"data": ledger.get(new_id), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+
+    @app.post(f"{config.api_prefix}/runs/{{run_id}}/acknowledge")
+    def acknowledge_dead_letter(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
+            raise HTTPException(status_code=401, detail="invalid api key")
+        try:
+            payload = ledger.acknowledge_dead_letter(run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="run not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/datasets")
     def datasets() -> dict:
@@ -295,12 +330,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/economic/ingest")
-    def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None, x_api_key: str | None = Header(default=None)) -> dict:
+    def ingest_economic_observations(series_id: str, start: str | None = None, end: str | None = None,
+                                     run_scope: str = "production",
+                                     x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         capacity_policy.require_ingest_capacity(config.canonical_root)
+        if run_scope not in {"production", "acceptance", "migration", "maintenance"}:
+            raise HTTPException(status_code=422, detail="invalid run_scope")
         run_id = ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
                                     "provider": "fred", "series_id": series_id, "start": start, "end": end,
+                                    "run_scope": run_scope,
                                     "schema_version": "economic_observations.v2",
                                     "request_id": current_request_id()})
         payload = {"run_id": run_id, "dataset_id": "economic_observations", "series_id": series_id, "status": "queued"}

@@ -22,6 +22,7 @@ from data_center.evidence import (
     write_receipt,
 )
 from data_center.settings import Settings
+from data_center.snapshot import ReceiptIndex
 
 BACKUP_FORMAT_V1 = "market-data-center-backup.v1"
 BACKUP_FORMAT_V2 = "market-data-center-backup.v2"
@@ -483,6 +484,7 @@ def backfill(base_url, provider, symbol, asset_class, start, end, output, *, can
                 if index < len(report["runs"]) and report["runs"][index].get("receipt", {}).get("status") == "pass":
                     continue
                 job = {"job_id": "backfill-" + output.stem, "provider": provider, "symbol": symbol,
+                       "run_scope": "migration",
                        "asset_class": asset_class, "timeframe": "1d",
                        "start": first.isoformat() + "T00:00:00Z", "end": last.isoformat() + "T00:00:00Z"}
                 receipt = call("POST", "/ingest/runs", json=job)
@@ -550,6 +552,7 @@ def main():
     drill.add_argument("--ledger", type=Path, default=Settings().ledger_path)
     drill.add_argument("--destination", type=Path, required=True)
     drill.add_argument("--allow-same-device", action="store_true")
+    commands.add_parser("rebuild-receipt-index")
     args = parser.parse_args()
     settings = Settings()
     if args.command == "retention-audit":
@@ -568,10 +571,12 @@ def main():
                                         evidence_root=settings.evidence_root)), flush=True)
     elif args.command == "verify":
         print(json.dumps(verify_backup(args.archive, evidence_root=settings.evidence_root)), flush=True)
-    else:
+    elif args.command == "recovery-drill":
         print(json.dumps(recovery_drill(args.root, args.ledger, args.destination,
                                        require_distinct_device=not args.allow_same_device,
                                        evidence_root=settings.evidence_root)), flush=True)
+    else:
+        print(json.dumps(ReceiptIndex(settings.evidence_root).rebuild()), flush=True)
 
 
 if __name__ == "__main__":
