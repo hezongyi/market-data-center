@@ -6,10 +6,10 @@ from data_center.storage.economic import (
 from data_center.storage.parquet import write_provider_bars as write_bar_parts
 
 
-def publish(root, paths, dataset):
+def publish(root, paths, dataset, *, schema_version=None):
     import polars as pl
     manifest = build_manifest(root, run_id=paths[0].stem.removeprefix('part-'), dataset_id=dataset,
-                              schema_version=dataset + '.v1', paths=paths,
+                              schema_version=schema_version or dataset + '.v1', paths=paths,
                               row_count=sum(pl.read_parquet(p).height for p in paths),
                               quality_summary={'status': 'pass', 'finding_count': 0, 'findings': []})
     write_manifest(root, manifest)
@@ -29,7 +29,7 @@ def economic_row(row):
             'source_hash': 'fixture', **row}
 
 
-def write_economic_observations(root, rows, **kwargs):
+def write_economic_observations(root, rows, *, schema_version="economic_observations.v1", **kwargs):
     path = write_economic_part(root, [economic_row(row) for row in rows], **kwargs)
-    publish(root, [path], 'economic_observations')
+    publish(root, [path], 'economic_observations', schema_version=schema_version)
     return path

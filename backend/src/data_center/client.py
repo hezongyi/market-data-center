@@ -25,13 +25,27 @@ class DataCenterClient:
     def datasets(self) -> list[dict]:
         return self._request("GET", "/datasets")["data"]
 
-    def bars(self, *, provider: str, symbol: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> list[dict]:
+    def _paged(self, path: str, params: dict, *, page_size: int = 1_000) -> list[dict]:
+        rows: list[dict] = []
+        cursor = None
+        while True:
+            page_params = {**params, "page_size": page_size}
+            if cursor is not None:
+                page_params["cursor"] = cursor
+            envelope = self._request("GET", path, params=page_params)
+            rows.extend(envelope["data"])
+            cursor = envelope["meta"].get("next_cursor")
+            if not cursor:
+                return rows
+
+    def bars(self, *, provider: str, symbol: str, timeframe: str = "1d", start: str | None = None,
+             end: str | None = None, page_size: int = 1_000) -> list[dict]:
         params = {key: value for key, value in {"provider": provider, "symbol": symbol, "timeframe": timeframe, "start": start, "end": end}.items() if value is not None}
-        return self._request("GET", "/bars", params=params)["data"]
+        return self._paged("/bars", params, page_size=page_size)
 
     def economic_observations(self, *, series_id: str, provider: str = "fred", start: str | None = None,
                               end: str | None = None, asof_ts: str | None = None,
-                              mode: str = "current") -> list[dict]:
+                              mode: str = "current", page_size: int = 1_000) -> list[dict]:
         params = {key: value for key, value in {"provider": provider, "series_id": series_id, "start": start,
                                                  "end": end, "asof_ts": asof_ts, "mode": mode}.items() if value is not None}
-        return self._request("GET", "/economic/observations", params=params)["data"]
+        return self._paged("/economic/observations", params, page_size=page_size)

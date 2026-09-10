@@ -18,16 +18,18 @@ from data_center.catalog.manifest import (
     validate_manifest,
 )
 from data_center.catalog.registry import DATASETS
+from data_center.catalog.snapshot import selector_hash
 from data_center.domain.models import IngestJob
 from data_center.observability import run_metrics
 from data_center.quality.checks import check_provider_bars
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 from data_center.storage.query import (
+    CursorError,
+    QueryEngine,
+    QueryValidationError,
     economic_observations_coverage,
     provider_bars_coverage,
-    query_economic_observations,
-    query_provider_bars,
 )
 
 _request_id = ContextVar("request_id", default="")
@@ -41,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
+    query_engine = QueryEngine(config.canonical_root)
 
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
@@ -85,6 +88,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.exception_handler(QueryValidationError)
+    async def query_validation_error_handler(request: Request, exc: QueryValidationError) -> JSONResponse:
+        code = "cursor_error" if isinstance(exc, CursorError) else "query_validation_error"
+        return JSONResponse(
+            status_code=422,
+            content={
+                "data": None,
+                "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                "errors": [{"code": code, "message": str(exc)}],
+            },
+        )
+
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
         return {
@@ -121,7 +136,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/metrics")
     def metrics() -> dict:
-        return {"data": run_metrics(ledger), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        payload = run_metrics(ledger)
+        payload["query"] = query_engine.metrics.snapshot(query_engine.catalog)
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/runs")
     def runs(request: Request, status: str | None = None) -> dict:
@@ -171,12 +188,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")
-    def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None, end: str | None = None) -> dict:
+    def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None,
+             end: str | None = None, page_size: int | None = None, cursor: str | None = None) -> dict:
         from datetime import datetime
-        rows = query_provider_bars(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe,
-                                   start=datetime.fromisoformat(start) if start else None,
-                                   end=datetime.fromisoformat(end) if end else None)
-        return {"data": rows, "meta": {"request_id": current_request_id(), "schema_version": "v1", "count": len(rows)}, "errors": []}
+        started = time.monotonic()
+        page = query_engine.provider_bars_page(
+            provider=provider, symbol=symbol, timeframe=timeframe,
+            start=datetime.fromisoformat(start) if start else None,
+            end=datetime.fromisoformat(end) if end else None,
+            page_size=page_size, cursor=cursor,
+        )
+        print(json.dumps({"event": "data_query", "request_id": current_request_id(),
+                          "dataset": "provider_bars",
+                          "selector_hash": selector_hash({"provider": provider, "symbol": symbol,
+                                                          "timeframe": timeframe}),
+                          "snapshot_id": page.snapshot_id, "query_mode": "current",
+                          "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
+              flush=True)
+        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
+                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
+                "next_cursor": page.next_cursor}
+        if page.warning:
+            meta["warnings"] = [page.warning]
+        return {"data": page.rows, "meta": meta, "errors": []}
 
     @app.get(f"{config.api_prefix}/provider-bars/coverage")
     def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d") -> dict:
@@ -202,17 +236,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/economic/observations")
     def economic_observations(series_id: str, provider: str = "fred", start: str | None = None,
                               end: str | None = None, asof_ts: str | None = None,
-                              mode: str = "current") -> dict:
+                              mode: str = "current", page_size: int | None = None,
+                              cursor: str | None = None) -> dict:
         if mode not in {"current", "pit"}:
             raise HTTPException(status_code=422, detail="mode must be current or pit")
         if mode == "pit" and not asof_ts:
             raise HTTPException(status_code=422, detail="pit mode requires asof_ts")
         effective_mode = "pit" if mode == "current" and asof_ts is not None else mode
-        rows = query_economic_observations(config.canonical_root, provider=provider, series_id=series_id,
-                                           start=start, end=end, asof_ts=asof_ts, mode=mode)
-        economic_versions = {"v2" if "source" in row else "v1" for row in rows}
-        economic_schema_version = next(iter(economic_versions)) if len(economic_versions) == 1 else "mixed"
-        return {"data": rows, "meta": {"request_id": current_request_id(), "schema_version": "v1", "economic_schema_version": economic_schema_version, "query_mode": effective_mode, "count": len(rows)}, "errors": []}
+        started = time.monotonic()
+        page = query_engine.economic_observations_page(
+            provider=provider, series_id=series_id, start=start, end=end, asof_ts=asof_ts,
+            mode=mode, page_size=page_size, cursor=cursor,
+        )
+        short_versions = {version.rsplit(".", 1)[-1] for version in page.schema_versions}
+        economic_schema_version = (next(iter(short_versions)) if len(short_versions) == 1
+                                   else "mixed" if short_versions else "unknown")
+        print(json.dumps({"event": "data_query", "request_id": current_request_id(),
+                          "dataset": "economic_observations",
+                          "selector_hash": selector_hash({"provider": provider, "series_id": series_id}),
+                          "snapshot_id": page.snapshot_id, "query_mode": effective_mode,
+                          "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
+              flush=True)
+        meta = {"request_id": current_request_id(), "schema_version": "v1",
+                "economic_schema_version": economic_schema_version, "query_mode": effective_mode,
+                "count": page.count, "schema_versions": page.schema_versions,
+                "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
+        if page.warning:
+            meta["warnings"] = [page.warning]
+        return {"data": page.rows, "meta": meta, "errors": []}
 
     @app.get(f"{config.api_prefix}/economic/coverage")
     def economic_dataset_coverage(series_id: str, provider: str = "fred") -> dict:

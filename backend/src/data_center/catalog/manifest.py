@@ -126,6 +126,39 @@ def validate_manifest(root: Path, manifest: dict) -> list[Path]:
         raise PublicationError("manifest validation failed") from exc
 
 
+def validate_manifest_metadata(root: Path, manifest: dict) -> list[Path]:
+    """Validate published metadata and immutable part identity without rereading rows."""
+    try:
+        dataset = manifest["dataset_id"]
+        if dataset not in {"provider_bars", "economic_observations"}:
+            raise ValueError("dataset")
+        supported_versions = {"provider_bars.v1"} if dataset == "provider_bars" else {
+            ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION,
+        }
+        if manifest["schema_version"] not in supported_versions or manifest["status"] != "published":
+            raise ValueError("version/status")
+        if manifest["quality_summary"]["status"] != "pass" or manifest["row_count"] < 0:
+            raise ValueError("quality/count")
+        files = []
+        for item in manifest["parts"]:
+            relative = Path(item["path"])
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != dataset:
+                raise ValueError("path")
+            path = root / relative
+            if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+                raise ValueError("path")
+            if path.stat().st_size != item["bytes"] or item["bytes"] <= 0 or file_hash(path) != item["sha256"]:
+                raise ValueError("integrity")
+            if {key: str(value) for key, value in pl.read_parquet_schema(path).items()} != item["schema"]:
+                raise ValueError("schema")
+            files.append(path)
+        if not files or len(set(files)) != len(files):
+            raise ValueError("parts")
+        return files
+    except Exception as exc:
+        raise PublicationError("manifest metadata validation failed") from exc
+
+
 def write_manifest(root: Path, manifest: dict) -> Path:
     validate_manifest(root, manifest)
     return immutable_json(manifest_path(root, manifest["run_id"]), manifest)

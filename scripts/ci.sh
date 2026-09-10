@@ -10,7 +10,8 @@ fi
   cd "$repo_dir/backend"
   "$task_python" -m ruff check src tests
 )
-"$task_python" -m ruff check scripts/secret_scan.py scripts/compatibility_check.py scripts/economic_parity.py scripts/operations_acceptance.py
+"$task_python" -m ruff check scripts/secret_scan.py scripts/compatibility_check.py scripts/economic_parity.py \
+  scripts/operations_acceptance.py scripts/query_benchmark.py scripts/query_pagination_acceptance.py
 "$task_python" -m pip check
 PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/compatibility_check.py
 "$task_python" -m pytest -q backend/tests
