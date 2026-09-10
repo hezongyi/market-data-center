@@ -19,3 +19,10 @@ class EconomicObservation(BaseModel):
     availability_lag_days: int | None = None
     ingest_ts: datetime
     source_hash: str
+
+
+class EconomicObservationV2(EconomicObservation):
+    """PIT-compatible observation with explicit provenance and missingness."""
+
+    source: str
+    missing_reason: str | None = None

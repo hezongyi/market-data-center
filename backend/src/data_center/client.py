@@ -30,7 +30,8 @@ class DataCenterClient:
         return self._request("GET", "/bars", params=params)["data"]
 
     def economic_observations(self, *, series_id: str, provider: str = "fred", start: str | None = None,
-                              end: str | None = None, asof_ts: str | None = None) -> list[dict]:
+                              end: str | None = None, asof_ts: str | None = None,
+                              mode: str = "current") -> list[dict]:
         params = {key: value for key, value in {"provider": provider, "series_id": series_id, "start": start,
-                                                 "end": end, "asof_ts": asof_ts}.items() if value is not None}
+                                                 "end": end, "asof_ts": asof_ts, "mode": mode}.items() if value is not None}
         return self._request("GET", "/economic/observations", params=params)["data"]

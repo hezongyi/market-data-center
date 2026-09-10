@@ -17,3 +17,9 @@ def test_api_reads_canonical_bars_and_economic_observations(tmp_path) -> None:
     econ = client.get("/api/v1/economic/observations", params={"provider": "fred", "series_id": "TEST"})
     assert bars.status_code == 200 and bars.json()["meta"]["count"] == 1
     assert econ.status_code == 200 and econ.json()["meta"]["count"] == 1
+    assert econ.json()["meta"]["economic_schema_version"] == "v1"
+    pit = client.get("/api/v1/economic/observations", params={"provider": "fred", "series_id": "TEST",
+                                                              "mode": "pit", "asof_ts": "2026-01-03T00:00:00Z"})
+    assert pit.status_code == 200 and pit.json()["meta"]["query_mode"] == "pit"
+    assert client.get("/api/v1/economic/observations", params={"provider": "fred", "series_id": "TEST",
+                                                                "mode": "pit"}).status_code == 422

@@ -12,6 +12,8 @@ import polars as pl
 
 from data_center.domain.models import ProviderBar
 from data_center.domain.schema import (
+    ECONOMIC_PIT_SCHEMA_VERSION,
+    ECONOMIC_SCHEMA_VERSION,
     validate_economic_observations,
     validate_provider_bars,
 )
@@ -87,7 +89,10 @@ def validate_manifest(root: Path, manifest: dict) -> list[Path]:
         dataset = manifest["dataset_id"]
         if dataset not in {"provider_bars", "economic_observations"}:
             raise ValueError("dataset")
-        if manifest["schema_version"] != dataset + ".v1" or manifest["status"] != "published":
+        supported_versions = {"provider_bars.v1"} if dataset == "provider_bars" else {
+            ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION,
+        }
+        if manifest["schema_version"] not in supported_versions or manifest["status"] != "published":
             raise ValueError("version/status")
         if manifest["quality_summary"]["status"] != "pass":
             raise ValueError("quality")
@@ -112,7 +117,7 @@ def validate_manifest(root: Path, manifest: dict) -> list[Path]:
             validate_provider_bars(bars)
             findings = check_provider_bars(bars)
         else:
-            validate_economic_observations(rows)
+            validate_economic_observations(rows, schema_version=manifest["schema_version"])
             findings = check_economic_observations(rows)
         if findings:
             raise ValueError("quality")

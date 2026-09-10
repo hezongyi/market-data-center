@@ -7,9 +7,9 @@ DATASETS = {
     },
     "economic_observations": {
         "dataset_id": "economic_observations",
-        "schema_version": "v1",
+        "schema_version": "v2",
         "description": "标准化宏观经济时间序列",
         "partitioning": ["provider", "series_id"],
-        "required_fields": ["series_id", "provider", "observation_date", "release_ts", "asof_ts", "value", "frequency", "units", "seasonal_adjustment", "vintage_start", "vintage_end", "availability_policy", "availability_lag_days", "ingest_ts", "source_hash"],
+        "required_fields": ["series_id", "provider", "observation_date", "release_ts", "asof_ts", "value", "frequency", "units", "seasonal_adjustment", "vintage_start", "vintage_end", "availability_policy", "availability_lag_days", "ingest_ts", "source_hash", "source", "missing_reason"],
     },
 }
