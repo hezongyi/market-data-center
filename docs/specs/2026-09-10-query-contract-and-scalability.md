@@ -1,7 +1,7 @@
 # Query Contract and Scalability Specification
 
 日期：2026-09-10  
-状态：implemented，等待 hosted CI / protected main 收口  
+状态：completed  
 前置 spec：`2026-09-10-economic-pit-and-operations`
 
 ## 目标
@@ -133,6 +133,14 @@ Query module 对 bars 和 economic 暴露统一的 page result 概念：
   `macro-market-lab` bars/economic consumer parity 通过。
 - 本机 systemd API 已加载实现并通过 readiness；生产 PAYEMS mixed fixture 返回
   `schema_versions=[economic_observations.v1,economic_observations.v2]` 和兼容字段 `mixed`。
+- `macro-market-lab` PR #2 已合并为 protected `main` commit
+  `0bc33e041fba0863667a2dbced555d0530dbcf5d`。
+- Data Center PR #2 的 required `verify` 成功后合并为 protected `main` commit
+  `b342e64614ccf3bf1a97c4afef4c51142af17515`；post-merge GitHub Actions run
+  `34447619968` / job `102775793301` 的 `verify` 于 2026-09-10 成功。
+
+截至 2026-09-10，Q1–Q4 的实现、自动化测试、真实 mixed fixture、catalog/pagination 稳定性、
+consumer parity、百万行/千 part 性能预算、本机生产服务和受保护 `main` post-merge 门禁均已完成。
 
 ## 非目标
 
