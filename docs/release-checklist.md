@@ -31,6 +31,27 @@ Final evidence PR #5 merged as protected-main commit `54f002580a5c72cdd3da57ef12
 7. Install from the tagged checkout, start API/worker, run smoke and browser acceptance, then execute the rollback rehearsal.
 8. Write a release receipt conforming to `docs/schemas/release-receipt.schema.json` and retain it permanently.
 
+## Immutable production activation
+
+1. Create the deployment only from a clean checkout of the exact protected-main commit whose commit-scoped
+   `verify` check succeeded. Fetch `origin/main` immediately before staging.
+2. Run `python -m data_center.deployment stage COMMIT --release-root RELEASE_ROOT --evidence-root EVIDENCE_ROOT`.
+   Retain the manifest, artifact hash, Python constraint hash, Web UI asset hash, and stage receipt.
+3. Hash canonical manifests and the ledger before activation. Activate through `data_center.deployment activate`;
+   never repoint systemd or install dependencies manually.
+4. Verify API, worker, monitor receipt, metrics, readiness, and Web UI report the same deployment ID, version,
+   and source commit. Confirm API/worker `WorkingDirectory` and `ExecStart` resolve under `releases/current`.
+5. Inject a candidate readiness or identity failure and retain the failed activation receipt proving automatic
+   restoration of the previous release. Confirm canonical and ledger hashes did not change.
+6. Roll back to the prior verified release, run readiness/smoke/browser checks, then forward-deploy the final
+   protected-main release again. Retain both operation receipts.
+7. Rebuild the receipt index explicitly and verify latest backup/recovery fields. Acknowledge or resolve every
+   historical active dead-letter without modifying terminal runs.
+8. Complete a continuous 60-minute monitor soak: no overlap, no immediate catch-up loop, evaluation under five
+   seconds, bounded delivery, complete receipts, and no repeated webhook side effect for a stable capacity state.
+9. Run the capacity check without relaxing thresholds. While status is `warning`, record Dukascopy D4 and
+   unattended backfills over 31 days as prohibited.
+
 Corrections use a new commit and a new semantic version tag. Historical receipts and tags are immutable.
 
 ## Rollback

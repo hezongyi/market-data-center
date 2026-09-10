@@ -12,7 +12,7 @@ from pathlib import Path
 from data_center.capacity import CapacityPolicy, CapacityProtectedError
 from data_center.domain.models import IngestJob
 from data_center.ingest.worker import LocalWorker
-from data_center.observability import AlertSink, check_alerts
+from data_center.observability import AlertSink, check_alerts, run_metrics
 from data_center.operations import (
     create_backup,
     recovery_drill,
@@ -20,6 +20,7 @@ from data_center.operations import (
     verify_backup,
 )
 from data_center.runs.ledger import RunLedger
+from data_center.snapshot import ReceiptIndex
 
 
 def _commit() -> str:
@@ -35,7 +36,7 @@ def run_drill(output: Path | None = None) -> dict:
         root = Path(directory) / "canonical"
         ledger = RunLedger(root / "audit" / "data_center.sqlite")
         worker = LocalWorker(root, ledger)
-        run_id = worker.submit(IngestJob(job_id="operations-acceptance", symbol="TEST",
+        run_id = worker.submit(IngestJob(job_id="operations-acceptance", symbol="TEST", run_scope="acceptance",
                                          start=datetime(2026, 1, 1, tzinfo=timezone.utc),
                                          end=datetime(2026, 1, 2, tzinfo=timezone.utc)))
         if not worker.run_next() or ledger.get(run_id)["status"] != "pass":
@@ -45,8 +46,19 @@ def run_drill(output: Path | None = None) -> dict:
         verification = verify_backup(Path(backup["archive"]), evidence_root=evidence)
         recovery = recovery_drill(root, ledger.path, Path(directory) / "recovery", evidence_root=evidence)
         capacity = retention_audit(root, capacity_policy=CapacityPolicy(), evidence_root=evidence)
+        receipt_index = ReceiptIndex(evidence)
+        metrics = run_metrics(
+            ledger, canonical_root=root, capacity_policy=CapacityPolicy(),
+            evidence_root=evidence, receipt_index=receipt_index,
+            backup_root=Path(directory) / "backup-artifacts",
+            restore_staging_root=Path(directory) / "restore-staging",
+        )
+        if (metrics["operational_snapshot_status"] != "fresh"
+                or not metrics["last_successful_backup_at"]
+                or not metrics["last_successful_recovery_drill_at"]):
+            raise RuntimeError("operational snapshot did not expose indexed backup and recovery evidence")
         sink = AlertSink(Path(directory) / "alerts")
-        event_ids = check_alerts(ledger, sink, heartbeat_limit=0)
+        event_ids = check_alerts(ledger, sink, heartbeat_limit=0, metrics=metrics)
         warning_policy = CapacityPolicy(warning_free_ratio=0.99, critical_free_ratio=0.01)
         critical_policy = CapacityPolicy(warning_free_ratio=0.999, critical_free_ratio=0.99)
         warning_policy.require_ingest_capacity(root)
@@ -76,6 +88,12 @@ def run_drill(output: Path | None = None) -> dict:
                   "recovery": recovery, "fault_isolation": {"alert_event_count": len(event_ids),
                                                                "alert_event_ids": event_ids},
                   "capacity": capacity["capacity"],
+                  "operational_snapshot": {
+                      "status": metrics["operational_snapshot_status"],
+                      "generation_seconds": metrics["snapshot_generation_seconds"],
+                      "last_successful_backup_at": metrics["last_successful_backup_at"],
+                      "last_successful_recovery_drill_at": metrics["last_successful_recovery_drill_at"],
+                  },
                   "capacity_gates": {"warning_backfill_blocked": warning_backfill_blocked,
                                      "critical_ingest_blocked": critical_ingest_blocked,
                                      "idempotent_capacity_events": len(capacity_events)}}

@@ -40,6 +40,14 @@ def test_hosted_ci_and_dependency_refresh_cover_supported_runtimes():
     assert json.loads((ROOT / "webui/package.json").read_text())["devDependencies"]["playwright"] == "1.63.0"
 
 
+def test_local_browser_gate_has_explicit_node_playwright_and_chromium_preflight():
+    script = (ROOT / "scripts/ci.sh").read_text()
+    assert 'node_major=' in script and 'Node 22 is required' in script
+    assert "require.resolve('playwright'" in script
+    assert ".cache/ms-playwright" in script
+    assert "playwright install chromium" in script
+
+
 def test_release_receipt_schema_and_baseline_receipt_have_required_fields():
     schema = json.loads((ROOT / "docs/schemas/release-receipt.schema.json").read_text())
     receipt = json.loads((ROOT / "docs/releases/v0.1.0-receipt.json").read_text())

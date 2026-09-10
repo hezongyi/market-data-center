@@ -4,8 +4,10 @@ After=market-data-center-api.service market-data-center-worker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/quant/repos/market-data-center
-EnvironmentFile=/home/quant/repos/market-data-center/.env.local
-ExecStart=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.acceptance
-ExecStartPost=/home/quant/repos/market-data-center/.venv/bin/python -m data_center.operations retention-audit
+WorkingDirectory=%h/market-data-center/releases/current
+EnvironmentFile=%h/.config/market-data-center/env
+Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
+Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.acceptance
+ExecStartPost=%h/market-data-center/releases/current/.venv/bin/python -m data_center.operations retention-audit
 TimeoutStartSec=30min

@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     backup_root: Path | None = None
     api_key: str | None = None
     webui_dist: Path | None = None
+    deployment_manifest: Path | None = None
+    release_root: Path = Path("./var/releases")
+    restore_staging_root: Path = Path("./var/restore-staging")
+    monitor_runtime_max_seconds: float = 30.0
+    monitor_delivery_batch_size: int = 50
+    monitor_delivery_timeout_seconds: float = 5.0
+    monitor_delivery_budget_seconds: float = 20.0
     worker_timeout_seconds: float = 120.0
     capacity_warning_free_ratio: float = 0.15
     capacity_critical_free_ratio: float = 0.10

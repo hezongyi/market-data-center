@@ -20,8 +20,9 @@ def test_secret_scan_detects_credential_shapes() -> None:
 
 
 def test_secret_scan_ignores_lookup_source_and_short_prefixes() -> None:
-    browser_lookup = Path("scripts/browser_acceptance.cjs").read_bytes()
-    scanner_source = Path("scripts/secret_scan.py").read_bytes()
+    repo_root = Path(__file__).parents[2]
+    browser_lookup = (repo_root / "scripts/browser_acceptance.cjs").read_bytes()
+    scanner_source = (repo_root / "scripts/secret_scan.py").read_bytes()
 
     assert not has_secret(browser_lookup)
     assert not has_secret(scanner_source)

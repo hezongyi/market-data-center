@@ -88,13 +88,15 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
             result = {"provider": provider, "symbol": symbol}
             try:
                 if provider == "fred":
-                    query = {"series_id": symbol, "start": (now - timedelta(days=90)).date().replace(day=1).isoformat(), "end": now.date().isoformat()}
+                    query = {"series_id": symbol, "start": (now - timedelta(days=90)).date().replace(day=1).isoformat(),
+                             "end": now.date().isoformat(), "run_scope": "acceptance"}
                     submitted = call("POST", "/economic/ingest", params=query)
                     read_path = "/economic/observations"
                 else:
                     query = {"provider": provider, "symbol": symbol, "timeframe": "1d",
                              "start": (now - timedelta(days=14)).isoformat(), "end": now.isoformat()}
                     submitted = call("POST", "/ingest/runs", json={**query, "job_id": "acceptance-" + report["acceptance_id"],
+                                                                    "run_scope": "acceptance",
                                       "asset_class": "etf" if provider == "yfinance" else "crypto"})
                     read_path = "/bars"
                 result["run_id"] = submitted["run_id"]

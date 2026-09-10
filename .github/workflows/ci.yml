@@ -38,7 +38,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-receipt-${{ matrix.python-version }}
-          path: acceptance-receipts/ci/backend-${{ matrix.python-version }}.json
+          path: |
+            acceptance-receipts/ci/backend-${{ matrix.python-version }}.json
+            acceptance-receipts/operational-snapshot-benchmark.json
 
   web:
     name: web-node-22-browser

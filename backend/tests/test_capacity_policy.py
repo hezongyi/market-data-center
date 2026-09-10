@@ -43,7 +43,8 @@ def test_settings_reject_invalid_capacity_thresholds():
 def test_critical_capacity_rejects_api_ingest_but_keeps_reads(monkeypatch, tmp_path):
     policy = FixedPolicy(snapshot("critical", 0.09))
     monkeypatch.setattr(Settings, "capacity_policy", lambda self: policy)
-    settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "lake/audit/ledger.sqlite")
+    settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "lake/audit/ledger.sqlite",
+                        evidence_root=tmp_path / "evidence")
     ledger = RunLedger(settings.ledger_path)
     ledger.heartbeat()
     client = TestClient(create_app(settings))
@@ -83,7 +84,14 @@ def test_capacity_alert_is_idempotent_across_monitor_runs(tmp_path):
     second = check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=policy)
     capacity_events = [event for event in sink.events() if event["event"] == "capacity_warning"]
     assert len(capacity_events) == 1
-    assert set(first) == set(second)
+    assert len(first) == 2 and second == []
+
+    ok_policy = FixedPolicy(snapshot("ok", 0.20))
+    check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=ok_policy)
+    third = check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=policy)
+    capacity_events = [event for event in sink.events() if event["event"] == "capacity_warning"]
+    assert len(third) == 1 and third[0] != first[0]
+    assert len(capacity_events) == 2
 
 
 def test_warning_capacity_blocks_large_unattended_backfill_before_network(tmp_path):

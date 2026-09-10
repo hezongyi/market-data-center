@@ -1,5 +1,46 @@
 # Operations runbook
 
+## Immutable deployment
+
+Production services run only from the immutable `releases/current` pointer, never from a repository checkout.
+Prepare the machine-local environment without printing its contents:
+
+```bash
+install -d -m 0700 "$HOME/.config/market-data-center"
+install -m 0600 /path/to/existing/env "$HOME/.config/market-data-center/env"
+git fetch origin main
+git merge-base --is-ancestor HEAD origin/main
+test -z "$(git status --porcelain)"
+```
+
+Stage, activate, inspect, and roll back only through the deployment module:
+
+```bash
+release_root="$HOME/market-data-center/releases"
+evidence_root="/home/quant/market_lake/evidence/data-center"
+PYTHONPATH=backend/src python -m data_center.deployment stage "$(git rev-parse origin/main)" \
+  --repository "$PWD" --release-root "$release_root" --evidence-root "$evidence_root"
+PYTHONPATH=backend/src python -m data_center.deployment activate RELEASE_ID \
+  --repository "$PWD" --release-root "$release_root" --evidence-root "$evidence_root"
+PYTHONPATH=backend/src python -m data_center.deployment current --release-root "$release_root"
+PYTHONPATH=backend/src python -m data_center.deployment rollback PREVIOUS_RELEASE_ID \
+  --repository "$PWD" --release-root "$release_root" --evidence-root "$evidence_root"
+```
+
+`stage` rejects dirty checkouts and commits not reachable from `origin/main`. Activation atomically switches
+`current`, restarts API and worker, verifies readiness plus deployment identity, and starts the monitor. A failed
+activation restores the previous verified release. Keep every stage, activation, failed activation, and rollback
+receipt. Never repair production by changing the checkout or installing into a shared virtual environment.
+
+After activation, compare `deployment_id`, `software_version`, and `source_commit` from readiness and metrics.
+They must match the activation receipt and the identity shown by the Web UI:
+
+```bash
+curl -fsS http://127.0.0.1:18380/api/v1/health/ready
+curl -fsS http://127.0.0.1:18380/api/v1/metrics
+systemctl --user show -p WorkingDirectory -p ExecStart market-data-center-api.service market-data-center-worker.service
+```
+
 ## Readiness and queue
 
 ```bash
@@ -49,6 +90,30 @@ Backup v2 writes a same-directory `.partial`, fsyncs, verifies metadata and hash
 
 `--allow-same-device` is only for isolated development drills and cannot be used as the sole production recovery copy. Never delete or rewrite canonical parts to recover a consumer; disable the feature flag and restore the previous reader.
 
+Receipt metadata is indexed for bounded readiness, metrics, and monitor reads. Original JSON receipts remain the
+audit source of truth. Rebuild the derived index explicitly after migration or corruption; request paths never
+fall back to scanning the evidence tree:
+
+```bash
+PYTHONPATH=backend/src python -m data_center.operations rebuild-receipt-index
+curl -fsS http://127.0.0.1:18380/api/v1/metrics
+```
+
+Confirm `operational_snapshot_status=fresh` and verify that the latest successful backup and recovery drill
+timestamps are populated from the rebuilt index.
+
+## Dead-letter operations
+
+Dead-letter terminal runs are immutable. Acknowledge an investigated run through the additive operations state:
+
+```bash
+curl -fsS -X POST -H "X-API-Key: $DATACENTER_API_KEY" \
+  "http://127.0.0.1:18380/api/v1/runs/RUN_ID/acknowledge"
+```
+
+Retrying creates a new run with the original `run_scope`. When that retry passes, the original dead-letter is
+marked `resolved` with `resolved_by_run_id`; its original status, error, and historical count are retained.
+
 ## Alerts
 
 The monitor writes idempotent events to the local alert outbox. Configure `DATACENTER_ALERT_WEBHOOK_URL` to deliver them. Delivery uses the event ID as `Idempotency-Key`, retries transient failures, and records undelivered events for the next monitor run. Alert delivery failure must not block ingest.
@@ -77,3 +142,8 @@ commit to prove paged/unpaged and `macro-market-lab` consumer parity on producti
 ## Acceptance evidence
 
 Keep CI, dependency refresh, browser acceptance, capacity, parity, provider acceptance, backup/verify/recovery, cleanup, release, and cutover reports under the protected evidence root for at least 90 days. Release receipts and compatibility matrices are retained for the lifetime of the release. Each structured receipt includes commit, environment, action/command, start/completion time, software version, result, failure stage, and safe error category.
+
+At capacity `warning`, Dukascopy D4 and unattended backfills over 31 days remain prohibited. Do not lower the
+15% warning threshold to manufacture a pass. Enable those migrations only after an expansion, approved archival,
+or mount migration produces a new capacity receipt proving an `ok` free ratio, stable mount identity, read/write
+availability, independent backup destination, and a verified recovery path.

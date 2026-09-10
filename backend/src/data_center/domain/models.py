@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProviderBar(BaseModel):
@@ -29,3 +30,4 @@ class IngestJob(BaseModel):
     timeframe: str = "1d"
     start: datetime
     end: datetime
+    run_scope: Literal["production", "acceptance", "migration", "maintenance"] = Field(default="production")

@@ -33,14 +33,39 @@ run_backend() {
   "$task_python" -m pip check
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/compatibility_check.py
   "$task_python" scripts/dependency_lock_check.py
-  "$task_python" -m pytest -q backend/tests
-  "$task_python" scripts/secret_scan.py
+  PYTHONPATH="$repo_dir/backend/src" "$task_python" -m pytest -q backend/tests
+  PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/secret_scan.py
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/operations_acceptance.py
+  PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/operational_snapshot_benchmark.py
 }
 
 run_web() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node 22 is required for Web and browser acceptance." >&2
+    return 1
+  fi
+  node_major="$(node -p 'process.versions.node.split(".")[0]')"
+  if [[ "$node_major" != "22" ]]; then
+    echo "Node 22 is required; found $(node --version)." >&2
+    return 1
+  fi
   npm --prefix webui ci
   npm --prefix webui run build
+  if ! node -e "require.resolve('playwright', {paths: [process.cwd() + '/webui']})"; then
+    echo "Locked Playwright package is unavailable. Run: npm --prefix webui ci" >&2
+    return 1
+  fi
+  if [[ -z "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" ]]; then
+    PLAYWRIGHT_BROWSER_EXECUTABLE="$(find "${HOME}/.cache/ms-playwright" -type f -path '*/chrome-linux/chrome' 2>/dev/null | sort -V | tail -1 || true)"
+    export PLAYWRIGHT_BROWSER_EXECUTABLE
+  fi
+  if [[ -n "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" && -x "$PLAYWRIGHT_BROWSER_EXECUTABLE" ]]; then
+    export LD_LIBRARY_PATH="${HOME}/.local/share/playwright-deps-jammy/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  else
+    echo "Playwright Chromium is unavailable. Discover cache with: find \"\$HOME/.cache/ms-playwright\" -type f -path '*/chrome-linux/chrome'" >&2
+    echo "Or install it with: npx --prefix webui playwright install chromium" >&2
+    return 1
+  fi
   PYTHONPATH="$repo_dir/backend/src" DATACENTER_PYTHON="$task_python" npm --prefix webui run test:e2e
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/service_acceptance.py
 }
