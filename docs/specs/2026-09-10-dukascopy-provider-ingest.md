@@ -164,7 +164,7 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - 从 protected `origin/main` commit `c608b608b949d9f695d54c426366f645bf4c6b5a` 创建分支 `dukascopy-provider-ingest-20260911`，未整体带入旧 dirty worktree 的 release/deployment 改动。
 - 逐文件移植 adapter、registry、依赖/constraints、scheduled acceptance、contract tests 和本 spec；主线 `0.2.0` 版本、deployment、capacity、snapshot、backup 与 CI 保持不变。
 - 本地 py311 已完成锁定依赖安装；Dukascopy contract tests 5 passed，完整 backend tests 122 passed，统一 `bash scripts/ci.sh all` 通过。
-- 本机 python3.10 缺少 `ensurepip`/`venv`，python3.12 未安装；三版本安装门禁和 hosted `verify` 留待环境可用后执行。当前结果不构成 D3/D4 正式生产验收。
+- PR #13 已合并至 protected `main` commit `7357bbe6604aeedc1af08f58551b834a3444d29e`；exact PR head 的 Python 3.10/3.11/3.12、Node 22 browser 与 required `verify` 全部通过。
 
 - D1：新增 `DukascopyConnector`，固定 `dukascopy-python==4.0.1` 和 connector version `dukascopy-python-4.0.1-bid-v1`；支持六字符 canonical symbol、1m/5m/15m/30m/1h/4h/1d、BID basis、UTC 半开区间、closed-bar filter、bounded range、provider HTTP timeout/proxy/status validation 和稳定 source hash。
 - D1：adapter contract tests 覆盖 inclusive-end 过滤、BID/currency normalization、proxy/timeout、分钟范围上限和重复 timestamp 失败语义。
@@ -175,6 +175,14 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - Scheduled provider acceptance 已加入 Dukascopy EURUSD/FX/1d；仍需在 immutable deployment 更新后生成生产 receipt，并完成 D4 历史迁移与 consumer parity，故本 spec 保持 `in progress`。
 - 2026-09-10 baseline audit 发现现有 Dukascopy 实现位于落后 `origin/main` 14 个提交的 dirty checkout；既有 D1/D2 测试结果作为移植输入保留，但必须完成 D0 并在 clean `v0.2.0`+ baseline 上重新验证后才能进入正式 D3。
 - 2026-09-10 production storage 约 11% free，处于 capacity warning。D3 的不超过 31 天短窗口可在 policy 与 deployment 门禁通过后执行；D4 bulk migration 当前被容量门禁阻止。
+
+## D3 验收记录（2026-09-11）
+
+- `7357bbe6604a-055fc839` immutable release 完成 stage/activate；随后 PR #14 补齐 acceptance deployment identity、capacity snapshot、BID assertion、manifest parts、snapshot ID、稳定 readback hash 与分页/非分页一致性证据，exact head `f1e133fa9cc145495c5969fc9c3bca88c6074541` 的 hosted Python 3.10/3.11/3.12、Node 22 browser 和 required `verify` 全部通过，并合并为 `main` commit `5f3c6a5b49f4ed6a6cd648f39cf2cc5772ae1417`。
+- 当前 production immutable deployment 为 `5f3c6a5b49f4-bd4b873d`。人工 acceptance `5a2152a8003a4ddebd7a53b048dcca88` 中 Dukascopy run `f955082c-6b48-4998-930c-0d4854af7aae` 通过；systemd provider-acceptance timer 同路径验收 `59f2fba93c074f2b9f962881eed4fbe8` 中 Dukascopy run `8850b5d1-5c03-4948-b663-328ca9af6ef7` 通过。
+- 两次验收均使用 `EURUSD`/FX/1d、14 天有界半开窗口，发布 12 行 closed BID bars，min/max 为 `2026-08-28T00:00:00+00:00` / `2026-09-10T00:00:00+00:00`；connector version、input/output hash、quality、part/manifest、snapshot 和 paged/unpaged readback hash 均已记录且一致。
+- 验收前后 free ratio 均约 `0.11684`，capacity 为 `warning`；请求估算 57,344 bytes，满足 warning 状态只允许不超过 31 天 D3 窗口的门禁。D4 bulk migration 继续禁止。
+- D3 尚未关闭：仍需在 immutable deployment 上形成 empty、timeout/status、duplicate/out-of-order、missing OHLC 和 unsupported selector 的安全失败 receipt，并完成服务重启 readback 与 rollback/readback 证明。上述证据未完成前本 spec 保持 `in progress`。
 
 ## 非目标
 
