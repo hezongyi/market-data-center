@@ -82,7 +82,9 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                   "validation_command": "python -m data_center.acceptance", "base_url": base_url,
                   "environment": evidence_context(),
                   "status": "pass", "providers": []}
-        for index, (provider, symbol) in enumerate((("binance", "BTCUSDT"), ("yfinance", "SPY"), ("fred", "PAYEMS"))):
+        providers = (("binance", "BTCUSDT", "crypto"), ("yfinance", "SPY", "etf"),
+                     ("dukascopy", "EURUSD", "fx"), ("fred", "PAYEMS", None))
+        for index, (provider, symbol, asset_class) in enumerate(providers):
             if index:
                 time.sleep(spacing_seconds)
             result = {"provider": provider, "symbol": symbol}
@@ -97,7 +99,7 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                              "start": (now - timedelta(days=14)).isoformat(), "end": now.isoformat()}
                     submitted = call("POST", "/ingest/runs", json={**query, "job_id": "acceptance-" + report["acceptance_id"],
                                                                     "run_scope": "acceptance",
-                                      "asset_class": "etf" if provider == "yfinance" else "crypto"})
+                                      "asset_class": asset_class})
                     read_path = "/bars"
                 result["run_id"] = submitted["run_id"]
                 deadline = time.monotonic() + deadline_seconds
