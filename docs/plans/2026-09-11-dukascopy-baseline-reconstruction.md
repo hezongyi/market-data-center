@@ -59,9 +59,17 @@
 - [x] 目标分支从 `origin/main` 创建
 - [x] 目标 worktree 初始 clean
 - [x] 基线版本为 `v0.2.0` 之后的 protected-main commit
-- [ ] Dukascopy 文件完成逐文件移植
-- [ ] Python 3.10/3.11/3.12 locked install 验证
-- [ ] 统一 CI 与 hosted `verify` 验证
+- [x] Dukascopy adapter、registry、acceptance、spec 和 contract tests 完成逐文件移植
+- [ ] Python 3.10/3.11/3.12 locked install 验证（当前已验证 py311）
+- [x] 本地统一 CI 与 snapshot benchmark 验证（py311）
+
+## 当前证据
+
+- `de15f2e`：移植 Dukascopy adapter、registry、依赖、constraints、acceptance、spec 和本计划。
+- `bad88c4`：修正 acceptance 失败告警测试并通过格式检查。
+- D1 contract tests：5 passed。
+- 本地 `bash scripts/ci.sh all`：122 tests、Ruff、dependency/compatibility、secret scan、operations acceptance、10,000 receipt snapshot benchmark、Web build、browser acceptance 和 service acceptance 全部通过。
+- Browser acceptance 使用隔离服务和 `EURUSD` 以外的 fixture 数据，不构成 D3 真实 provider 证据。
 
 ## 删除旧 worktree 的前置条件
 
