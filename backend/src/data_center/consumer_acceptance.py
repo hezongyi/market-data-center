@@ -65,14 +65,19 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
                "--provider", "dukascopy", "--asset-class", "fx", "--symbol", "EURUSD",
                "--timeframe", "1d", "--mode", "summary", "--limit", "5",
                "--data-root", str(data_root)]
+
+    def run_consumer(env: dict[str, str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, cwd=consumer_repo, env=env, capture_output=True,
+                              text=True, check=check, timeout=60)
+
     on_env = {**env, "MACRO_MARKET_USE_DATA_CENTER_BARS": "1"}
     on_started = time.monotonic()
-    on = subprocess.run(command, cwd=consumer_repo, env=on_env, capture_output=True, text=True, check=True)
+    on = run_consumer(on_env)
     on_duration = time.monotonic() - on_started
     on_payload = json.loads(on.stdout)
     off_env = {key: value for key, value in env.items() if key != "MACRO_MARKET_USE_DATA_CENTER_BARS"}
     off_started = time.monotonic()
-    off = subprocess.run(command, cwd=consumer_repo, env=off_env, capture_output=True, text=True, check=True)
+    off = run_consumer(off_env)
     off_duration = time.monotonic() - off_started
     off_payload = json.loads(off.stdout)
     windows = {
@@ -124,12 +129,27 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     after_metrics = after_metrics_response.json()["data"]
     observation_started = utc_now()
     observation_samples = [after_metrics]
+    consumer_observation = []
     deadline = time.monotonic() + max(0, observation_seconds)
     while time.monotonic() < deadline:
         time.sleep(min(10, deadline - time.monotonic()))
         sample_response = session.get(metrics_url, timeout=10)
         sample_response.raise_for_status()
         observation_samples.append(sample_response.json()["data"])
+        sample = run_consumer(on_env, check=False)
+        sample_status = "pass"
+        sample_source = None
+        if sample.returncode == 0:
+            try:
+                sample_source = json.loads(sample.stdout).get("source")
+                if sample_source != "data_center":
+                    sample_status = "failed"
+            except json.JSONDecodeError:
+                sample_status = "failed"
+        else:
+            sample_status = "failed"
+        consumer_observation.append({"status": sample_status, "returncode": sample.returncode,
+                                     "source": sample_source})
     observation_completed = utc_now()
     observed_start = observation_samples[0]
     observed_end = observation_samples[-1]
@@ -143,6 +163,17 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     )
     error_semantics_response.raise_for_status()
     error_semantics_payload = error_semantics_response.json()
+    unsupported_command = command.copy()
+    unsupported_command[unsupported_command.index("EURUSD")] = "UNSUPPORTED"
+    unsupported_on = subprocess.run(unsupported_command, cwd=consumer_repo, env=on_env,
+                                    capture_output=True, text=True, check=False, timeout=60)
+    unsupported_off = subprocess.run(unsupported_command, cwd=consumer_repo, env=off_env,
+                                     capture_output=True, text=True, check=False, timeout=60)
+    consumer_error_semantics = {
+        "flag_on_returncode": unsupported_on.returncode,
+        "flag_off_returncode": unsupported_off.returncode,
+        "same_nonzero_result": unsupported_on.returncode != 0 and unsupported_off.returncode != 0,
+    }
     consumer_commit = _git(consumer_repo, "rev-parse", "HEAD")
     checks = {
         "flag_default_off": flag_default_off,
@@ -180,7 +211,15 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
         },
         "error_semantics": {"unsupported_selector": {"http_status": error_semantics_response.status_code,
                                                         "data_count": len(error_semantics_payload.get("data") or []),
-                                                        "errors": error_semantics_payload.get("errors") or []}},
+                                                        "errors": error_semantics_payload.get("errors") or []},
+                            "consumer": consumer_error_semantics},
+        "consumer_observation": {
+            "sample_count": len(consumer_observation),
+            "failure_count": sum(item["status"] != "pass" for item in consumer_observation),
+            "failure_rate": (sum(item["status"] != "pass" for item in consumer_observation) /
+                             len(consumer_observation)) if consumer_observation else 0.0,
+            "samples": consumer_observation,
+        },
         "unmigrated_inventory": _latest_inventory(evidence_root),
     }
     result = "pass" if all((checks["flag_default_off"], checks["bid_gate_present"],
@@ -191,6 +230,8 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
                              checks["readiness"].get("status") == "ready",
                              checks["error_semantics"]["unsupported_selector"]["http_status"] == 200,
                              checks["error_semantics"]["unsupported_selector"]["data_count"] == 0,
+                             checks["error_semantics"]["consumer"]["same_nonzero_result"],
+                             checks["consumer_observation"]["failure_rate"] == 0.0,
                              checks["observation"]["failure_rate"] == 0.0,
                              checks["observation"]["capacity_statuses"] == [checks["capacity_after"]["status"]])) else "failed"
     common_details = {"consumer_commit": consumer_commit, "consumer_pr": 3, "deployment": deployment}
