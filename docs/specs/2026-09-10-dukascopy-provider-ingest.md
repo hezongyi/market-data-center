@@ -1,7 +1,7 @@
 # Dukascopy Provider Ingest Specification
 
 日期：2026-09-10  
-状态：in progress  
+状态：complete
 前置 spec：`2026-09-10-production-hardening-and-consumer-migration`、`2026-09-10-query-contract-and-scalability`、`2026-09-10-release-and-operational-sustainability`、`2026-09-10-deployment-and-observability-hardening`
 
 ## 目标
@@ -171,7 +171,7 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - D2：隔离 fake-provider ingest 验证 receipt、`provider_bars.v1` manifest 和 BID readback；compatibility check 验证 exact dependency pin。
 - D3：2026-09-10 真实 adapter smoke 对 `EURUSD`、`1d`、`[2026-09-01,2026-09-04)` 返回 3 行，min/max 为 2026-09-01/2026-09-03，basis 为 BID。
 - D3：同一窗口的隔离真实 API → queue → subprocess worker → immutable publication → API readback 成功，run `bde6d402-70ec-4b3e-ad0d-1b48012dd32d` 为 `pass`，receipt/readback 均为 3 行。该 run 位于临时 canonical root，不是生产数据或 consumer cutover 证据。
-- Scheduled provider acceptance 已加入 Dukascopy EURUSD/FX/1d；仍需在 immutable deployment 更新后生成生产 receipt，并完成 D4 历史迁移与 consumer parity，故本 spec 保持 `in progress`。
+- Scheduled provider acceptance 已加入 Dukascopy EURUSD/FX/1d；后续 immutable deployment 的人工与 timer receipt 已完成 D3，D4 consumer parity 也已完成，详见下方最终记录。
 - 2026-09-10 baseline audit 发现现有 Dukascopy 实现位于落后 `origin/main` 14 个提交的 dirty checkout；既有 D1/D2 测试结果作为移植输入保留，但必须完成 D0 并在 clean `v0.2.0`+ baseline 上重新验证后才能进入正式 D3。
 - 2026-09-10 production storage 约 11% free，处于 capacity warning。D3 的不超过 31 天短窗口可在 policy 与 deployment 门禁通过后执行；D4 bulk migration 当前被容量门禁阻止。
 
@@ -191,9 +191,19 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - PR #17 增加只读 legacy inventory，并在 protected main 的 Python 3.10/3.11/3.12、Node 22 browser 与 required `verify` 全部通过后合并为 commit `c216a77777f7eaacc9996a8f157ce9472537e756`。
 - immutable deployment `3acca0c9d2bc-90a37a6d` 上的最终正式 inventory receipt `3928ef5dac3843b2a4c86ee597f43a10` 排除了 6 个已被 Data Center manifest 管理的文件（36,852 bytes），对真正 legacy 的 585 个 Parquet、68,331,636 行、5,853,971,477 bytes、190 个 symbol/asset/timeframe/year 分组完成扫描；扫描前后 source snapshot 一致，没有写 manifest 或修改 legacy 文件。
 - Inventory 覆盖 15 个 symbol、`commodity/crypto/fx` 和 `1m/5m/15m/30m/1h/4h/1d`，发现 2,145,390 个重复 timestamp、445,933 个原始间隔 gap、0 个无效 timestamp；legacy price type 仅为 `raw`，没有可直接证明的 BID provenance，因此不能自动迁移或重标为 BID。
-- Capacity free ratio 约 `0.11684`，状态为 `warning`，inventory 明确输出 `bulk_migration_allowed=false`。D4 下一步仅允许对已确认 BID provenance 的不超过 31 天窗口实现 migration/parity；bulk migration 与 consumer cutover 继续被容量门禁阻止。
+- Capacity free ratio 约 `0.11684`，状态为 `warning`，inventory 明确输出 `bulk_migration_allowed=false`。raw-only bulk migration 持续禁止；经 ADR 缩小后的 D4 只执行不超过 31 天的新 BID bounded consumer parity，不启动历史迁移。
 - PR #21 已实现 governed migration gate，PR #22 已实现 BID provenance attestation 与 bounded parity comparator；两者均通过 hosted Python 3.10/3.11/3.12、Node 22 browser 和 required `verify`，当前 production release `50cc9e6d8dea-67b9b3a3` 已激活。未经 source snapshot、BID basis、无重复和 capacity `ok` 全部满足的 inventory item，系统只返回显式拒绝原因，不执行读取迁移或 publication。
 - 2026-09-11 ADR 已批准放弃 raw-only legacy migration；D4 后续仅针对新产生的明确 BID 数据做 consumer parity。该决定不删除、不移动、不覆盖任何 legacy 文件。
+
+## D4 consumer parity 完成记录（2026-09-11）
+
+- `macro-market-lab` PR #3 已合并为 commit `2a0b9ed1a7d21ea55747c749041ebb23bb41aae8`。`MACRO_MARKET_USE_DATA_CENTER_BARS` 默认关闭；开启时 Dukascopy 读取强制 `price_type=bid`，关闭时回到 legacy reader。consumer repo Ruff 全绿、完整 pytest 为 `2896 passed`（3 个既有 warning）；既有未提交的 `memory-bank/architecture.md` 仅记录在 receipt 中，不参与 parity 判定，也未被修改。
+- Data Center PR #24、#25、#26 均通过 hosted Python 3.10/3.11/3.12、Node 22 browser 和 required `verify` 后合并。PR #24 同时修正 bars HTTP/page 查询的 end 过滤为严格半开区间，并保留旧内部 point-query helper 的兼容语义；backend 全量测试为 `137 passed`。
+- 最终 immutable deployment 为 `bd7aa1367281-b3d65353`，source commit `bd7aa1367281bbb4e6dc9470f87182c6e5239b23`。activation receipt `280e9eeb96954d81babf430c0726571c` 为 `pass`，canonical 与 ledger hash 均保持不变；最终 readiness 为 `ready`，read/write available，operational snapshot fresh。
+- 正式 parity receipt `87cfc86d54b341e89bd8c9ed0a7217ba` 为 `pass`。在 `[2026-08-28,2026-09-11)` 上共读取 12 行 BID，coverage min/max 为 `2026-08-28` / `2026-09-10`，总稳定 rows hash 为 `19474842f0bb5fafa290687b10d70882a6ba90dd5fb3f6873fb38801667577bc`；首/中/末三个固定窗口分别为 3/4/5 行、0 duplicates、单一 pagination snapshot，且各自保存稳定 hash。
+- feature-flag cutover receipt `25971b5b71624cd9a72e12d0ce9073b7` 和 rollback receipt `d9cdd9e04d53499eb8912de2ff45e6bf` 分别为 `pass`，均绑定 Data Center deployment 与 consumer commit。cutover CLI latency 为约 1.84 秒，rollback 为约 1.91 秒；四次 Data Center query mean/max latency 为约 0.169/0.525 秒。
+- 操作前后 capacity free ratio 均为 `0.1168406990808636`，状态保持 `warning`，未写 legacy 数据或启动 bulk migration。D3 failure matrix 已覆盖 query/ingest 相关安全失败语义；D4 bounded parity 没有引入新的错误或失败事件。
+- D4 状态：`complete`。raw-only legacy migration 已按 ADR 从范围中排除；新 BID consumer parity、默认关闭的 feature flag、切换、抽样读取、观察和 rollback evidence 均已完成。因此本 Dukascopy spec 状态更新为 `complete`。
 
 ## 非目标
 
