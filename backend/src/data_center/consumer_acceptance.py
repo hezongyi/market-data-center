@@ -51,21 +51,41 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     session = requests.Session()
     if api_key:
         session.headers["X-API-Key"] = api_key
+    windows = {
+        "first": ("2026-08-28T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+        "middle": ("2026-09-01T00:00:00+00:00", "2026-09-05T00:00:00+00:00"),
+        "last": ("2026-09-05T00:00:00+00:00", "2026-09-11T00:00:00+00:00"),
+    }
     rows = []
-    cursor = None
-    snapshots = set()
-    while True:
-        params = {"provider": "dukascopy", "symbol": "EURUSD", "timeframe": "1d",
-                  "start": "2026-08-28T00:00:00+00:00", "end": "2026-09-11T00:00:00+00:00",
-                  "page_size": 5}
-        if cursor:
-            params["cursor"] = cursor
-        payload = session.get(base_url.rstrip("/") + "/api/v1/bars", params=params, timeout=10).json()
-        rows.extend(payload["data"])
-        snapshots.add(payload["meta"]["snapshot_id"])
-        cursor = payload["meta"].get("next_cursor")
-        if not cursor:
-            break
+    window_checks = {}
+    for name, (start, end) in windows.items():
+        window_rows = []
+        cursor = None
+        snapshots = set()
+        while True:
+            params = {"provider": "dukascopy", "symbol": "EURUSD", "timeframe": "1d",
+                      "start": start, "end": end, "page_size": 5}
+            if cursor:
+                params["cursor"] = cursor
+            response = session.get(base_url.rstrip("/") + "/api/v1/bars", params=params, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            window_rows.extend(payload["data"])
+            snapshots.add(payload["meta"]["snapshot_id"])
+            cursor = payload["meta"].get("next_cursor")
+            if not cursor:
+                break
+        rows.extend(window_rows)
+        timestamps = [row["bar_ts"] for row in window_rows]
+        window_checks[name] = {
+            "start": start, "end": end, "row_count": len(window_rows),
+            "min_ts": min(timestamps) if timestamps else None,
+            "max_ts": max(timestamps) if timestamps else None,
+            "price_types": sorted({row.get("price_type") for row in window_rows}),
+            "duplicate_count": len(timestamps) - len(set(timestamps)),
+            "snapshot_count": len(snapshots), "rows_hash": _hash(window_rows),
+        }
+    full_start, full_end = windows["first"][0], windows["last"][1]
     checks = {
         "flag_default_off": flag_default_off,
         "bid_gate_present": bid_gate_present,
@@ -74,8 +94,9 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
         "flag_off_is_legacy": "source" not in off_payload and off_payload.get("dataset_kind") == "provider_bars",
         "api_row_count": len(rows),
         "api_price_types": sorted({row.get("price_type") for row in rows}),
-        "api_snapshot_count": len(snapshots),
+        "api_snapshot_count": sum(item["snapshot_count"] for item in window_checks.values()),
         "api_rows_hash": _hash(rows),
+        "windows": window_checks,
         "consumer_commit": _git(consumer_repo, "rev-parse", "HEAD"),
         "consumer_pr": 3,
         "consumer_worktree_clean": not bool(_git(consumer_repo, "status", "--porcelain")),
@@ -86,12 +107,13 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     result = "pass" if all((checks["flag_default_off"], checks["bid_gate_present"],
                              checks["flag_on_source"] == "data_center", checks["flag_on_row_count"] == len(rows),
                              checks["flag_off_is_legacy"], checks["api_price_types"] == ["bid"],
-                             checks["api_snapshot_count"] == 1)) else "failed"
+                             all(item["price_types"] == ["bid"] and item["duplicate_count"] == 0
+                                 and item["snapshot_count"] == 1 for item in window_checks.values()))) else "failed"
     receipt = operation_receipt(action="dukascopy_consumer_parity",
         command="python -m data_center.consumer_acceptance", started_at=started, result=result,
         failure_stage=None if result == "pass" else "consumer_cutover",
         details={"provider": "dukascopy", "symbol": "EURUSD", "timeframe": "1d",
-                 "window": {"start": params["start"], "end": params["end"], "semantics": "half-open"},
+                 "window": {"start": full_start, "end": full_end, "semantics": "half-open"},
                  "checks": checks})
     path = write_receipt(evidence_root, receipt)
     return {**receipt, "receipt": str(path) if path else None}

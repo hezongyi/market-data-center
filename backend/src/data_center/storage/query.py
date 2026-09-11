@@ -297,7 +297,7 @@ class QueryEngine:
             clauses.append("bar_ts >= ?")
             params.append(start)
         if end is not None:
-            clauses.append("bar_ts <= ?")
+            clauses.append("bar_ts < ?")
             params.append(end)
         return self._query_page(
             dataset_id="provider_bars", selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
