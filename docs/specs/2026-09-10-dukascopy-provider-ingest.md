@@ -190,8 +190,8 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 ## D4 inventory 记录（2026-09-11）
 
 - PR #17 增加只读 legacy inventory，并在 protected main 的 Python 3.10/3.11/3.12、Node 22 browser 与 required `verify` 全部通过后合并为 commit `c216a77777f7eaacc9996a8f157ce9472537e756`。
-- immutable deployment `c216a77777f7-88e92c33` 上的正式 inventory receipt `002c8a44b9294872a418612f4b3574da` 扫描 590 个 legacy Dukascopy Parquet、68,331,696 行、5,854,002,187 bytes、190 个 symbol/asset/timeframe/year 分组；扫描前后 source snapshot 一致，没有写 manifest 或修改 legacy 文件。
-- Inventory 覆盖 15 个 symbol、`commodity/crypto/fx` 和 `1m/5m/15m/30m/1h/4h/1d`，发现 2,145,438 个重复 timestamp、445,936 个原始间隔 gap、0 个无效 timestamp；price type 同时存在 `raw` 与 `bid`，因此 `raw` 不能在缺少独立 provenance 证明时自动重标为 BID。
+- immutable deployment `3acca0c9d2bc-90a37a6d` 上的最终正式 inventory receipt `3928ef5dac3843b2a4c86ee597f43a10` 排除了 6 个已被 Data Center manifest 管理的文件（36,852 bytes），对真正 legacy 的 585 个 Parquet、68,331,636 行、5,853,971,477 bytes、190 个 symbol/asset/timeframe/year 分组完成扫描；扫描前后 source snapshot 一致，没有写 manifest 或修改 legacy 文件。
+- Inventory 覆盖 15 个 symbol、`commodity/crypto/fx` 和 `1m/5m/15m/30m/1h/4h/1d`，发现 2,145,390 个重复 timestamp、445,933 个原始间隔 gap、0 个无效 timestamp；legacy price type 仅为 `raw`，没有可直接证明的 BID provenance，因此不能自动迁移或重标为 BID。
 - Capacity free ratio 约 `0.11684`，状态为 `warning`，inventory 明确输出 `bulk_migration_allowed=false`。D4 下一步仅允许对已确认 BID provenance 的不超过 31 天窗口实现 migration/parity；bulk migration 与 consumer cutover 继续被容量门禁阻止。
 
 ## 非目标
