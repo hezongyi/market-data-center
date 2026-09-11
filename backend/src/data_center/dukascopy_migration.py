@@ -6,8 +6,10 @@ operations; callers cannot use it to copy Parquet or manufacture manifests.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
+from hashlib import sha256
 from pathlib import Path
 
 from data_center.capacity import CapacityPolicy
@@ -31,6 +33,40 @@ class MigrationDecision:
             "estimated_bytes": self.estimated_bytes,
             "source_reference": self.source_reference,
         }
+
+
+def attest_bid_provenance(item: dict, *, source_snapshot: str, attestation: dict) -> dict:
+    """Validate an explicit human/system attestation without changing source data."""
+    required = {"basis", "method", "attested_by", "attested_at"}
+    if set(attestation) < required or attestation.get("basis") != "bid":
+        raise ValueError("BID provenance attestation is incomplete")
+    if not source_snapshot or len(source_snapshot) != 64:
+        raise ValueError("source snapshot hash is required")
+    selector = {key: item.get(key) for key in ("asset_class", "symbol", "timeframe", "year")}
+    payload = {"selector": selector, "source_snapshot": source_snapshot,
+               "basis": "bid", "method": attestation["method"],
+               "attested_by": attestation["attested_by"], "attested_at": attestation["attested_at"]}
+    payload["attestation_hash"] = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return payload
+
+
+def compare_parity(*, legacy_rows: list[dict], data_center_rows: list[dict],
+                   legacy_snapshot: str, data_center_snapshot: str) -> dict:
+    """Compare bounded rows using stable OHLCV identity, never ingesting or publishing."""
+    fields = ("bar_ts", "open", "high", "low", "close", "volume", "price_type")
+
+    def stable(rows):
+        normalized = [{key: row.get(key) for key in fields} for row in rows]
+        return sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    legacy_hash, data_center_hash = stable(legacy_rows), stable(data_center_rows)
+    return {
+        "status": "pass" if len(legacy_rows) == len(data_center_rows) and legacy_hash == data_center_hash else "failed",
+        "legacy_row_count": len(legacy_rows), "data_center_row_count": len(data_center_rows),
+        "legacy_hash": legacy_hash, "data_center_hash": data_center_hash,
+        "legacy_snapshot": legacy_snapshot, "data_center_snapshot": data_center_snapshot,
+        "snapshot_stable": bool(legacy_snapshot and data_center_snapshot),
+    }
 
 
 def plan_bounded_migration(item: dict, *, start: date, end: date,
