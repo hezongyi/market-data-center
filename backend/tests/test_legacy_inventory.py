@@ -37,3 +37,29 @@ def test_legacy_inventory_is_read_only_and_reports_governance_fields(tmp_path):
     assert group["coverage_gap_count"] == 1
     receipt = json.loads(Path(report["receipt"]).read_text())
     assert receipt["details"]["inventory_mode"] == "read_only_no_manifest_publication"
+
+
+def test_legacy_inventory_excludes_manifest_visible_parts(tmp_path):
+    root = (tmp_path / "provider_bars" / "provider=dukascopy" / "asset_class=fx" /
+            "symbol=EURUSD" / "timeframe=1d" / "year=2026")
+    root.mkdir(parents=True)
+    columns = {"asset_class": ["fx"], "symbol": ["EURUSD"], "timeframe": ["1d"], "year": [2026],
+               "bar_ts": ["2026-01-01T00:00:00Z"], "price_type": ["raw"]}
+    legacy = root / "legacy.parquet"
+    published = root / "part-published.parquet"
+    pl.DataFrame(columns).write_parquet(legacy)
+    pl.DataFrame({**columns, "price_type": ["bid"]}).write_parquet(published)
+    manifests = tmp_path / ".manifests"
+    manifests.mkdir()
+    (manifests / "published.json").write_text(json.dumps({
+        "parts": [{"path": str(published.relative_to(tmp_path))}],
+    }))
+
+    report = inventory_legacy_dukascopy(
+        tmp_path / "provider_bars/provider=dukascopy", tmp_path / "evidence",
+        canonical_root=tmp_path,
+    )
+
+    assert report["details"]["manifest_visible_files_excluded"] == 1
+    assert report["details"]["file_count"] == 1
+    assert report["details"]["groups"][0]["price_types"] == ["raw"]
