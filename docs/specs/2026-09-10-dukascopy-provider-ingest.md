@@ -182,9 +182,17 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - 当前 production immutable deployment 为 `5f3c6a5b49f4-bd4b873d`。人工 acceptance `5a2152a8003a4ddebd7a53b048dcca88` 中 Dukascopy run `f955082c-6b48-4998-930c-0d4854af7aae` 通过；systemd provider-acceptance timer 同路径验收 `59f2fba93c074f2b9f962881eed4fbe8` 中 Dukascopy run `8850b5d1-5c03-4948-b663-328ca9af6ef7` 通过。
 - 两次验收均使用 `EURUSD`/FX/1d、14 天有界半开窗口，发布 12 行 closed BID bars，min/max 为 `2026-08-28T00:00:00+00:00` / `2026-09-10T00:00:00+00:00`；connector version、input/output hash、quality、part/manifest、snapshot 和 paged/unpaged readback hash 均已记录且一致。
 - 验收前后 free ratio 均约 `0.11684`，capacity 为 `warning`；请求估算 57,344 bytes，满足 warning 状态只允许不超过 31 天 D3 窗口的门禁。D4 bulk migration 继续禁止。
-- D3 尚未关闭：仍需在 immutable deployment 上形成 empty、timeout/status、duplicate/out-of-order、missing OHLC 和 unsupported selector 的安全失败 receipt，并完成服务重启 readback 与 rollback/readback 证明。上述证据未完成前本 spec 保持 `in progress`。
+- D3 状态：`complete`。人工与 scheduled provider acceptance、immutable deployment identity、capacity、BID/closed-bar、manifest/hash/pagination、服务重启 readback、rollback/readback 和安全失败矩阵均已形成正式证据。整个 spec 因 D4 尚未完成继续保持 `in progress`。
 - 回滚门禁：`deployment_rollback` receipt `5459eaa82d804751af4d4ea8401429a0` 将服务切回 `7357bbe6604a-055fc839`，该 release 下已发布 Dukascopy 数据仍可分页读取（5 行首��，snapshot `17bd735294266e9bdcc5c12e4cfd97ba3bca8b9611fe64158b6682bb7b6bd928`），canonical/ledger hash 保持不变；随后 `deployment_activate` receipt `e80b0c5334c742c59ddd40f8ba40aed1` 恢复 `5f3c6a5b49f4-bd4b873d`，ready 通过。
-- 生产 acceptance scope 安全失败证据：未来空窗口 run `4f897f2c-24cc-4e0a-a9d7-85524676217a` 以 `ValueError`、`retryable=false` 失败；无效 symbol run `78a72a57-5a3a-4796-b6f8-b55592b8040a` 以 `ValueError`、`retryable=false` 失败；两者均未生成 part/manifest，receipt 仅保留安全错误类别。此前无效 payload 的受控失败已由 D1 contract tests 覆盖。timeout/status、duplicate/out-of-order、missing OHLC 的 immutable-production 失败矩阵仍待补齐。
+- 生产 acceptance scope 安全失败证据：未来空窗口 run `4f897f2c-24cc-4e0a-a9d7-85524676217a` 与无效 symbol run `78a72a57-5a3a-4796-b6f8-b55592b8040a` 均以非 retryable `ValueError` 安全失败且未生成 part/manifest。immutable release `356056f5645e-b3a74bca` 上的 failure-matrix receipt `dd355640d63f4a52b509fa72f0616631` 覆盖 empty、timeout、HTTP status、duplicate、out-of-order、missing OHLC 和 unsupported selector，全部复用 worker 的安全错误转换，未记录注入的 URL、credential 或环境路径，且明确未访问网络、未尝试 publication。
+- 服务重启后的最终人工 acceptance `af264a644f9045ceb26b76d7b2fcbc25` 绑定 immutable deployment `c216a77777f7-88e92c33` / commit `c216a77777f7eaacc9996a8f157ce9472537e756`；Dukascopy run `ed89d328-5bd0-431f-b79b-36157522bb2b` 发布并读取 12 行 BID bars，snapshot `f3ee336c40ebdde88a64fed1e4215010b12d75f60de433fe329ba514c501d98b`，分页与非分页 hash 一致。
+
+## D4 inventory 记录（2026-09-11）
+
+- PR #17 增加只读 legacy inventory，并在 protected main 的 Python 3.10/3.11/3.12、Node 22 browser 与 required `verify` 全部通过后合并为 commit `c216a77777f7eaacc9996a8f157ce9472537e756`。
+- immutable deployment `c216a77777f7-88e92c33` 上的正式 inventory receipt `002c8a44b9294872a418612f4b3574da` 扫描 590 个 legacy Dukascopy Parquet、68,331,696 行、5,854,002,187 bytes、190 个 symbol/asset/timeframe/year 分组；扫描前后 source snapshot 一致，没有写 manifest 或修改 legacy 文件。
+- Inventory 覆盖 15 个 symbol、`commodity/crypto/fx` 和 `1m/5m/15m/30m/1h/4h/1d`，发现 2,145,438 个重复 timestamp、445,936 个原始间隔 gap、0 个无效 timestamp；price type 同时存在 `raw` 与 `bid`，因此 `raw` 不能在缺少独立 provenance 证明时自动重标为 BID。
+- Capacity free ratio 约 `0.11684`，状态为 `warning`，inventory 明确输出 `bulk_migration_allowed=false`。D4 下一步仅允许对已确认 BID provenance 的不超过 31 天窗口实现 migration/parity；bulk migration 与 consumer cutover 继续被容量门禁阻止。
 
 ## 非目标
 
