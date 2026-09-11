@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import requests
@@ -37,7 +36,8 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     if api_key:
         env["MACRO_MARKET_DATA_CENTER_API_KEY"] = api_key
     env["PYTHONPATH"] = str(consumer_repo / "src")
-    command = [sys.executable, "-m",
+    consumer_python = os.getenv("MACRO_MARKET_PYTHON", "/home/quant/miniforge3/envs/macro-market-lab/bin/python")
+    command = [consumer_python, "-m",
                "macro_market_lab.cli.app", "query", "preview", "dataset",
                "--provider", "dukascopy", "--asset-class", "fx", "--symbol", "EURUSD",
                "--timeframe", "1d", "--mode", "summary", "--limit", "5",
