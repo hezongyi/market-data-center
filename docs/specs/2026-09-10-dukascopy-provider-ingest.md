@@ -130,12 +130,12 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 
 ### D4：历史迁移与 consumer parity
 
-- 生成 `macro-market-lab` legacy Dukascopy BID inventory、容量需求和 migration plan；在 capacity warning 时只运行不超过 31 天的只读/短窗口 parity，不启动 bulk publication。
-- Capacity 恢复为 `ok` 或新目标挂载点通过验收后，按 bounded batch 执行 migration，每批生成独立 run、manifest 和 migration receipt。
-- 对首期每种已迁移 symbol/timeframe 选择首、中、末代表窗口完成 legacy reader 与 Data Center HTTP 双读 parity，并验证分页 snapshot 稳定性。
+- legacy `raw`-only 数据迁移经 ADR `2026-09-11-raw-only-legacy-exclusion.md` 正式放弃：文件保留原位置、只读归档，不进入 Data Center manifest，不重标为 BID，也不作为 consumer cutover 的数据源。
+- D4 保留目标改为：对新产生且明确 `price_type=bid` 的 Data Center 数据执行 bounded consumer parity；不再等待或启动 raw legacy bulk migration。
+- 对首期新 BID 数据选择首、中、末代表窗口完成 Data Center HTTP parity，并验证分页 snapshot 稳定性；旧 legacy reader 仅作为明确的归档回溯路径。
 - 完成 feature flag 切换、切换后抽样双读、readiness/latency 观察和回滚演练；旧 reader 在观察期内保持可用。
 
-门禁：capacity 为 `ok` 或新挂载点满足同等门禁；迁移不覆盖任何 legacy file 或现有 canonical part；所有 batch terminal receipt 完整；row count、min/max、稳定 OHLCV hash、BID basis、coverage、duplicate count、分页结果和错误语义一致；Data Center 与 `macro-market-lab` 的受保护 main checks 成功；切换与回滚 receipt 可追踪。
+门禁：新 BID parity 窗口的 row count、min/max、稳定 OHLCV hash、BID basis、coverage、duplicate count、分页结果和错误语义一致；不修改 legacy 文件或现有 canonical part；Data Center 与 `macro-market-lab` 的受保护 main checks 成功；切换与回滚 receipt 可追踪。raw legacy 排除本身视为已完成的范围决策，不再产生迁移 batch receipt。
 
 ## D3/D4 验收证据
 
@@ -150,10 +150,9 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 
 ### D4 evidence
 
-- Legacy inventory 与 migration plan，包含 symbol/timeframe/year、BID basis、rows、bytes、min/max、duplicates、coverage gaps 和预估新增容量；
-- Capacity 恢复或新挂载点验收 receipt，以及 backup destination、recovery drill 和 write/read readiness；
-- 每个 bounded migration batch 的 source reference、run ID、row count、hash、quality、part、manifest、开始/完成时间和失败位置；
-- 首、中、末固定窗口的 legacy/Data Center row count、min/max、稳定 OHLCV hash、coverage、duplicate count、分页 snapshot 和错误语义 parity；
+- Legacy inventory、raw-only 排除 ADR 和只读保留证明，包含 symbol/timeframe/year、basis、rows、bytes、min/max、duplicates、coverage gaps 和预估容量；
+- 新 BID bounded parity 的首、中、末固定窗口 row count、min/max、稳定 OHLCV hash、coverage、duplicate count、分页 snapshot 和错误语义；
+- 如未来重新提出迁移，必须先有独立 BID provenance、容量/backup/recovery 验收和新的 migration spec；本 spec 不授权重新启用 raw legacy migration；
 - `macro-market-lab` feature flag 默认值、切换 commit、Data Center 与 consumer 双方 protected-main checks、切换后抽样和 rollback receipt；
 - 观察期内 latency、失败率、capacity 变化和未迁移清单；任何未满足项保持 D4 `in progress`。
 
@@ -193,6 +192,8 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - immutable deployment `3acca0c9d2bc-90a37a6d` 上的最终正式 inventory receipt `3928ef5dac3843b2a4c86ee597f43a10` 排除了 6 个已被 Data Center manifest 管理的文件（36,852 bytes），对真正 legacy 的 585 个 Parquet、68,331,636 行、5,853,971,477 bytes、190 个 symbol/asset/timeframe/year 分组完成扫描；扫描前后 source snapshot 一致，没有写 manifest 或修改 legacy 文件。
 - Inventory 覆盖 15 个 symbol、`commodity/crypto/fx` 和 `1m/5m/15m/30m/1h/4h/1d`，发现 2,145,390 个重复 timestamp、445,933 个原始间隔 gap、0 个无效 timestamp；legacy price type 仅为 `raw`，没有可直接证明的 BID provenance，因此不能自动迁移或重标为 BID。
 - Capacity free ratio 约 `0.11684`，状态为 `warning`，inventory 明确输出 `bulk_migration_allowed=false`。D4 下一步仅允许对已确认 BID provenance 的不超过 31 天窗口实现 migration/parity；bulk migration 与 consumer cutover 继续被容量门禁阻止。
+- PR #21 已实现 governed migration gate，PR #22 已实现 BID provenance attestation 与 bounded parity comparator；两者均通过 hosted Python 3.10/3.11/3.12、Node 22 browser 和 required `verify`，当前 production release `50cc9e6d8dea-67b9b3a3` 已激活。未经 source snapshot、BID basis、无重复和 capacity `ok` 全部满足的 inventory item，系统只返回显式拒绝原因，不执行读取迁移或 publication。
+- 2026-09-11 ADR 已批准放弃 raw-only legacy migration；D4 后续仅针对新产生的明确 BID 数据做 consumer parity。该决定不删除、不移动、不覆盖任何 legacy 文件。
 
 ## 非目标
 
