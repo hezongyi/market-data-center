@@ -59,6 +59,17 @@ def test_catalog_query_avoids_publication_time_row_validation(tmp_path, monkeypa
     assert page.count == 2
 
 
+def test_provider_bars_end_is_half_open(tmp_path):
+    root = tmp_path / "lake"
+    write_provider_bars(root, [bar(1), bar(2), bar(3)], part_id="bars")
+    page = QueryEngine(root).provider_bars_page(
+        provider="fixture", symbol="TEST", timeframe="1d",
+        start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+    assert [row["bar_ts"].day for row in page.rows] == [1, 2]
+
+
 def test_catalog_refresh_restart_and_corruption_fail_closed(tmp_path):
     root = tmp_path / "lake"
     write_provider_bars(root, [bar(1)], part_id="one")

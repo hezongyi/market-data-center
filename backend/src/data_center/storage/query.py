@@ -8,7 +8,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -297,7 +297,7 @@ class QueryEngine:
             clauses.append("bar_ts >= ?")
             params.append(start)
         if end is not None:
-            clauses.append("bar_ts <= ?")
+            clauses.append("bar_ts < ?")
             params.append(end)
         return self._query_page(
             dataset_id="provider_bars", selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
@@ -364,8 +364,10 @@ def get_query_engine(root: Path) -> QueryEngine:
 
 def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: str,
                         start: datetime | None = None, end: datetime | None = None) -> list[dict]:
+    # Preserve the helper's historical point-query behavior while the HTTP/page contract is half-open.
+    inclusive_end = end + timedelta(microseconds=1) if end is not None else None
     return get_query_engine(root).provider_bars_page(provider=provider, symbol=symbol, timeframe=timeframe,
-                                                     start=start, end=end).rows
+                                                     start=start, end=inclusive_end).rows
 
 
 def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None,
