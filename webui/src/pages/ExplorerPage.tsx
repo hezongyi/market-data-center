@@ -2,7 +2,17 @@ import { type FormEvent, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { DataTable, EmptyState, ErrorState, PanelHeading, StatusBadge } from "../components/ui";
-import { createDataCenterClient, type ApiMeta, type Bar, type EconomicObservation } from "../lib/api";
+import {
+  createDataCenterClient,
+  type ApiMeta,
+  type Bar,
+  type BarsCoverage,
+  type BarsQuery,
+  type EconomicCoverage,
+  type EconomicQueryMode,
+  type EconomicObservation,
+  type EconomicQuery,
+} from "../lib/api";
 
 export type ExplorerMode = "bars" | "economic";
 
@@ -30,16 +40,17 @@ export function ExplorerPage({ apiKey, initialMode = "bars" }: { apiKey: string;
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [seriesId, setSeriesId] = useState("PAYEMS");
-  const [economicMode, setEconomicMode] = useState("current");
+  const [economicMode, setEconomicMode] = useState<EconomicQueryMode>("current");
   const [asof, setAsof] = useState("2026-09-10T00:00:00Z");
   const [bars, setBars] = useState<Bar[]>([]);
   const [observations, setObservations] = useState<EconomicObservation[]>([]);
-  const [coverage, setCoverage] = useState<Record<string, unknown> | null>(null);
+  const [coverage, setCoverage] = useState<BarsCoverage | EconomicCoverage | null>(null);
   const [meta, setMeta] = useState<ApiMeta>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<string | null>>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pageSize, setPageSize] = useState(1000);
 
   const reset = (next: ExplorerMode) => {
     setMode(next); setBars([]); setObservations([]); setCoverage(null); setMeta({});
@@ -53,16 +64,32 @@ export function ExplorerPage({ apiKey, initialMode = "bars" }: { apiKey: string;
     try {
       const client = createDataCenterClient(apiKey);
       if (mode === "bars") {
-        const selector = `provider=${encodeURIComponent(provider)}&symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`;
-        const window = `${start ? `&start=${encodeURIComponent(`${start}T00:00:00Z`)}` : ""}${end ? `&end=${encodeURIComponent(`${end}T23:59:59.999Z`)}` : ""}`;
-        const [page, currentCoverage] = await Promise.all([client.barsPage(`${selector}${window}`, nextCursor), client.coverage(selector)]);
+        const barsQuery: BarsQuery = {
+          provider,
+          symbol,
+          timeframe,
+          ...(start ? { start: `${start}T00:00:00Z` } : {}),
+          ...(end ? { end: `${end}T23:59:59.999Z` } : {}),
+        };
+        const coverageQuery = { provider, symbol, timeframe };
+        const [page, currentCoverage] = await Promise.all([
+          client.barsPage(barsQuery, nextCursor, pageSize),
+          client.coverage(coverageQuery),
+        ]);
         setBars(page.data); setMeta(page.meta); setCoverage(currentCoverage.data);
       } else {
-        const window = `${start ? `&start=${encodeURIComponent(start)}` : ""}${end ? `&end=${encodeURIComponent(end)}` : ""}`;
-        const query = `provider=fred&series_id=${encodeURIComponent(seriesId)}&mode=${economicMode}${economicMode === "pit" ? `&asof_ts=${encodeURIComponent(asof)}` : ""}${window}`;
-        const page = await client.economicPage(query, nextCursor);
+        const economicQuery: EconomicQuery = {
+          provider: "fred",
+          series_id: seriesId,
+          mode: economicMode,
+          ...(start ? { start } : {}),
+          ...(end ? { end } : {}),
+          ...(economicMode === "pit" ? { asof_ts: asof } : {}),
+        };
+        const page = await client.economicPage(economicQuery, nextCursor, pageSize);
+        const currentCoverage = await client.economicCoverage({ provider: economicQuery.provider, series_id: seriesId });
         setObservations(page.data); setMeta(page.meta);
-        setCoverage({ provider: "fred", series_id: seriesId, query_mode: page.meta.query_mode, count: page.meta.count ?? page.data.length });
+        setCoverage(currentCoverage.data);
       }
       setCursor(nextCursor); setHistory(nextHistory);
     } catch (reason) {
@@ -89,11 +116,12 @@ export function ExplorerPage({ apiKey, initialMode = "bars" }: { apiKey: string;
           <label>Timeframe<input aria-label="Timeframe" value={timeframe} onChange={event => setTimeframe(event.target.value)} /></label>
         </> : <>
           <label>Series ID<input aria-label="Series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
-          <label>Query mode<select aria-label="Query mode" value={economicMode} onChange={event => setEconomicMode(event.target.value)}><option value="current">Current</option><option value="pit">Point in time</option></select></label>
+          <label>Query mode<select aria-label="Query mode" value={economicMode} onChange={event => setEconomicMode(event.target.value as EconomicQueryMode)}><option value="current">Current</option><option value="pit">Point in time</option></select></label>
           {economicMode === "pit" && <label>As-of timestamp<input aria-label="As-of timestamp" value={asof} onChange={event => setAsof(event.target.value)} /></label>}
         </>}
         <label>Start<input aria-label="Query start date" type="date" value={start} onChange={event => setStart(event.target.value)} /></label>
         <label>End<input aria-label="Query end date" type="date" value={end} onChange={event => setEnd(event.target.value)} /></label>
+        <label>Page size<select aria-label="Page size" value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option value={1000}>1,000</option><option value={500}>500</option><option value={100}>100</option><option value={25}>25</option><option value={2}>2</option></select></label>
         <button className="primary-button" type="submit" disabled={loading}><Search size={15} />{loading ? "Loading…" : mode === "bars" ? "Load coverage" : "Load observations"}</button>
       </form>
       {error ? <ErrorState message={error} /> : coverage ? <div className="coverage-strip">{Object.entries(coverage).slice(0, 5).map(([key, value]) => <div key={key}><small>{key}</small><b>{String(value ?? "—")}</b></div>)}</div> : <EmptyState title={mode === "bars" ? "Choose an instrument" : "Choose an economic series"} detail="Only immutable published snapshots are queried." />}

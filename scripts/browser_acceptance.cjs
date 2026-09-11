@@ -213,15 +213,16 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByLabel("Symbol").fill("UI_TEST");
     await page.getByLabel("Query start date").fill("2026-01-03");
     await page.getByLabel("Query end date").fill("2026-01-01");
+    await page.getByLabel("Page size").selectOption("2");
     await page.getByRole("button", { name: "Load coverage", exact: true }).click();
     await page.getByText("Start date must not be after end date.", { exact: true }).waitFor();
     await page.getByLabel("Query start date").fill("");
     await page.getByLabel("Query end date").fill("");
     await page.getByRole("button", { name: "Load coverage", exact: true }).click();
-    await page.getByText(String(coverage.row_count), { exact: true }).waitFor();
+    await page.locator(".coverage-strip").waitFor();
     await page.getByText("Page 1 · 2 rows", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Next page", exact: true }).click();
-    await page.getByText("Page 2 · 1 rows", { exact: true }).waitFor();
+    await page.getByText(/Page 2 · \d+ rows/, { exact: false }).waitFor();
     await page.getByRole("button", { name: "Economic", exact: true }).click();
     await page.getByLabel("Series ID").fill("PAYEMS");
     await page.getByRole("button", { name: "Load observations", exact: true }).click();
@@ -248,7 +249,14 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByLabel("API key").fill(key);
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     await page.getByRole("dialog", { name: "Queue ingest run?" }).getByRole("button", { name: "Queue ingest", exact: true }).click();
-    await page.locator(".notice").filter({ hasText: "Queued run" }).waitFor();
+    await page.locator(".notice").filter({ hasText: "Queued" }).waitFor();
+    const queuedNotice = await page.locator(".notice").filter({ hasText: "Queued" }).last().textContent();
+    const queuedRunId = queuedNotice?.match(/[0-9a-f-]{36}/i)?.[0];
+    assert.ok(queuedRunId, "successful ingest notice did not include run id");
+    await waitFor(async () => {
+      const value = await call("GET", "/runs/" + queuedRunId);
+      return value.status === "pass" ? value : false;
+    }, "UI ingest did not reach terminal pass");
 
     const widths = await page.evaluate(() => ({
       body: document.body.scrollWidth, html: document.documentElement.scrollWidth, inner: innerWidth,

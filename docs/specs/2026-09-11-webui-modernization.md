@@ -1,8 +1,8 @@
 # Web UI Modernization Specification
 
-日期：2026-09-11  
+日期：2026-09-11
 状态：accepted；Phases 1-4 implemented and verified
-相关研究：`docs/plans/2026-09-11-webui-framework-research.md`  
+相关研究：`docs/plans/2026-09-11-webui-framework-research.md`
 API 契约：`docs/api-and-webui-contract.md`
 
 ## 目标
