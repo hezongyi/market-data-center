@@ -6,7 +6,12 @@ import tracemalloc
 
 import pytest
 
-from data_center.acceptance import archive_receipts, run_acceptance
+from data_center.acceptance import (
+    _rows_hash,
+    archive_receipts,
+    evidence_context,
+    run_acceptance,
+)
 from data_center.operations import (
     BACKUP_FORMAT_V2,
     create_backup,
@@ -49,6 +54,31 @@ def test_old_receipts_are_losslessly_archived(tmp_path):
 def test_acceptance_minimum_interval_skips_network(tmp_path):
     (tmp_path / 'last-attempt').write_text(str(time.time()))
     assert run_acceptance('http://127.0.0.1:1', tmp_path)['status'] == 'skipped'
+
+
+def test_acceptance_evidence_uses_immutable_deployment_identity(tmp_path, monkeypatch):
+    import json
+
+    from data_center.deployment import MANIFEST_HASH_FILE, sha256_path
+
+    manifest = tmp_path / "deployment.json"
+    manifest.write_text(json.dumps({
+        "deployment_id": "release-1", "software_version": "0.2.0", "source_commit": "a" * 40,
+        "tag": None, "artifact_sha256": sha256_path(tmp_path), "python_version": "3.11.15",
+        "constraints_sha256": None, "web_ui_asset_sha256": None, "created_at": "2026-09-11T00:00:00Z",
+        "activated_at": None, "previous_deployment_id": None,
+        "release_format_version": "deployment-manifest.v1",
+    }))
+    (tmp_path / MANIFEST_HASH_FILE).write_text(sha256_path(manifest))
+    monkeypatch.setenv("DATACENTER_DEPLOYMENT_MANIFEST", str(manifest))
+    context = evidence_context()
+    assert context["deployment_id"] == "release-1"
+    assert context["software_version"] == "0.2.0"
+    assert context["source_commit"] == "a" * 40
+
+
+def test_acceptance_readback_hash_is_stable_for_key_order():
+    assert _rows_hash([{"a": 1, "b": 2}]) == _rows_hash([{"b": 2, "a": 1}])
 
 
 def test_acceptance_unreachable_service_persists_alert(tmp_path):

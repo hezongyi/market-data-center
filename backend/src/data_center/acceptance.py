@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import gzip
+import hashlib
 import json
 import os
 import platform
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 import requests
 
+from data_center.deployment import runtime_identity
 from data_center.observability import AlertSink
 from data_center.settings import Settings
 
@@ -24,7 +26,18 @@ def evidence_context() -> dict:
                                          stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError):
         commit = os.getenv("GIT_COMMIT", "unknown")
-    return {"commit": commit, "python": platform.python_version(), "host": platform.node()}
+    context = {"commit": commit, "python": platform.python_version(), "host": platform.node()}
+    manifest = os.getenv("DATACENTER_DEPLOYMENT_MANIFEST")
+    if manifest:
+        try:
+            context.update(runtime_identity(Path(manifest)))
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+            context["deployment_identity"] = "invalid"
+    return context
+
+
+def _rows_hash(rows: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def archive_receipts(root: Path, keep_days: int = 90):
@@ -67,20 +80,26 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
         if last.exists() and time.time() - float(last.read_text()) < interval_seconds:
             return {"status": "skipped", "reason": "minimum_interval"}
         last.write_text(str(time.time()))
+        settings = Settings()
+        capacity_before = settings.capacity_policy().inspect(settings.canonical_root).as_dict()
         session = requests.Session()
         session.trust_env = False
         if os.getenv("DATACENTER_API_KEY"):
             session.headers["X-API-Key"] = os.environ["DATACENTER_API_KEY"]
 
-        def call(method, path, **kwargs):
+        def envelope(method, path, **kwargs):
             response = session.request(method, base_url.rstrip("/") + "/api/v1" + path, timeout=10, **kwargs)
             response.raise_for_status()
-            return response.json()["data"]
+            return response.json()
+
+        def call(method, path, **kwargs):
+            return envelope(method, path, **kwargs)["data"]
 
         now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         report = {"acceptance_id": uuid4().hex, "checked_at": datetime.now(timezone.utc).isoformat(),
                   "validation_command": "python -m data_center.acceptance", "base_url": base_url,
                   "environment": evidence_context(),
+                  "capacity_before": capacity_before,
                   "status": "pass", "providers": []}
         providers = (("binance", "BTCUSDT", "crypto"), ("yfinance", "SPY", "etf"),
                      ("dukascopy", "EURUSD", "fx"), ("fred", "PAYEMS", None))
@@ -97,6 +116,13 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                 else:
                     query = {"provider": provider, "symbol": symbol, "timeframe": "1d",
                              "start": (now - timedelta(days=14)).isoformat(), "end": now.isoformat()}
+                    result.update({"requested_range": {"start": query["start"], "end": query["end"],
+                                                        "semantics": "half-open"},
+                                   "effective_range": {"start": query["start"], "end": query["end"],
+                                                       "semantics": "half-open"},
+                                   "closed_bar_cutoff": now.isoformat(),
+                                   "requested_bytes_estimate": 14 * 4096,
+                                   "requested_bytes_estimate_method": "14 daily bars at 4 KiB/bar upper bound"})
                     submitted = call("POST", "/ingest/runs", json={**query, "job_id": "acceptance-" + report["acceptance_id"],
                                                                     "run_scope": "acceptance",
                                       "asset_class": asset_class})
@@ -114,18 +140,43 @@ def run_acceptance(base_url, root, interval_seconds=3600, spacing_seconds=5, dea
                 quality = receipt.get("quality_summary") or {}
                 if receipt["status"] != "pass" or not receipt.get("row_count") or quality.get("status") != "pass":
                     raise ValueError("non-pass receipt")
-                rows = call("GET", read_path, params=query)
+                readback = envelope("GET", read_path, params=query)
+                rows = readback["data"]
                 if len(rows) < receipt["row_count"]:
                     raise ValueError("API readback incomplete")
                 started = datetime.fromisoformat(receipt["started_at"])
                 fresh = [row for row in rows if datetime.fromisoformat(row["ingest_ts"].replace("Z", "+00:00")) >= started]
                 if len(fresh) < receipt["row_count"]:
                     raise ValueError("API readback does not include newly ingested rows")
-                result.update(status="pass", read_count=len(rows), fresh_read_count=len(fresh))
+                result.update(status="pass", read_count=len(rows), fresh_read_count=len(fresh),
+                              snapshot_id=readback["meta"].get("snapshot_id"),
+                              unpaged_readback_hash=_rows_hash(rows))
+                if provider != "fred":
+                    if provider == "dukascopy" and {row.get("price_type") for row in fresh} != {"bid"}:
+                        raise ValueError("Dukascopy readback is not exclusively BID")
+                    page_rows, cursor, snapshots = [], None, set()
+                    while True:
+                        page_params = {**query, "page_size": 5}
+                        if cursor:
+                            page_params["cursor"] = cursor
+                        page = envelope("GET", read_path, params=page_params)
+                        page_rows.extend(page["data"])
+                        snapshots.add(page["meta"].get("snapshot_id"))
+                        cursor = page["meta"].get("next_cursor")
+                        if not cursor:
+                            break
+                    if page_rows != rows or snapshots != {readback["meta"].get("snapshot_id")}:
+                        raise ValueError("paged and unpaged readback differ")
+                    manifest = call("GET", "/runs/" + submitted["run_id"] + "/manifest")
+                    result.update(price_type="bid" if provider == "dukascopy" else None,
+                                  paged_read_count=len(page_rows), paged_readback_hash=_rows_hash(page_rows),
+                                  manifest_run_id=manifest.get("run_id"),
+                                  manifest_parts=manifest.get("parts", []))
             except Exception as exc:  # noqa: BLE001 - acceptance must record every provider failure
                 report["status"] = "failed"
                 result.update(status="failed", error_type=type(exc).__name__)
             report["providers"].append(result)
+        report["capacity_after"] = settings.capacity_policy().inspect(settings.canonical_root).as_dict()
         path = root / ("receipt-" + report["acceptance_id"] + ".json")
         path.write_text(json.dumps(report, indent=2))
         if report["status"] != "pass":
