@@ -556,7 +556,7 @@ def main():
     audit.add_argument("--root", type=Path, default=Settings().canonical_root)
     fill = commands.add_parser("backfill")
     fill.add_argument("--base-url", default="http://127.0.0.1:18380")
-    fill.add_argument("--provider", choices=["binance", "yfinance", "fixture"], required=True)
+    fill.add_argument("--provider", choices=["binance", "dukascopy", "yfinance", "fixture"], required=True)
     fill.add_argument("--symbol", required=True)
     fill.add_argument("--asset-class", required=True)
     fill.add_argument("--start", type=date.fromisoformat, required=True)

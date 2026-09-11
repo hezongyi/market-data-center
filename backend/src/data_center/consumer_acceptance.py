@@ -74,7 +74,7 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
         snapshots = set()
         while True:
             params = {"provider": "dukascopy", "symbol": "EURUSD", "timeframe": "1d",
-                      "start": start, "end": end, "page_size": 5}
+                      "start": start, "end": end, "page_size": 2}
             if cursor:
                 params["cursor"] = cursor
             response = session.get(base_url.rstrip("/") + "/api/v1/bars", params=params, timeout=10)

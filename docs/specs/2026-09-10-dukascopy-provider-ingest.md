@@ -1,7 +1,7 @@
 # Dukascopy Provider Ingest Specification
 
 日期：2026-09-10  
-状态：complete
+状态：in progress
 前置 spec：`2026-09-10-production-hardening-and-consumer-migration`、`2026-09-10-query-contract-and-scalability`、`2026-09-10-release-and-operational-sustainability`、`2026-09-10-deployment-and-observability-hardening`
 
 ## 目标
@@ -203,7 +203,7 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - 正式 parity receipt `87cfc86d54b341e89bd8c9ed0a7217ba` 为 `pass`。在 `[2026-08-28,2026-09-11)` 上共读取 12 行 BID，coverage min/max 为 `2026-08-28` / `2026-09-10`，总稳定 rows hash 为 `19474842f0bb5fafa290687b10d70882a6ba90dd5fb3f6873fb38801667577bc`；首/中/末三个固定窗口分别为 3/4/5 行、0 duplicates、单一 pagination snapshot，且各自保存稳定 hash。
 - feature-flag cutover receipt `25971b5b71624cd9a72e12d0ce9073b7` 和 rollback receipt `d9cdd9e04d53499eb8912de2ff45e6bf` 分别为 `pass`，均绑定 Data Center deployment 与 consumer commit。cutover CLI latency 为约 1.84 秒，rollback 为约 1.91 秒；四次 Data Center query mean/max latency 为约 0.169/0.525 秒。
 - 操作前后 capacity free ratio 均为 `0.1168406990808636`，状态保持 `warning`，未写 legacy 数据或启动 bulk migration。D3 failure matrix 已覆盖 query/ingest 相关安全失败语义；D4 bounded parity 没有引入新的错误或失败事件。
-- D4 状态：`complete`。raw-only legacy migration 已按 ADR 从范围中排除；新 BID consumer parity、默认关闭的 feature flag、切换、抽样读取、观察和 rollback evidence 均已完成。因此本 Dukascopy spec 状态更新为 `complete`。
+- D4 状态：`in progress`。raw-only legacy migration 已按 ADR 从范围中排除；但仍需补齐跨页 snapshot 稳定性、consumer 错误语义/失败率观察期、未迁移清单和 consumer protected-main checks 后，才能正式关闭本 spec。
 
 ## 非目标
 
