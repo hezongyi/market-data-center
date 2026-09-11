@@ -24,8 +24,22 @@ def _git(repo: Path, *args: str) -> str:
                                    stderr=subprocess.DEVNULL).strip()
 
 
+def _latest_inventory(evidence_root: Path) -> dict:
+    paths = sorted((evidence_root / "operations" / "dukascopy_legacy_inventory").glob("*.json"))
+    if not paths:
+        return {"present": False}
+    payload = json.loads(paths[-1].read_text())
+    details = payload.get("details") or {}
+    return {"present": True, "receipt_id": payload.get("receipt_id"),
+            "result": payload.get("result"),
+            "bulk_migration_allowed": details.get("bulk_migration_allowed"),
+            "legacy_rows": details.get("row_count") or details.get("rows"),
+            "legacy_bytes": details.get("bytes")}
+
+
 def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: str,
-                            api_key: str | None, deployment_manifest: Path, evidence_root: Path) -> dict:
+                            api_key: str | None, deployment_manifest: Path, evidence_root: Path,
+                            observation_seconds: int = 60) -> dict:
     started = utc_now()
     deployment = runtime_identity(deployment_manifest)
     session = requests.Session()
@@ -74,7 +88,7 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
         snapshots = set()
         while True:
             params = {"provider": "dukascopy", "symbol": "EURUSD", "timeframe": "1d",
-                      "start": start, "end": end, "page_size": 5}
+                      "start": start, "end": end, "page_size": 2}
             if cursor:
                 params["cursor"] = cursor
             response = session.get(base_url.rstrip("/") + "/api/v1/bars", params=params, timeout=10)
@@ -108,6 +122,27 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     after_metrics_response = session.get(metrics_url, timeout=10)
     after_metrics_response.raise_for_status()
     after_metrics = after_metrics_response.json()["data"]
+    observation_started = utc_now()
+    observation_samples = [after_metrics]
+    deadline = time.monotonic() + max(0, observation_seconds)
+    while time.monotonic() < deadline:
+        time.sleep(min(10, deadline - time.monotonic()))
+        sample_response = session.get(metrics_url, timeout=10)
+        sample_response.raise_for_status()
+        observation_samples.append(sample_response.json()["data"])
+    observation_completed = utc_now()
+    observed_start = observation_samples[0]
+    observed_end = observation_samples[-1]
+    run_delta = observed_end.get("runs_total", 0) - observed_start.get("runs_total", 0)
+    failed_delta = (observed_end.get("runs_by_status", {}).get("failed", 0)
+                    - observed_start.get("runs_by_status", {}).get("failed", 0))
+    error_semantics_response = session.get(
+        base_url.rstrip("/") + "/api/v1/bars",
+        params={"provider": "dukascopy", "symbol": "UNSUPPORTED", "timeframe": "1d", "page_size": 2},
+        timeout=10,
+    )
+    error_semantics_response.raise_for_status()
+    error_semantics_payload = error_semantics_response.json()
     consumer_commit = _git(consumer_repo, "rev-parse", "HEAD")
     checks = {
         "flag_default_off": flag_default_off,
@@ -132,12 +167,32 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
                             "query": after_metrics["query"]["duration_seconds"]},
         "capacity_before": before_metrics["capacity"],
         "capacity_after": after_metrics["capacity"],
+        "network_policy": {"mode": "proxy" if (os.getenv("DUKASCOPY_PROXY_URL") or
+                                                    os.getenv("DATACENTER_PROXY_URL")) else "direct",
+                           "timeout_seconds": float(os.getenv("DUKASCOPY_REQUEST_TIMEOUT_SECONDS", "30"))},
+        "observation": {
+            "started_at": observation_started, "completed_at": observation_completed,
+            "duration_seconds": observation_seconds, "sample_count": len(observation_samples),
+            "runs_delta": run_delta, "failed_delta": failed_delta,
+            "failure_rate": (failed_delta / run_delta) if run_delta > 0 else 0.0,
+            "capacity_statuses": sorted({sample.get("capacity", {}).get("status")
+                                          for sample in observation_samples}),
+        },
+        "error_semantics": {"unsupported_selector": {"http_status": error_semantics_response.status_code,
+                                                        "data_count": len(error_semantics_payload.get("data") or []),
+                                                        "errors": error_semantics_payload.get("errors") or []}},
+        "unmigrated_inventory": _latest_inventory(evidence_root),
     }
     result = "pass" if all((checks["flag_default_off"], checks["bid_gate_present"],
                              checks["flag_on_source"] == "data_center", checks["flag_on_row_count"] == len(rows),
                              checks["flag_off_is_legacy"], checks["api_price_types"] == ["bid"],
                              all(item["price_types"] == ["bid"] and item["duplicate_count"] == 0
-                                 and item["snapshot_count"] == 1 for item in window_checks.values()))) else "failed"
+                                 and item["snapshot_count"] == 1 for item in window_checks.values()),
+                             checks["readiness"].get("status") == "ready",
+                             checks["error_semantics"]["unsupported_selector"]["http_status"] == 200,
+                             checks["error_semantics"]["unsupported_selector"]["data_count"] == 0,
+                             checks["observation"]["failure_rate"] == 0.0,
+                             checks["observation"]["capacity_statuses"] == [checks["capacity_after"]["status"]])) else "failed"
     common_details = {"consumer_commit": consumer_commit, "consumer_pr": 3, "deployment": deployment}
     cutover_result = "pass" if checks["flag_on_source"] == "data_center" else "failed"
     cutover_receipt = operation_receipt(
@@ -176,10 +231,12 @@ def main() -> None:
     parser.add_argument("--api-key", default=os.getenv("DATACENTER_API_KEY"), required=False)
     parser.add_argument("--deployment-manifest", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
+    parser.add_argument("--observation-seconds", type=int, default=60)
     args = parser.parse_args()
     report = run_consumer_acceptance(consumer_repo=args.consumer_repo, data_root=args.data_root,
                                      base_url=args.base_url, api_key=args.api_key,
-                                     deployment_manifest=args.deployment_manifest, evidence_root=args.evidence_root)
+                                     deployment_manifest=args.deployment_manifest, evidence_root=args.evidence_root,
+                                     observation_seconds=args.observation_seconds)
     print(json.dumps({key: value for key, value in report.items() if key != "details"}), flush=True)
     raise SystemExit(0 if report["result"] == "pass" else 1)
 
