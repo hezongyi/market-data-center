@@ -159,6 +159,13 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 
 ## 实现记录（2026-09-10）
 
+## 基线重建记录（2026-09-11）
+
+- 从 protected `origin/main` commit `c608b608b949d9f695d54c426366f645bf4c6b5a` 创建分支 `dukascopy-provider-ingest-20260911`，未整体带入旧 dirty worktree 的 release/deployment 改动。
+- 逐文件移植 adapter、registry、依赖/constraints、scheduled acceptance、contract tests 和本 spec；主线 `0.2.0` 版本、deployment、capacity、snapshot、backup 与 CI 保持不变。
+- 本地 py311 已完成锁定依赖安装；Dukascopy contract tests 5 passed，完整 backend tests 122 passed，统一 `bash scripts/ci.sh all` 通过。
+- 本机 python3.10 缺少 `ensurepip`/`venv`，python3.12 未安装；三版本安装门禁和 hosted `verify` 留待环境可用后执行。当前结果不构成 D3/D4 正式生产验收。
+
 - D1：新增 `DukascopyConnector`，固定 `dukascopy-python==4.0.1` 和 connector version `dukascopy-python-4.0.1-bid-v1`；支持六字符 canonical symbol、1m/5m/15m/30m/1h/4h/1d、BID basis、UTC 半开区间、closed-bar filter、bounded range、provider HTTP timeout/proxy/status validation 和稳定 source hash。
 - D1：adapter contract tests 覆盖 inclusive-end 过滤、BID/currency normalization、proxy/timeout、分钟范围上限和重复 timestamp 失败语义。
 - D2：connector 已注册到通用 market registry；现有 `run_fixture_ingest`、LocalWorker、manifest 和 query readback 无 provider-specific worker 分支即可处理 Dukascopy。
