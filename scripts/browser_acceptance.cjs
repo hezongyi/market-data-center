@@ -77,9 +77,20 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     DATACENTER_LEDGER_PATH: path.join(temp, "canonical/audit/data_center.sqlite"),
     DATACENTER_EVIDENCE_ROOT: path.join(temp, "evidence"),
     DATACENTER_WEBUI_DIST: path.join(repo, "webui/dist"),
-    DATACENTER_CAPACITY_WARNING_FREE_RATIO: "0.01",
+    DATACENTER_CAPACITY_WARNING_FREE_RATIO: "0.99",
     DATACENTER_CAPACITY_CRITICAL_FREE_RATIO: "0.005",
   };
+  const deadLetterId = execFileSync(python, ["-c", [
+    "import sys",
+    "from pathlib import Path",
+    "from data_center.runs.ledger import RunLedger",
+    "ledger = RunLedger(Path(sys.argv[1]))",
+    "run_id = ledger.enqueue_job({'job_id': 'browser-dead-letter', 'dataset_id': 'provider_bars', 'run_scope': 'production'})",
+    "for _ in range(3):",
+    "    claimed = ledger.claim_next_job()",
+    "    ledger.fail_job(claimed['job_id'], run_id, 'acceptance dead letter')",
+    "print(run_id)",
+  ].join("\n"), childEnv.DATACENTER_LEDGER_PATH], { cwd: repo, env: childEnv, encoding: "utf8" }).trim();
   api = spawn(python, ["-m", "data_center.api"], { cwd: repo, env: childEnv, stdio: "ignore" });
   worker = spawn(python, ["-m", "data_center.worker_main"], { cwd: repo, env: childEnv, stdio: "ignore" });
 
@@ -140,34 +151,116 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(base);
-    await page.locator("header .status.ok").waitFor();
+    await page.locator(".sidebar .status.ok").waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
+    await page.getByText("Capacity warning", { exact: false }).first().waitFor();
+
+    if (viewport.width === 1440) {
+      await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+      await page.locator(".app-shell.shell-collapsed").waitFor();
+      await page.getByRole("button", { name: "Expand sidebar", exact: true }).click();
+      await page.locator(".app-shell:not(.shell-collapsed)").waitFor();
+    }
 
     await page.getByRole("button", { name: "datasets", exact: true }).click();
     await page.getByText("provider_bars", { exact: true }).waitFor();
+    await page.getByText("provider_bars", { exact: true }).click();
+    await page.getByRole("complementary", { name: "provider_bars" }).waitFor();
+    await page.getByRole("button", { name: "Close details", exact: true }).last().click();
+    const economicRow = page.locator("tr").filter({ hasText: "economic_observations" });
+    await economicRow.getByRole("button", { name: "Open Explorer", exact: true }).click();
+    await page.getByRole("button", { name: "Economic", exact: true }).waitFor();
+    await page.getByRole("button", { name: "datasets", exact: true }).click();
 
     await page.getByRole("button", { name: "runs", exact: true }).click();
+    await page.getByRole("button", { name: "Session access", exact: true }).click();
     await page.getByLabel("API key").fill(key);
     await page.getByLabel("Status").selectOption("failed");
-    const runIdCell = page.locator("td.mono").filter({
+    const runIdCell = page.locator(".mono").filter({
       hasText: new RegExp(`^${failed.run_id}$`),
     });
     const row = page.locator("tr").filter({ has: runIdCell });
     await row.waitFor();
     const before = (await call("GET", "/runs")).filter(run => run.retry_of === failed.run_id).length;
     await row.getByRole("button", { name: "Retry", exact: true }).click();
+    await page.getByRole("dialog", { name: "Retry failed run?" }).getByRole("button", { name: "Queue retry" }).click();
     await page.locator(".notice").filter({ hasText: "Queued retry" }).waitFor();
     assert.equal((await call("GET", "/runs")).filter(run => run.retry_of === failed.run_id).length, before + 1);
     assert.deepEqual(await call("GET", "/runs/" + failed.run_id), failedReceipt);
 
+    if (viewport.width === 1440) {
+      await page.getByLabel("Status").selectOption("dead_letter");
+      const deadLetterRow = page.locator("tr").filter({ hasText: deadLetterId });
+      await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
+      await page.getByLabel("API key").fill("incorrect-key");
+      const acknowledgeDialog = page.getByRole("dialog", { name: "Acknowledge dead letter?" });
+      await acknowledgeDialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
+      await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
+      await acknowledgeDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await page.getByLabel("API key").fill(key);
+      await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
+      await page.getByRole("dialog", { name: "Acknowledge dead letter?" }).getByRole("button", { name: "Acknowledge", exact: true }).click();
+      await page.locator(".notice").filter({ hasText: `Acknowledged ${deadLetterId}` }).waitFor();
+      const acknowledged = await call("GET", "/runs/" + deadLetterId);
+      assert.equal(acknowledged.status, "dead_letter");
+      assert.equal(acknowledged.error, "acceptance dead letter");
+      assert.equal(acknowledged.dead_letter_state.state, "acknowledged");
+    }
+
     await page.getByRole("button", { name: "explorer", exact: true }).click();
+    await page.getByRole("button", { name: "Provider bars", exact: true }).click();
     await page.getByLabel("Provider").fill("fixture");
     await page.getByLabel("Symbol").fill("UI_TEST");
+    await page.getByLabel("Query start date").fill("2026-01-03");
+    await page.getByLabel("Query end date").fill("2026-01-01");
+    await page.getByLabel("Page size").selectOption("2");
     await page.getByRole("button", { name: "Load coverage", exact: true }).click();
-    await page.getByText(String(coverage.row_count), { exact: true }).waitFor();
+    await page.getByText("Start date must not be after end date.", { exact: true }).waitFor();
+    await page.getByLabel("Query start date").fill("");
+    await page.getByLabel("Query end date").fill("");
+    await page.getByRole("button", { name: "Load coverage", exact: true }).click();
+    await page.locator(".coverage-strip").waitFor();
+    await page.getByText("Page 1 · 2 rows", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Next page", exact: true }).click();
+    await page.getByText(/Page 2 · \d+ rows/, { exact: false }).waitFor();
+    await page.getByRole("button", { name: "Economic", exact: true }).click();
+    await page.getByLabel("Series ID").fill("PAYEMS");
+    await page.getByRole("button", { name: "Load observations", exact: true }).click();
+    await page.getByText("No observations in this page.", { exact: true }).waitFor();
+    await page.getByLabel("Query mode").selectOption("pit");
+    await page.getByLabel("As-of timestamp").fill("");
+    await page.getByRole("button", { name: "Load observations", exact: true }).click();
+    await page.getByText("PIT mode requires an as-of timestamp.", { exact: true }).waitFor();
+
+    await page.getByRole("button", { name: "quality", exact: true }).click();
+    await page.getByLabel("Finding code").waitFor();
+    await page.getByLabel("Finding from date").waitFor();
+    await page.getByText("No quality findings.", { exact: true }).waitFor();
+
+    await page.getByRole("button", { name: "operations", exact: true }).click();
+    await page.getByText("Capacity and recovery", { exact: true }).waitFor();
+    await page.getByText("Active alerts", { exact: true }).waitFor();
+    await page.getByLabel("API key").fill("incorrect-key");
+    await page.getByRole("button", { name: "Review ingest", exact: true }).click();
+    const ingestDialog = page.getByRole("dialog", { name: "Queue ingest run?" });
+    await ingestDialog.getByRole("button", { name: "Queue ingest", exact: true }).click();
+    await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
+    await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByLabel("API key").fill(key);
+    await page.getByRole("button", { name: "Review ingest", exact: true }).click();
+    await page.getByRole("dialog", { name: "Queue ingest run?" }).getByRole("button", { name: "Queue ingest", exact: true }).click();
+    await page.locator(".notice").filter({ hasText: "Queued" }).waitFor();
+    const queuedNotice = await page.locator(".notice").filter({ hasText: "Queued" }).last().textContent();
+    const queuedRunId = queuedNotice?.match(/[0-9a-f-]{36}/i)?.[0];
+    assert.ok(queuedRunId, "successful ingest notice did not include run id");
+    await waitFor(async () => {
+      const value = await call("GET", "/runs/" + queuedRunId);
+      return value.status === "pass" ? value : false;
+    }, "UI ingest did not reach terminal pass");
 
     const widths = await page.evaluate(() => ({
       body: document.body.scrollWidth, html: document.documentElement.scrollWidth, inner: innerWidth,
+      overflow: [...document.querySelectorAll("*")].filter(element => element.scrollWidth > element.clientWidth + 1).slice(0, 10).map(element => ({ tag: element.tagName, className: element.className, scroll: element.scrollWidth, client: element.clientWidth })),
     }));
     assert.equal(widths.body <= widths.inner && widths.html <= widths.inner, true, JSON.stringify({ viewport, widths }));
     assert.deepEqual(errors, []);
@@ -175,11 +268,36 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     results.push({ viewport, status: "pass" });
     await page.close();
   }
+  const loadingPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  await loadingPage.route("**/api/v1/metrics", async route => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await route.continue();
+  });
+  await loadingPage.goto(base);
+  await loadingPage.getByLabel("Loading").first().waitFor();
+  await loadingPage.locator(".sidebar .status.ok").waitFor();
+  await loadingPage.close();
+
+  const errorPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  await errorPage.route("**/api/v1/metrics", route => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ data: null, meta: { request_id: "browser-error-state" }, errors: [{ code: "injected", message: "Injected metrics failure" }] }),
+  }));
+  await errorPage.goto(base);
+  await errorPage.getByText("Unable to load data", { exact: true }).waitFor();
+  await errorPage.getByText("Injected metrics failure", { exact: false }).waitFor();
+  await errorPage.close();
   const report = writeReceipt("pass", {
-    checks: ["readiness", "dataset_list", "run_filter", "failed_retry", "original_immutable",
-      "unauthorized_write", "bars_coverage", "mobile_layout", "no_javascript_errors",
-      "webui_api_deployment_identity"],
+    checks: ["readiness", "capacity_warning", "dataset_list", "dataset_detail", "run_filter",
+      "retry_confirmation", "failed_retry", "original_immutable", "acknowledge_confirmation",
+      "acknowledge_permission_denied", "acknowledge_additive_state", "permission_denied_state",
+      "bars_coverage", "explicit_cursor_next_page", "economic_current_query", "economic_pit_validation",
+      "bars_date_window_validation", "catalog_explorer_link", "quality_filters", "quality_empty_state",
+      "operations_view", "active_alerts", "successful_ingest", "collapsible_sidebar",
+      "loading_state", "api_error_state", "mobile_layout", "no_javascript_errors", "webui_api_deployment_identity"],
     original_run_id: failed.run_id,
+    acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
     viewports: results,
   });
