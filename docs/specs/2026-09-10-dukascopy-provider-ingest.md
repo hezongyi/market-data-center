@@ -183,6 +183,8 @@ Provider module 的 interface 保持 `fetch_bars(IngestJob) -> list[ProviderBar]
 - 两次验收均使用 `EURUSD`/FX/1d、14 天有界半开窗口，发布 12 行 closed BID bars，min/max 为 `2026-08-28T00:00:00+00:00` / `2026-09-10T00:00:00+00:00`；connector version、input/output hash、quality、part/manifest、snapshot 和 paged/unpaged readback hash 均已记录且一致。
 - 验收前后 free ratio 均约 `0.11684`，capacity 为 `warning`；请求估算 57,344 bytes，满足 warning 状态只允许不超过 31 天 D3 窗口的门禁。D4 bulk migration 继续禁止。
 - D3 尚未关闭：仍需在 immutable deployment 上形成 empty、timeout/status、duplicate/out-of-order、missing OHLC 和 unsupported selector 的安全失败 receipt，并完成服务重启 readback 与 rollback/readback 证明。上述证据未完成前本 spec 保持 `in progress`。
+- 回滚门禁：`deployment_rollback` receipt `5459eaa82d804751af4d4ea8401429a0` 将服务切回 `7357bbe6604a-055fc839`，该 release 下已发布 Dukascopy 数据仍可分页读取（5 行首��，snapshot `17bd735294266e9bdcc5c12e4cfd97ba3bca8b9611fe64158b6682bb7b6bd928`），canonical/ledger hash 保持不变；随后 `deployment_activate` receipt `e80b0c5334c742c59ddd40f8ba40aed1` 恢复 `5f3c6a5b49f4-bd4b873d`，ready 通过。
+- 生产 acceptance scope 安全失败证据：未来空窗口 run `4f897f2c-24cc-4e0a-a9d7-85524676217a` 以 `ValueError`、`retryable=false` 失败；无效 symbol run `78a72a57-5a3a-4796-b6f8-b55592b8040a` 以 `ValueError`、`retryable=false` 失败；两者均未生成 part/manifest，receipt 仅保留安全错误类别。此前无效 payload 的受控失败已由 D1 contract tests 覆盖。timeout/status、duplicate/out-of-order、missing OHLC 的 immutable-production 失败矩阵仍待补齐。
 
 ## 非目标
 
