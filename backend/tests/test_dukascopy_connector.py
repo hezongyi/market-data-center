@@ -5,6 +5,7 @@ from pathlib import Path
 import dukascopy_python
 import pandas as pd
 import pytest
+
 from data_center.connectors.dukascopy import DukascopyConnector
 from data_center.connectors.registry import CONNECTORS
 from data_center.domain.models import IngestJob
