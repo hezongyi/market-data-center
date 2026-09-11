@@ -32,11 +32,28 @@ def _partition(path: Path) -> tuple[str, str, str, int]:
     return values["asset_class"], values["symbol"], values["timeframe"], int(values["year"])
 
 
+def _manifest_visible_parts(canonical_root: Path) -> set[Path]:
+    visible = set()
+    for manifest in (Path(canonical_root) / ".manifests").glob("*.json"):
+        try:
+            payload = json.loads(manifest.read_text())
+            for part in payload.get("parts", []):
+                if isinstance(part.get("path"), str):
+                    visible.add((Path(canonical_root) / part["path"]).resolve())
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return visible
+
+
 def inventory_legacy_dukascopy(source_root: Path, evidence_root: Path,
-                               capacity_policy: CapacityPolicy | None = None) -> dict:
+                               capacity_policy: CapacityPolicy | None = None,
+                               canonical_root: Path | None = None) -> dict:
     started = utc_now()
     source_root = Path(source_root).resolve()
-    paths = sorted(source_root.rglob("*.parquet"))
+    all_paths = sorted(source_root.rglob("*.parquet"))
+    visible = _manifest_visible_parts(canonical_root) if canonical_root else set()
+    paths = [path for path in all_paths if path.resolve() not in visible]
+    excluded = [path for path in all_paths if path.resolve() in visible]
     if not paths:
         raise ValueError("no legacy Dukascopy Parquet files found")
     before = _source_snapshot(paths)
@@ -101,6 +118,8 @@ def inventory_legacy_dukascopy(source_root: Path, evidence_root: Path,
         "source_snapshot_before": before,
         "source_snapshot_after": after,
         "source_mutated": before != after,
+        "manifest_visible_files_excluded": len(excluded),
+        "manifest_visible_bytes_excluded": sum(path.stat().st_size for path in excluded),
         "file_count": len(paths),
         "row_count": sum(group["row_count"] for group in groups),
         "bytes": sum(path.stat().st_size for path in paths),
@@ -126,9 +145,11 @@ def main() -> None:
     settings = Settings()
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--canonical-root", type=Path, default=settings.canonical_root)
     parser.add_argument("--evidence-root", type=Path, default=settings.evidence_root)
     args = parser.parse_args()
-    report = inventory_legacy_dukascopy(args.source_root, args.evidence_root, settings.capacity_policy())
+    report = inventory_legacy_dukascopy(args.source_root, args.evidence_root, settings.capacity_policy(),
+                                        args.canonical_root)
     print(json.dumps({key: value for key, value in report.items() if key != "details"}), flush=True)
     raise SystemExit(0 if report["result"] == "pass" else 1)
 
