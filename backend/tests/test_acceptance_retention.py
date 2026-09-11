@@ -60,7 +60,7 @@ def test_acceptance_unreachable_service_persists_alert(tmp_path):
         report = run_acceptance(f"http://127.0.0.1:{sock.getsockname()[1]}", tmp_path, spacing_seconds=0)
     assert report["status"] == "failed"
     alert = json.loads((tmp_path / "alerts.jsonl").read_text())
-    assert set(alert["providers"]) == {"binance", "yfinance", "fred"}
+    assert set(alert["providers"]) == {"binance", "yfinance", "dukascopy", "fred"}
     assert json.loads((tmp_path / alert["receipt"]).read_text())["status"] == "failed"
 
 

@@ -31,6 +31,8 @@ curl-cffi==0.16.3
     #   yfinance
 duckdb==1.5.5
     # via market-data-center (backend/pyproject.toml)
+dukascopy-python==4.0.1
+    # via market-data-center (backend/pyproject.toml)
 fastapi==0.141.1
     # via market-data-center (backend/pyproject.toml)
 h11==0.16.0
@@ -71,7 +73,10 @@ numpy==2.5.3 ; python_full_version >= '3.12'
 packaging==26.3
     # via pytest
 pandas==3.0.5
-    # via yfinance
+    # via
+    #   market-data-center (backend/pyproject.toml)
+    #   dukascopy-python
+    #   yfinance
 peewee==4.5.1
     # via yfinance
 platformdirs==4.11.8
@@ -108,6 +113,7 @@ pytz==2026.3.post1
 requests==2.34.2
     # via
     #   market-data-center (backend/pyproject.toml)
+    #   dukascopy-python
     #   yfinance
 ruff==0.16.6
     # via market-data-center (backend/pyproject.toml)
