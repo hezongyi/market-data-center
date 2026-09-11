@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import requests
@@ -24,7 +25,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: str,
-                            api_key: str, deployment_manifest: Path, evidence_root: Path) -> dict:
+                            api_key: str | None, deployment_manifest: Path, evidence_root: Path) -> dict:
     started = utc_now()
     deployment = runtime_identity(deployment_manifest)
     source = consumer_repo / "src" / "macro_market_lab" / "cli" / "query_preview.py"
@@ -33,9 +34,10 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     bid_gate_present = "price_type=bid" in source_text
     env = os.environ.copy()
     env["MACRO_MARKET_DATA_CENTER_URL"] = base_url
-    env["MACRO_MARKET_DATA_CENTER_API_KEY"] = api_key
+    if api_key:
+        env["MACRO_MARKET_DATA_CENTER_API_KEY"] = api_key
     env["PYTHONPATH"] = str(consumer_repo / "src")
-    command = ["/home/quant/miniforge3/envs/macro-market-lab/bin/python", "-m",
+    command = [sys.executable, "-m",
                "macro_market_lab.cli.app", "query", "preview", "dataset",
                "--provider", "dukascopy", "--asset-class", "fx", "--symbol", "EURUSD",
                "--timeframe", "1d", "--mode", "summary", "--limit", "5",
@@ -47,7 +49,8 @@ def run_consumer_acceptance(*, consumer_repo: Path, data_root: Path, base_url: s
     off = subprocess.run(command, cwd=consumer_repo, env=off_env, capture_output=True, text=True, check=True)
     off_payload = json.loads(off.stdout)
     session = requests.Session()
-    session.headers["X-API-Key"] = api_key
+    if api_key:
+        session.headers["X-API-Key"] = api_key
     rows = []
     cursor = None
     snapshots = set()
@@ -103,8 +106,6 @@ def main() -> None:
     parser.add_argument("--deployment-manifest", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     args = parser.parse_args()
-    if not args.api_key:
-        parser.error("--api-key or DATACENTER_API_KEY is required")
     report = run_consumer_acceptance(consumer_repo=args.consumer_repo, data_root=args.data_root,
                                      base_url=args.base_url, api_key=args.api_key,
                                      deployment_manifest=args.deployment_manifest, evidence_root=args.evidence_root)
