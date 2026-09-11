@@ -9,6 +9,8 @@ import pytest
 from data_center.connectors.dukascopy import DukascopyConnector
 from data_center.connectors.registry import CONNECTORS
 from data_center.domain.models import IngestJob
+from data_center.dukascopy_d3 import SECRET_MARKERS, run_failure_matrix
+from data_center.ingest.process import safe_failure_result
 from data_center.ingest.service import run_fixture_ingest
 from data_center.storage.query import query_provider_bars
 
@@ -123,3 +125,29 @@ def test_dukascopy_ingest_publishes_manifest_and_readback(tmp_path, monkeypatch)
     rows = query_provider_bars(root, provider="dukascopy", symbol="EURUSD", timeframe="1d")
     assert len(rows) == 2
     assert {row["price_type"] for row in rows} == {"bid"}
+
+
+def test_worker_safe_failure_result_never_persists_provider_details() -> None:
+    import requests
+
+    marker = "https://provider.example/private?token=credential-for-safety-test"
+    result = safe_failure_result(requests.Timeout(marker))
+    assert result["error_type"] == "Timeout"
+    assert result["error"] == "ingest failed"
+    assert marker not in json.dumps(result)
+
+
+def test_dukascopy_d3_failure_matrix_is_complete_and_safe(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("data_center.dukascopy_d3.runtime_identity", lambda _path: {
+        "deployment_id": "release-1", "software_version": "0.2.0", "source_commit": "a" * 40,
+    })
+    report = run_failure_matrix(tmp_path, tmp_path / "deployment.json")
+    cases = report["details"]["cases"]
+    assert report["result"] == "pass"
+    assert {case["case"] for case in cases} == {
+        "empty", "timeout", "http_status", "duplicate", "out_of_order", "missing_ohlc",
+        "unsupported_selector",
+    }
+    assert all(case["status"] == "pass" for case in cases)
+    serialized = json.dumps(report)
+    assert all(marker not in serialized for marker in SECRET_MARKERS)
