@@ -1,7 +1,7 @@
 # Web UI Modernization Specification
 
 日期：2026-09-11  
-状态：accepted；Phase 1 implementation in progress  
+状态：accepted；Phases 1-4 implemented and verified
 相关研究：`docs/plans/2026-09-11-webui-framework-research.md`  
 API 契约：`docs/api-and-webui-contract.md`
 
@@ -197,3 +197,20 @@ ConfirmDialog
 - 2026-09-11：采用 shadcn/ui 风格源码组件 + TanStack Table 的渐进路线；不套完整 admin 工程。
 - 2026-09-11：先实现 AppShell、Overview、Runs，再迁移 Catalog、Quality、Explorer 和 Operations。
 - 2026-09-11：视觉原型评审选择 A（Calm operations）：浅色内容区、深色侧栏、克制阴影和高可读运维状态；B（Dark data room）与 C（Queue workstation）不作为正式基线。
+
+## 实施与验收记录
+
+2026-09-11 完成 Phases 1-4：
+
+- 建立 typed API client、共享状态组件、TanStack Table 和 Lucide 图标体系；
+- 完成 Overview、Data Catalog、Runs、Quality、Explorer、Operations 六个工作区；
+- Overview 使用 `production_sli["24h"]` 展示近 24 小时 runs 与失败率；
+- Explorer 保留 snapshot/schema/cursor 语义，支持 bars 日期窗口和 economic current/PIT；
+- ingest、retry、acknowledge 均有确认、pending、成功和拒绝状态，terminal run 保持不可覆盖；
+- Operations 的 Active alerts 从现有 capacity、dead-letter 和 operational snapshot 聚合；当前 API 契约没有 alert-list endpoint，因此未虚构新的后端接口。
+
+验证结果：
+
+- `bash scripts/ci.sh all` 通过，包括 134 个 backend tests、Ruff、依赖与兼容性、secret scan、operations acceptance、容量性能、Web build、隔离 browser acceptance 和 service restart acceptance；
+- browser acceptance 覆盖 29 项状态与操作检查，1440px 和 390px 均通过，无页面级横向溢出或 JavaScript error；
+- 视觉检查：信息层级清晰；状态同时使用文字和颜色；桌面密度适合扫描；写操作与只读 Explorer 分离；移动端导航为两行三列，Operations 表单与详情为单列，无遮挡。
