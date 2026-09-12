@@ -55,16 +55,20 @@ S1 是 planner、watermark、gap repair、幂等和 contract tests；S2 是核�
 
 S1/S2 的 contract test 必须证明 planner、coverage、quality、capacity 和 receipt 逻辑可用于至少一个非 Dukascopy provider；Dukascopy 特有行为只保留在 connector、capability 和 profile。
 
-2026-09-12 生产已激活 release `f0a86f18f74c-3713c676`（source commit
-`f0a86f18f74c6e641623104ddc7652fc7149aba7`）。容量策略按 operator 授权调整为
+2026-09-12 生产已激活 release `ea58dc768846-d05c341d`（source commit
+`ea58dc768846c7556ed840bf9982f87e8dcf9218`）。容量策略按 operator 授权调整为
 warning 5%、critical 2%；当前约 11.68% free，状态为 `ok`，critical 保护仍保留。
 真实维护证据包括：BTCUSD 2-day 1m BID（2880 行）、EURUSD gap repair（60 行），
 以及同一 EURUSD 窗口幂等重跑（`window_count=0`）。随后 EURUSD、GBPUSD、USDCAD、
 USDJPY、AUDJPY、GBPJPY、XAUUSD 的固定工作日窗口各补齐 60 行并达到 `ready`。
 
-维护 timer 已启用，生产 env 设置 `DATACENTER_MAINTENANCE_SYMBOLS=BTCUSD`，自动
-canary 已成功触发并产生 1 个目标、0 failures 的 receipt；FX/金属仍需在不同交易
-时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。2026-09-12
+维护 timer 已启用，生产 env 当前保持 `DATACENTER_MAINTENANCE_SYMBOLS=BTCUSD`，自动
+canary 已成功触发。为应对 Dukascopy 长窗口返回不完整结果，maintenance policy
+新增 provider/timeframe 可配置的 `shard_minutes`，Dukascopy 1m 使用 60 分钟分片；
+`coverage_not_ready` 在 production/maintenance scope 下可重试，结构性质量错误仍为
+终态。release `ea58dc768846-d05c341d` 已完成部署和重试语义验收。
+
+FX/金属仍需在不同交易时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。2026-09-12
 的生产观察还记录了两类重要结果：BTCUSD 最近分钟窗口出现供应商缺口时，质量门禁
 返回 `QualityError/coverage_not_ready` 且没有 canonical publication；容量仍为 `ok`。
 对 2026-09-10 12:00--13:00 UTC 的 8 个 approved symbol 固定窗口维护全部通过，
@@ -72,3 +76,8 @@ receipt 为 `2026-09-12T023548.252823+0000-e8b9e7629d7f4aa499b68e6e7301ed25.json
 完整工作日回补因 FX/金属存在真实内部缺口而被拒绝，receipt 为
 `2026-09-12T024139.631067+0000-10216f769bb048749df78c0c18c0f908.json`；该失败是
 预期的质量保护证据，不得通过填补或放宽门禁解决。
+尝试将 allowlist 临时扩大到 8 个 approved symbols 的 timer 轮全部因当前 tail
+coverage 不完整而重试/dead-letter，未发布不完整数据；receipt 为
+`2026-09-12T034658.205100+0000-b2fe49db145f4a0fafaa49027b5684d2.json`。因此生产
+allowlist 已收回 BTCUSD，避免在供应商恢复前制造持续重试负载；该回收是运行策略，
+不是放宽质量门禁。
