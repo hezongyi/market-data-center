@@ -22,6 +22,11 @@ REGISTRY.register_session(SessionProfile(
     profile_id="dukascopy_fx_weekdays_utc", mode="weekly", timezone="America/New_York",
     weekly_open_minute=6 * 24 * 60 + 17 * 60,
     weekly_close_minute=4 * 24 * 60 + 17 * 60,
+    # Dukascopy FX has the daily rollover break from 17:00 to 18:00
+    # New York time (21:00--22:00 UTC during DST).  Keeping this in the
+    # session profile prevents those legal closed minutes from being treated
+    # as provider gaps by coverage/readiness checks.
+    daily_breaks=((17 * 60, 18 * 60),),
 ))
 REGISTRY.register_session(SessionProfile(
     profile_id="dukascopy_metals_weekdays_utc", mode="weekly", timezone="America/New_York",
