@@ -8,6 +8,7 @@ from data_center.connectors.yfinance import YFinanceConnector
 
 class FixtureConnector:
     provider = "fixture"
+    end_inclusive = True
 
     def fetch_bars(self, job):
         return fetch_bars(job)

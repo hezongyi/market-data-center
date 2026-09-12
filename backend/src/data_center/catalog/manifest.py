@@ -10,14 +10,20 @@ from pathlib import Path
 
 import polars as pl
 
-from data_center.domain.models import ProviderBar
+from data_center.catalog.registry import get_dataset_definition
+from data_center.domain.models import MarketBar, ProviderBar
 from data_center.domain.schema import (
     ECONOMIC_PIT_SCHEMA_VERSION,
     ECONOMIC_SCHEMA_VERSION,
     validate_economic_observations,
+    validate_market_bars,
     validate_provider_bars,
 )
-from data_center.quality.checks import check_economic_observations, check_provider_bars
+from data_center.quality.checks import (
+    check_economic_observations,
+    check_market_bars,
+    check_provider_bars,
+)
 
 
 class PublicationError(ValueError):
@@ -36,6 +42,28 @@ def file_hash(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _validate_lineage_metadata(dataset: str, definition, manifest: dict) -> None:
+    if definition.kind != "derived":
+        return
+    lineage = manifest.get("lineage")
+    if not isinstance(lineage, dict) or not lineage:
+        raise ValueError("lineage")
+    # Required lineage is a dataset-registry contract, not a market_bars-only
+    # special case.  ``source_hash`` is retained as a public contract name;
+    # compact lineage stores the bounded digest under source_hash_digest.
+    required = tuple(definition.required_lineage)
+    for field in required:
+        value = lineage.get(field)
+        if field == "source_hash" and not value:
+            value = lineage.get("source_hash_digest")
+        if not value:
+            raise ValueError("lineage")
+    if dataset == "market_bars":
+        extra = ("input_dataset", "source_timeframe", "target_timeframe", "input_hash", "output_hash")
+        if any(not lineage.get(field) for field in extra):
+            raise ValueError("lineage")
 
 
 def immutable_json(target: Path, value: dict) -> Path:
@@ -74,26 +102,36 @@ def immutable_json(target: Path, value: dict) -> Path:
 
 
 def build_manifest(root: Path, *, run_id: str, dataset_id: str, schema_version: str,
-                   paths: list[Path], row_count: int, quality_summary: dict) -> dict:
+                   paths: list[Path], row_count: int, quality_summary: dict,
+                   lineage: dict | None = None, run_kind: str = "ingest",
+                   run_scope: str = "production", config_digests: dict | None = None) -> dict:
     parts = [{"path": str(path.resolve().relative_to(root.resolve())),
               "bytes": path.stat().st_size, "sha256": file_hash(path),
               "schema": {key: str(value) for key, value in pl.read_parquet_schema(path).items()}}
              for path in paths]
-    return {"run_id": run_id, "dataset_id": dataset_id, "schema_version": schema_version,
+    result = {"run_id": run_id, "dataset_id": dataset_id, "schema_version": schema_version,
             "parts": parts, "row_count": row_count, "quality_summary": quality_summary,
+            "run_kind": run_kind, "run_scope": run_scope,
             "generated_at": datetime.now(timezone.utc).isoformat(), "status": "published"}
+    if lineage is not None:
+        result["lineage"] = lineage
+    if config_digests is not None:
+        result["config_digests"] = config_digests
+    return result
 
 
 def validate_manifest(root: Path, manifest: dict) -> list[Path]:
     try:
         dataset = manifest["dataset_id"]
-        if dataset not in {"provider_bars", "economic_observations"}:
-            raise ValueError("dataset")
-        supported_versions = {"provider_bars.v1"} if dataset == "provider_bars" else {
-            ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION,
-        }
+        definition = get_dataset_definition(dataset)
+        supported_versions = {definition.schema_version}
+        if dataset == "provider_bars":
+            supported_versions = {"provider_bars.v1"}
+        elif dataset == "economic_observations":
+            supported_versions = {ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION}
         if manifest["schema_version"] not in supported_versions or manifest["status"] != "published":
             raise ValueError("version/status")
+        _validate_lineage_metadata(dataset, definition, manifest)
         if manifest["quality_summary"]["status"] != "pass":
             raise ValueError("quality")
         files, rows = [], []
@@ -116,9 +154,18 @@ def validate_manifest(root: Path, manifest: dict) -> list[Path]:
             bars = [ProviderBar.model_validate(row) for row in rows]
             validate_provider_bars(bars)
             findings = check_provider_bars(bars)
-        else:
+        elif dataset == "economic_observations":
             validate_economic_observations(rows, schema_version=manifest["schema_version"])
             findings = check_economic_observations(rows)
+        elif dataset == "market_bars":
+            bars = [MarketBar.model_validate(row) for row in rows]
+            validate_market_bars(bars)
+            findings = check_market_bars(bars)
+        else:
+            # Registered derived datasets carry their own recipe/lineage checks;
+            # the generic publication gate verifies bytes, schema and a passing
+            # quality summary without pretending to know their row model.
+            findings = []
         if findings:
             raise ValueError("quality")
         return files
@@ -130,13 +177,15 @@ def validate_manifest_metadata(root: Path, manifest: dict) -> list[Path]:
     """Validate published metadata and immutable part identity without rereading rows."""
     try:
         dataset = manifest["dataset_id"]
-        if dataset not in {"provider_bars", "economic_observations"}:
-            raise ValueError("dataset")
-        supported_versions = {"provider_bars.v1"} if dataset == "provider_bars" else {
-            ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION,
-        }
+        definition = get_dataset_definition(dataset)
+        supported_versions = {definition.schema_version}
+        if dataset == "provider_bars":
+            supported_versions = {"provider_bars.v1"}
+        elif dataset == "economic_observations":
+            supported_versions = {ECONOMIC_SCHEMA_VERSION, ECONOMIC_PIT_SCHEMA_VERSION}
         if manifest["schema_version"] not in supported_versions or manifest["status"] != "published":
             raise ValueError("version/status")
+        _validate_lineage_metadata(dataset, definition, manifest)
         if manifest["quality_summary"]["status"] != "pass" or manifest["row_count"] < 0:
             raise ValueError("quality/count")
         files = []

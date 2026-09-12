@@ -33,12 +33,19 @@ class RunLedger:
             conn.execute("begin immediate")
             row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
             original = json.loads(row[0]) if row else {}
-            if original and payload.get("run_scope", original.get("run_scope")) != original.get("run_scope"):
-                raise ValueError("run_scope is immutable")
+            self._assert_immutable(original, payload)
             if original.get("status") in {"pass", "failed", "dead_letter"} and original != payload:
                 raise ValueError("terminal receipt is immutable")
             conn.execute("insert into runs values (?, ?) on conflict(run_id) do update set payload=excluded.payload",
                          (run_id, json.dumps({**original, **payload})))
+
+    @staticmethod
+    def _assert_immutable(original: dict, incoming: dict) -> None:
+        if not original:
+            return
+        for field in ("run_id", "job_id", "dataset_id", "run_scope", "run_kind", "execution_plan"):
+            if field in incoming and incoming[field] != original.get(field):
+                raise ValueError(f"{field} is immutable")
 
     def update(self, run_id: str, **fields) -> None:
         payload = self.get(run_id)
@@ -88,7 +95,12 @@ class RunLedger:
         run_id = str(uuid4())
         run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
                        "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
+                       "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
+                       "recipe_version": job_payload.get("recipe_version"),
+                       "input_snapshot_id": job_payload.get("input_snapshot_id"),
                        "run_scope": job_payload.get("run_scope", "production"),
+                       "run_kind": job_payload.get("run_kind", "ingest"),
+                       "execution_plan": job_payload.get("execution_plan"),
                        "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
         with sqlite3.connect(self.path) as conn:
             conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
@@ -129,6 +141,7 @@ class RunLedger:
             attempts = attempt_row[0] if attempt_row else 1
             if original.get("status") != "running":
                 raise ValueError("only a running job can finish")
+            self._assert_immutable(original, receipt)
             payload = {**original, **receipt, "created_at": original.get("created_at"),
                        "attempt_count": attempts, "retry_count": max(0, attempts - 1),
                        "attempt_errors": original.get("attempt_errors", []),
@@ -190,6 +203,7 @@ class RunLedger:
             request = json.loads(job[0])
             payload = {"run_id": new_id, "job_id": request["job_id"], "dataset_id": request["dataset_id"],
                        "provider": request.get("provider"), "run_scope": original.get("run_scope", "legacy_unclassified"),
+                       "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
                        "status": "queued", "retry_of": run_id,
                        "created_at": datetime.now(timezone.utc).isoformat()}
             conn.execute("insert into runs values (?, ?)", (new_id, json.dumps(payload)))

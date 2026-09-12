@@ -7,3 +7,10 @@ def provider_bars_path(root: Path, *, provider: str, asset_class: str, symbol: s
 
 def economic_observations_path(root: Path, *, provider: str, series_id: str) -> Path:
     return root / "economic_observations" / f"provider={provider}" / f"series_id={series_id}"
+
+
+def market_bars_path(root: Path, *, provider: str, asset_class: str, symbol: str, timeframe: str,
+                     price_basis: str, year: int) -> Path:
+    return (root / "market_bars" / f"provider={provider}" / f"asset_class={asset_class}"
+            / f"symbol={symbol}" / f"timeframe={timeframe}" / f"price_basis={price_basis}"
+            / f"year={year}")

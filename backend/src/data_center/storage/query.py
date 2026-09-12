@@ -309,6 +309,31 @@ class QueryEngine:
             params=params, bars=True,
         )
 
+    def market_bars_page(self, *, symbol: str, timeframe: str, provider: str, price_basis: str,
+                         recipe_id: str, recipe_version: str, start: datetime | None = None,
+                         end: datetime | None = None, page_size: int | None = None,
+                         cursor: str | None = None) -> QueryPage:
+        clauses = ["recipe_id = ?", "recipe_version = ?"]
+        params: list = [recipe_id, recipe_version]
+        if start is not None:
+            clauses.append("bar_ts >= ?")
+            params.append(start)
+        if end is not None:
+            clauses.append("bar_ts < ?")
+            params.append(end)
+        return self._query_page(
+            dataset_id="market_bars",
+            selector={"provider": provider, "symbol": symbol, "timeframe": timeframe,
+                      "price_basis": price_basis},
+            start=start.isoformat() if start else None, end=end.isoformat() if end else None,
+            mode=f"recipe:{recipe_id}@{recipe_version}", asof_ts=None,
+            page_size=page_size, cursor=cursor, sort_keys=["bar_ts"],
+            partition_columns=["provider", "symbol", "asset_class", "timeframe", "bar_ts",
+                               "price_basis", "session_profile", "recipe_id", "recipe_version"],
+            order_columns="ingest_ts desc", scan_columns=["ingest_ts", "recipe_id", "recipe_version"],
+            clauses=clauses, params=params, bars=True,
+        )
+
     def economic_observations_page(self, *, provider: str, series_id: str, start: str | None = None,
                                    end: str | None = None, asof_ts: str | None = None,
                                    mode: str = "current", page_size: int | None = None,
@@ -368,6 +393,16 @@ def query_provider_bars(root: Path, *, symbol: str, timeframe: str, provider: st
     inclusive_end = end + timedelta(microseconds=1) if end is not None else None
     return get_query_engine(root).provider_bars_page(provider=provider, symbol=symbol, timeframe=timeframe,
                                                      start=start, end=inclusive_end).rows
+
+
+def query_market_bars(root: Path, *, symbol: str, timeframe: str, provider: str, price_basis: str,
+                      recipe_id: str, recipe_version: str, start: datetime | None = None,
+                      end: datetime | None = None) -> list[dict]:
+    inclusive_end = end + timedelta(microseconds=1) if end is not None else None
+    return get_query_engine(root).market_bars_page(
+        provider=provider, symbol=symbol, timeframe=timeframe, price_basis=price_basis,
+        recipe_id=recipe_id, recipe_version=recipe_version, start=start, end=inclusive_end,
+    ).rows
 
 
 def query_economic_observations(root: Path, *, provider: str, series_id: str, start: str | None = None,
