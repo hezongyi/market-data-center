@@ -28,7 +28,7 @@ REGISTRY.register_maintenance_policy(MaintenancePolicy(
 ))
 REGISTRY.register_maintenance_policy(MaintenancePolicy(
     policy_id="dukascopy_1m", max_window_days=31, tail_days=2, shard_days=7,
-    shard_minutes=60, closed_bar_lag_minutes=1,
+    shard_minutes=60, closed_bar_lag_minutes=180,
 ))
 REGISTRY.register_quality_profile(QualityProfile(profile_id="provider_bars"))
 REGISTRY.register_quality_profile(QualityProfile(profile_id="market_bars"))
