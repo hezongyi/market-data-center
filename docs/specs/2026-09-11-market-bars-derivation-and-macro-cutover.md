@@ -68,6 +68,11 @@ readiness 和 HTTP query readback（每个窗口 12 根 5m bars）。在同一�
 完整历史覆盖：完整工作日回补仍被真实内部缺口保护性拒绝，需先完成可用的 1m
 coverage 后再做高周期 canonical materialization。
 
+多周期汇总 receipt：
+`/home/quant/market_lake/evidence/data-center/operations/dukascopy_derived_multiperiod_acceptance_v2/2026-09-12T035655.196737+0000-9de4316e5d6e437ba9322d5d815417ee.json`。
+其中 5m 有 9 个已通过 production runs，15m/30m/1h 各有 8 个 acceptance runs，
+总计 33 个真实派生 runs。
+
 macro-market-lab 的只读 Data Center adapter 已用 `query preview dataset` 在 EURUSD
 5m 上真实返回 Data Center 数据，包含 `source=data_center`、`price_basis=bid`、
 recipe 和 input snapshot。当前 `.env.local` 已配置 flag-on 的本地运行入口，但
