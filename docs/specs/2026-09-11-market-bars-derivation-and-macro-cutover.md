@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation deployed; protected-main production smoke passed; macro-market-lab full cutover pending
+状态：derivation deployed; protected-main production smoke passed; core-symbol 5m canary passed; macro-market-lab full cutover pending
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
@@ -58,6 +58,9 @@ Parity 至少比较 row count、min/max timestamp、trading date、OHLCV hash、
 - `macro-market-lab` 每个切换 consumer 有 parity receipt、观察期和 rollback evidence；
 - 未迁移的 raw fetch、quality、maintenance consumer 仍有明确清单，不得误报为已切换。
 
-2026-09-12 生产验证已完成 EURUSD `provider_bars 1m BID -> market_bars 5m` 的
-worker staging、immutable manifest、lineage、readiness 和 HTTP query readback；
-该证据只覆盖短窗口，不能替代多周期 parity、观察期和 macro-market-lab 默认读路径切换。
+2026-09-12 生产验证已完成 8 个 Dukascopy approved symbols 的固定窗口
+`provider_bars 1m BID -> market_bars 5m` worker staging、immutable manifest、lineage、
+readiness 和 HTTP query readback（每个窗口 12 根 5m bars）。macro-market-lab 的
+只读 DataCenter adapter 已用 `query preview dataset` 在 EURUSD 1m 上验证，返回
+70 行、明确 `price_type=bid`；默认 feature flag 仍保持关闭，尚未完成 legacy
+parity、观察期和默认 consumer cutover。

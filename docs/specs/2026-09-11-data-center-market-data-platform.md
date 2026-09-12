@@ -1,7 +1,7 @@
 # Data Center Market Data Platform Specification
 
 日期：2026-09-11  
-状态：implemented; protected-main production activation and rollback rehearsal passed; full-universe maintenance and macro-market-lab cutover pending
+状态：implemented; protected-main production activation and rollback rehearsal passed; canary maintenance/derivation active; full-universe maintenance and macro-market-lab cutover pending
 
 ## 目标
 

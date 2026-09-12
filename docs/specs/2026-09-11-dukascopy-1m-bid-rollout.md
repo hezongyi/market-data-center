@@ -1,7 +1,7 @@
 # Dukascopy 1m BID Rollout Specification
 
 日期：2026-09-11  
-状态：S1 implemented; protected-main production smoke passed; S2 full-universe continuous maintenance pending
+状态：S1 implemented; protected-main production smoke passed; S2 canary maintenance active; full-universe continuous maintenance pending
 平台前置：`2026-09-11-data-center-market-data-platform`
 
 ## 决策
@@ -55,6 +55,13 @@ S1 是 planner、watermark、gap repair、幂等和 contract tests；S2 是核�
 
 S1/S2 的 contract test 必须证明 planner、coverage、quality、capacity 和 receipt 逻辑可用于至少一个非 Dukascopy provider；Dukascopy 特有行为只保留在 connector、capability 和 profile。
 
-2026-09-12 已完成一个真实生产 smoke（EURUSD、10 分钟、1m BID）并完成新的
-`1m -> 5m` API/worker 回读；当前仍需运行 approved symbol manifest 的 tail/gap
-maintenance 观察期，才能关闭 S2。
+2026-09-12 生产已激活 release `f0a86f18f74c-3713c676`（source commit
+`f0a86f18f74c6e641623104ddc7652fc7149aba7`）。容量策略按 operator 授权调整为
+warning 5%、critical 2%；当前约 11.68% free，状态为 `ok`，critical 保护仍保留。
+真实维护证据包括：BTCUSD 2-day 1m BID（2880 行）、EURUSD gap repair（60 行），
+以及同一 EURUSD 窗口幂等重跑（`window_count=0`）。随后 EURUSD、GBPUSD、USDCAD、
+USDJPY、AUDJPY、GBPJPY、XAUUSD 的固定工作日窗口各补齐 60 行并达到 `ready`。
+
+维护 timer 已启用，生产 env 设置 `DATACENTER_MAINTENANCE_SYMBOLS=BTCUSD`，自动
+canary 已成功触发并产生 1 个目标、0 failures 的 receipt；FX/金属仍需在不同交易
+时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。
