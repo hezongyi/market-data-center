@@ -42,6 +42,15 @@ def _closed_minute_boundary(value: datetime) -> datetime:
     return _utc(value).replace(second=0, microsecond=0)
 
 
+def _scheduled_end(value: datetime, *, lag_minutes: int) -> datetime:
+    """Bound an unattended pass to data the provider is expected to expose.
+
+    Explicit historical ``--end`` values are never passed through this helper;
+    only the timer's implicit ``now`` uses the provider availability lag.
+    """
+    return _closed_minute_boundary(_utc(value) - timedelta(minutes=lag_minutes))
+
+
 def approved_targets(provider: str, symbols: Iterable[str] | None = None) -> tuple[MaintenanceTarget, ...]:
     requested = {item.strip().upper() for item in symbols or () if item.strip()}
     instruments = REGISTRY.instruments(provider)
@@ -172,8 +181,9 @@ def main() -> None:
     parser.add_argument("--end", type=datetime.fromisoformat)
     parser.add_argument("--run-scope", choices=("maintenance", "production"), default="maintenance")
     args = parser.parse_args()
-    end = _closed_minute_boundary(args.end or datetime.now(timezone.utc))
     policy = maintenance_policy_for(args.provider, "1m")
+    end = (_closed_minute_boundary(args.end) if args.end is not None
+           else _scheduled_end(datetime.now(timezone.utc), lag_minutes=policy.closed_bar_lag_minutes))
     start = _utc(args.start or (end - timedelta(days=policy.tail_days)))
     configured_symbols = settings.maintenance_symbol_list()
     selected_symbols = args.symbols if args.symbols is not None else configured_symbols or None
