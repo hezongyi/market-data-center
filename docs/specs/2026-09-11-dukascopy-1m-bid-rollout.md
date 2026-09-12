@@ -125,7 +125,7 @@ allowlist 已收回 BTCUSD，避免在供应商恢复前制造持续重试负载
   `2026-09-12T123252.313721+0000-3eb4b01322a24f908fd3bc00b6bab4ee.json`、
   `2026-09-12T124841.231957+0000-b0d4d5ba342646458349cc8916be8460.json`。
   每轮均证明 5 个无缺口品种通过、BTCUSD/EURUSD/USDCAD 的真实内部缺口被保留为
-  `not_ready`，并由 `gap_retry_cooldown_minutes=180` 抑制重复 repair；没有
+  `degraded` 并暴露 ready intervals，由 `gap_retry_cooldown_minutes=180` 抑制重复 repair；没有
   synthetic publication，队列最终归零。
 - 通过 `dukascopy_1m_gap_provider_verification` receipt
   `2026-09-12T125054.944451+0000-16600035e0b2412894c34fe9902802b6.json`，使用
@@ -146,4 +146,9 @@ allowlist 已收回 BTCUSD，避免在供应商恢复前制造持续重试负载
   `operations/dukascopy_1m_s2_gate_audit/2026-09-12T125837.170174+0000-0325e995e02b420b84addc05a902e99e.json`。
   旧审计中的 `all_symbols_ready=false` 仅反映已废止的“全历史零缺口”规则。按
   provider-verified-gap 规则，8 个 symbol 均有可消费 ready 区间，3 个 degraded
-  symbol 的缺口均有独立 provider verification receipt，S2 正式通过。
+  symbol 的维护窗口缺口均有独立 provider verification receipt，S2 正式通过。
+- 最终生产 API coverage/readiness 验收 receipt 为
+  `operations/dukascopy_1m_s2_provider_verified_gap_acceptance/2026-09-12T134141.022183+0000-25e38caefd9e412eb14f43fbd7a682ca.json`。
+  在 deployment `d2fe84443721-6c38e5a3` 上，8 个 approved symbol 全部有物理数据和
+  `ready_intervals`；5 个全历史完整，3 个以 `degraded` 显式暴露缺口；API/worker
+  readiness、BID-only、queue=0 和 capacity=ok 全部通过。
