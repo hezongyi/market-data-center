@@ -17,6 +17,7 @@ from data_center.control_plane import (
     plan_maintenance,
 )
 from data_center.domain.models import DeriveJob, IngestJob, ProviderBar
+from data_center.maintenance_runner import approved_targets
 from data_center.platform import build_ingest_plan, coverage_for_rows, execute_ingest
 from data_center.storage.parquet import write_provider_bars
 from data_center.storage.query import query_market_bars
@@ -55,6 +56,13 @@ def test_dataset_definitions_are_complete_control_plane_records():
         "recipe_id", "recipe_version", "input_snapshot_id", "source_hash",
     )
     assert get_dataset_definition("provider_bars").retention_policy == {"mode": "immutable"}
+
+
+def test_maintenance_targets_are_control_plane_approved_and_filterable():
+    targets = approved_targets("dukascopy", ["eurusd", "XAUUSD"])
+    assert [(item.symbol, item.asset_class) for item in targets] == [
+        ("EURUSD", "fx"), ("XAUUSD", "commodity"),
+    ]
 
 
 def test_control_plane_registry_exposes_policy_and_recipe_dependency_graph():
@@ -133,6 +141,18 @@ def test_gap_repair_uses_coverage_timeframe_and_merges_adjacent_gaps():
     assert [(window.start, window.end, window.reason) for window in windows] == [
         (start + 2 * timeframe, start + 4 * timeframe, "gap_repair"),
     ]
+
+
+def test_maintenance_planner_is_idempotent_when_requested_range_is_ready():
+    start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=10)
+    coverage = evaluate_coverage(
+        dataset_id="provider_bars", selector={"timeframe": "1m"},
+        rows=[{"bar_ts": start + timedelta(minutes=index)} for index in range(10)],
+        timeframe=timedelta(minutes=1), requested_start=start, requested_end=end,
+    )
+    assert coverage.readiness_status == "ready"
+    assert plan_maintenance(start=start, end=end, coverage=coverage) == []
 
 
 def test_execute_ingest_records_plan_lineage_and_run_classification(tmp_path):

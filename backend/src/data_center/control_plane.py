@@ -189,6 +189,15 @@ class ControlPlaneRegistry:
         except KeyError as exc:
             raise ValueError(f"instrument is not registered: {provider}/{symbol}") from exc
 
+    def instruments(self, provider: str | None = None, *, approved_only: bool = True) -> tuple[InstrumentMetadata, ...]:
+        """Return a deterministic read model of the approved instrument manifest."""
+        values = self._instruments.values()
+        if provider is not None:
+            values = (item for item in values if item.provider == provider)
+        if approved_only:
+            values = (item for item in values if item.approved)
+        return tuple(sorted(values, key=lambda item: (item.provider, item.symbol)))
+
     def register_quality_profile(self, profile: QualityProfile) -> QualityProfile:
         current = self._quality_profiles.get(profile.profile_id)
         if current is not None and current != profile:
@@ -352,6 +361,22 @@ def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult
     cadence = timeframe or (coverage.timeframe if coverage is not None else timedelta(minutes=1))
     if cadence <= timedelta(0):
         raise ValueError("maintenance timeframe must be positive")
+    # A tail scheduler is expected to be idempotent.  Do not enqueue a second
+    # immutable part when the requested interval is already fully covered
+    # (including a legal closed session with no expected bars).
+    if (
+        coverage is not None
+        and coverage.readiness_status == "ready"
+        and not coverage.missing_timestamps
+        and (
+            coverage.min_ts is None
+            or coverage.max_ts is None
+            or (coverage.min_ts <= start and coverage.max_ts + cadence >= end)
+            or coverage.session_coverage == "complete"
+            or coverage.session_coverage == "unknown"
+        )
+    ):
+        return []
     targets = [(start, end, reason)]
     if coverage is not None and coverage.missing_timestamps:
         missing = list(coverage.missing_timestamps)

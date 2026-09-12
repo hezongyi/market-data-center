@@ -1,7 +1,7 @@
 # Data Center Market Data Platform Specification
 
 日期：2026-09-11  
-状态：implemented in development; controlled local acceptance passed; production activation pending
+状态：implemented; protected-main production activation and rollback rehearsal passed; full-universe maintenance and macro-market-lab cutover pending
 
 ## 目标
 
@@ -105,3 +105,11 @@ Coverage evaluator 必须分别输出 `physical_coverage`、`session_coverage`�
   并完成同一 snapshot 的 `5m market_bars` readiness/readback。该结果仍不是生产部署证据：
   生产 systemd 当前运行旧 release `60112e7f35c95f71f430cedc04ee52e42070882e`，且
   全品种持续维护、定时调度、macro-market-lab raw ownership cutover 尚未验收。
+
+- 生产激活复核（2026-09-12）：PR #33 合并后的 protected-main commit
+  `7b4eb654a1147bc77be6e23b4728a2d56e75da40` 已通过 deployment stage/activate，
+  release `7b4eb654a114-760aee57` 已运行 API/worker；随后完成回滚到
+  `60112e7f35c9-dc0ab671` 并再次前向激活，rollback/activate receipt 均显示 canonical
+  与 ledger hash 未改变。生产 10 分钟 EURUSD `1m BID -> 5m` smoke 通过：raw 10 行、
+  derived 2 行、input/output readiness 均为 `ready`，API `market-bars` 回读 200。
+  这证明了部署和短窗口运行链路，但不等同于全品种持续维护或 consumer cutover 完成。
