@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; latest production 5m materialization and macro-market-lab read-only adapter acceptance passed; macro-market-lab default cutover pending
+状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; latest production 5m materialization and macro-market-lab default bar-preview cutover merged; broader consumer migration remains governed by the inventory below
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
@@ -109,4 +109,6 @@ macro-market-lab 入口的默认 flag 打开；默认 cutover 仍需按观察期
 随后对 macro-market-lab 的实际 `query preview dataset` 入口进行了约 70 秒、6 次
 连续 flag-on 观察，6/6 成功且 row count/range 稳定；观察 receipt 为
 `operations/macro_market_lab_consumer_observation/2026-09-12T145221.853526+0000-d479ea06017b4f6290ec4196f2ccc9f8.json`。
-该入口仍保持可回滚的显式 flag 模式，尚未将默认配置切换为 Data Center。
+该入口已在 macro-market-lab `0b090c7` 合并为默认 Data Center read path；设置
+`MACRO_MARKET_USE_DATA_CENTER_BARS=0` 可回滚到 legacy reader。该切换仅覆盖
+bar preview/query 入口，其他本地写入和维护 workflow 不因此宣称已迁移。
