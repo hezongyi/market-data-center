@@ -74,3 +74,8 @@ recipe 和 input snapshot。当前 `.env.local` 已配置 flag-on 的本地运�
 代码默认仍为 flag-off，consumer acceptance 已验证 flag-on、legacy rollback、分页
 一致性和 60 秒失败率为 0；正式默认 cutover 仍需将该观察证据扩展到实际运行入口，
 不能把本地环境变量配置等同于所有 consumer 已切换。
+
+2026-09-12 的 consumer acceptance 已重新绑定 release `ea58dc768846-d05c341d`：
+flag-on source 为 `data_center`，flag-off 保持 legacy reader，Data Center 和 consumer
+观察期失败率均为 0，readiness 为 `ready`。正式默认 flag 仍保持关闭，直到各实际运行
+入口完成同等观察和 rollback 证据。
