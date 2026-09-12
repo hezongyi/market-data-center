@@ -90,6 +90,56 @@ def _window_key(window: dict) -> tuple[str, str]:
     )
 
 
+def _coverage_failure(receipt: dict) -> dict | None:
+    """Return the structured coverage finding from a failed worker run."""
+    findings = (receipt.get("quality_summary") or {}).get("findings") or ()
+    for finding in findings:
+        if finding.get("code") == "coverage_not_ready" and isinstance(finding.get("coverage"), dict):
+            return finding["coverage"]
+    return None
+
+
+def _isolate_incomplete_window(*, start: datetime, end: datetime,
+                               receipt: dict) -> tuple[datetime, datetime,
+                                                       list[tuple[datetime, datetime]]] | None:
+    """Split a failed response around one observed provider gap.
+
+    This only returns segments when the provider response contains data after
+    the first missing cadence.  A tail that simply has not arrived yet is left
+    as one failed bounded run, avoiding speculative retries or synthetic bars.
+    """
+    coverage = _coverage_failure(receipt)
+    if coverage is None:
+        return None
+    seconds = int(coverage.get("timeframe_seconds") or 0)
+    if seconds <= 0:
+        return None
+    cadence = timedelta(seconds=seconds)
+    missing_text = coverage.get("first_missing_ts")
+    complete_text = coverage.get("latest_complete_boundary")
+    if not missing_text and complete_text:
+        missing_text = (_utc(datetime.fromisoformat(str(complete_text))) + cadence).isoformat()
+    if not missing_text:
+        return None
+    try:
+        missing_start = _utc(datetime.fromisoformat(str(missing_text)))
+        observed_max = _utc(datetime.fromisoformat(str(coverage["max_ts"])))
+    except (KeyError, TypeError, ValueError):
+        return None
+    start, end = _utc(start), _utc(end)
+    missing_end = missing_start + cadence
+    if not start <= missing_start < end or observed_max < missing_end:
+        return None
+    segments = []
+    if start < missing_start:
+        segments.append((start, missing_start))
+    if missing_end < end:
+        segments.append((missing_end, end))
+    if not segments:
+        return None
+    return missing_start, missing_end, segments
+
+
 def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
                         run_scope: str, now: datetime,
                         cooldown_minutes: int) -> set[tuple[str, str]]:
@@ -248,10 +298,10 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                     cooldown_minutes=policy.gap_retry_cooldown_minutes,
                 )
                 result["suppressed_gap_count"] = 0
-                pending = [(window, None) for window in windows]
+                pending = [(window, None, 0) for window in windows]
                 window_failures = 0
                 while pending:
-                    window, recovery_of = pending.pop(0)
+                    window, recovery_of, isolation_depth = pending.pop(0)
                     window_start = datetime.fromisoformat(window["start"])
                     window_end = datetime.fromisoformat(window["end"])
                     reason = window.get("reason", "ingest")
@@ -289,12 +339,31 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                         if receipt.get("status") == "pass":
                             continue
                         window_failures += 1
+                        isolated = _isolate_incomplete_window(
+                            start=window_start, end=window_end, receipt=receipt,
+                        ) if isolation_depth < 16 else None
+                        if isolated is None:
+                            result["unresolved_gaps"].append({
+                                "start": window_start.isoformat(), "end": window_end.isoformat(),
+                                "run_id": submitted["run_id"], "reason": reason,
+                                "error_type": receipt.get("error_type"),
+                                "quality_summary": receipt.get("quality_summary"),
+                            })
+                            continue
+                        missing_start, missing_end, segments = isolated
                         result["unresolved_gaps"].append({
-                            "start": window_start.isoformat(), "end": window_end.isoformat(),
-                            "run_id": submitted["run_id"], "reason": reason,
+                            "start": missing_start.isoformat(), "end": missing_end.isoformat(),
+                            "run_id": submitted["run_id"], "reason": "provider_gap",
                             "error_type": receipt.get("error_type"),
                             "quality_summary": receipt.get("quality_summary"),
                         })
+                        result["recovery_window_count"] += len(segments)
+                        pending.extend(({
+                            "start": segment_start.isoformat(), "end": segment_end.isoformat(),
+                            "reason": "gap_isolation", "ordinal": ordinal,
+                            "semantics": "half-open",
+                        }, submitted["run_id"], isolation_depth + 1)
+                                       for segment_start, segment_end in segments)
                     except Exception as exc:  # noqa: BLE001 - continue independent windows
                         window_failures += 1
                         result["runs"].append({
