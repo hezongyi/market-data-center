@@ -444,9 +444,8 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
             if interval_start is not None and previous_expected is not None:
                 ready_intervals.append((interval_start, previous_expected + timeframe))
             interval_start = None
-        if stamp in observed:
-            if interval_start is None:
-                interval_start = stamp
+        if stamp in observed and interval_start is None:
+            interval_start = stamp
         previous_expected = stamp
     if interval_start is not None and previous_expected is not None:
         ready_intervals.append((interval_start, previous_expected + timeframe))

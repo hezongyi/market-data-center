@@ -37,8 +37,8 @@ from data_center.storage.query import (
     QueryEngine,
     QueryValidationError,
     economic_observations_coverage,
-    query_provider_bars,
     provider_bars_coverage,
+    query_provider_bars,
 )
 
 _request_id = ContextVar("request_id", default="")
