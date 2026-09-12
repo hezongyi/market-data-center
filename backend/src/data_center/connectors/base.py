@@ -7,4 +7,3 @@ class MarketConnector(Protocol):
     provider: str
 
     def fetch_bars(self, job: IngestJob) -> list[ProviderBar]: ...
-

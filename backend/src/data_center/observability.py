@@ -140,15 +140,20 @@ class WebhookDelivery:
         if not webhook_url:
             return {"sent": 0, "failed": 0, "status": "disabled"}
         import requests
-        started = time.monotonic(); sent = failed = 0
+        started = time.monotonic()
+        sent = failed = 0
         for event in events[:self.batch_size]:
-            if time.monotonic() - started >= self.budget_seconds: break
+            if time.monotonic() - started >= self.budget_seconds:
+                break
             try:
                 response = requests.post(webhook_url, json=event, timeout=self.timeout_seconds,
                                          headers={"Idempotency-Key": event.get("idempotency_key", "")}, allow_redirects=False)
-                if 200 <= response.status_code < 300: sent += 1
-                else: failed += 1
-            except requests.RequestException: failed += 1
+                if 200 <= response.status_code < 300:
+                    sent += 1
+                else:
+                    failed += 1
+            except requests.RequestException:
+                failed += 1
         return {"sent": sent, "failed": failed, "status": "failed" if failed else "pass"}
 
 

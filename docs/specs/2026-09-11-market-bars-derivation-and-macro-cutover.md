@@ -1,0 +1,59 @@
+# Market Bars Derivation and macro-market-lab Cutover Specification
+
+日期：2026-09-11  
+状态：approved for implementation  
+平台前置：`2026-09-11-data-center-market-data-platform`  
+数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
+
+## 派生目标
+
+将 provider raw bars 转换为可供研究和图表使用的 canonical `market_bars`。派生模块不绑定 Dukascopy；Dukascopy 1m BID 只是第一份 recipe。
+
+默认依赖图：
+
+```text
+provider_bars 1m -> market_bars 1m/5m/15m/30m/1h/4h/1d
+market_bars 1d  -> market_bars 1w/1mo
+```
+
+路由由 recipe registry 配置，不由 provider 名称硬编码。recipe executor 只读取已发布 input snapshot，按 session profile、calendar、trading date、partial bucket policy 和质量策略计算，再发布独立 immutable output。
+
+每次派生先解析 `DatasetDefinition` 和 recipe，生成 immutable execution plan。recipe 必须声明 `materialization=persisted|ephemeral`、`publication_policy=canonical|research_only`、依赖范围和受影响窗口规则。正式 `market_bars` 使用 `persisted/canonical`；临时研究结果不得进入 current catalog。
+
+## 派生 receipt 与 lineage
+
+每个 derived run 必须记录 recipe/version、input snapshot、source hash 集合、source/target timeframe、session/calendar version、aggregation version、输入输出行数、时间范围、质量结果和 output manifest。不同 recipe、price basis、session policy 或输入 snapshot 的结果不得共享无法区分的 identity。
+
+同时记录 `recipe_digest`、`instrument_digest`、`capability_digest`、`session_profile_digest`、`calendar_digest` 和 `quality_profile_digest`。1m 修复后先生成 dependency graph 的下游重算计划，明确受影响的 target dataset 和时间窗口，再执行派生；第一阶段允许人工确认重算计划。
+
+## session 与质量
+
+session boundary、late open、early close、holiday、内部缺口和不完整 bucket 必须由 profile/policy 决定。provider-native 高周期只作为对照资料，不作为 canonical 派生结果的默认输入。派生质量至少检查时间边界、bucket 完整性、OHLCV、重复主键、输入覆盖和 lineage 完整性。
+
+派生状态必须区分 physical input coverage、session coverage、quality status、readiness status 和 latest complete boundary。只有 readiness 通过的 persisted/canonical 输出才能供正式 consumer 使用。
+
+## `macro-market-lab` 迁移
+
+迁移顺序固定为：
+
+1. 对固定窗口做 Data Center `provider_bars 1m` parity；
+2. 对相同 input snapshot 做 `market_bars` 多周期 parity；
+3. 通过只读 HTTP adapter 切换 query/preview；
+4. 观察期通过后切换派生 bars consumer；
+5. 最后再评估 raw fetch、quality 和 maintenance ownership 的迁移。
+
+Parity 至少比较 row count、min/max timestamp、trading date、OHLCV hash、coverage/gap、quality、错误语义和 lineage。分页与非分页读取必须一致。feature flag 默认在观察期前保持旧路径，rollback 只切回旧 reader，不删除 Data Center 数据。
+
+## 泛化验收
+
+先用 Dukascopy `1m BID` 注册 recipe，再用 fixture 或第二 provider 使用同一 executor 完成相同 contract test。新增 provider 时优先复用 recipe、session/calendar profile 和 quality rule；只有语义不兼容时才新增配置或 recipe。
+
+## 完成门禁
+
+- 派生 dataset 已加入 registry、catalog、manifest、snapshot 和 query contract；
+- `DatasetDefinition` 登记 kind、identity、lineage、quality、retention 和 materialization policy；
+- 固定 snapshot 的跨周期、跨 session parity 通过；
+- 至少两个 provider 复用同一 transform executor；
+- 至少一个 24x7 provider 与 Dukascopy 使用同一 recipe/ executor 完成 contract test；
+- `macro-market-lab` 每个切换 consumer 有 parity receipt、观察期和 rollback evidence；
+- 未迁移的 raw fetch、quality、maintenance consumer 仍有明确清单，不得误报为已切换。

@@ -16,6 +16,30 @@ def test_runs_and_quality_contract(tmp_path) -> None:
     assert response.json()["data"]["status"] == "pass"
 
 
+def test_fixture_ingest_accepts_controlled_test_asset_class(tmp_path) -> None:
+    app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                              evidence_root=tmp_path / "evidence"))
+    response = TestClient(app).post("/api/v1/ingest/runs", json={
+        "job_id": "controlled-fixture", "provider": "fixture", "symbol": "UI_TEST",
+        "asset_class": "test", "timeframe": "1d", "start": "2026-01-01T00:00:00Z",
+        "end": "2026-01-02T00:00:00Z", "run_scope": "acceptance",
+    })
+    assert response.status_code == 200
+
+
+def test_invalid_provider_can_only_be_queued_in_explicit_acceptance_scope(tmp_path) -> None:
+    settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                        evidence_root=tmp_path / "evidence")
+    payload = {"job_id": "controlled-failure", "provider": "acceptance_invalid", "symbol": "TEST",
+               "asset_class": "test", "timeframe": "1d", "start": "2026-01-01T00:00:00Z",
+               "end": "2026-01-02T00:00:00Z", "run_scope": "acceptance"}
+    assert TestClient(create_app(settings)).post("/api/v1/ingest/runs", json=payload).status_code == 200
+    denied = TestClient(create_app(settings)).post("/api/v1/ingest/runs",
+                                                   json={**payload, "run_scope": "production"})
+    assert denied.status_code == 422
+    assert "capability is not registered" in denied.json()["errors"][0]["message"]
+
+
 def test_write_api_requires_key(tmp_path) -> None:
     app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
                               evidence_root=tmp_path / "evidence", api_key="secret"))

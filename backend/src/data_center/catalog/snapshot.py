@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from data_center.catalog.manifest import PublicationError, validate_manifest_metadata
+from data_center.catalog.registry import get_dataset_definition
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,12 @@ class Catalog:
 
     def resolve(self, dataset_id: str, selector: dict[str, str]) -> CatalogSnapshot:
         with self._lock:
+            definition = get_dataset_definition(dataset_id)
+            if definition.kind == "derived" and (
+                definition.materialization_policy != "persisted"
+                or definition.publication_policy != "canonical"
+            ):
+                raise PublicationError("dataset is not published for canonical queries")
             self._refresh()
             parts = tuple(part for part in self._index.get(dataset_id, ()) if self._matches(part, selector))
             identity = {

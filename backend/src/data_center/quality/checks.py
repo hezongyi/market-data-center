@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 
-from data_center.domain.models import ProviderBar
+from data_center.domain.models import MarketBar, ProviderBar
 
 
 def check_provider_bars(rows: Iterable[ProviderBar]) -> list[dict]:
@@ -25,4 +25,19 @@ def check_economic_observations(rows: Iterable[dict]) -> list[dict]:
             findings.append({"severity": "error", "code": "invalid_vintage_interval", "observation_date": row["observation_date"]})
         if row.get("availability_policy") not in {"realtime_vintage", "release_date_known", "release_date_unknown_ingest_asof"}:
             findings.append({"severity": "error", "code": "invalid_availability_policy", "observation_date": row["observation_date"]})
+    return findings
+
+
+def check_market_bars(rows: Iterable[MarketBar]) -> list[dict]:
+    findings: list[dict] = []
+    for row in rows:
+        if row.high < max(row.open, row.close) or row.low > min(row.open, row.close):
+            findings.append({"severity": "error", "code": "ohlc_inconsistent",
+                             "bar_ts": row.bar_ts.isoformat()})
+        if row.volume is not None and row.volume < 0:
+            findings.append({"severity": "error", "code": "negative_volume",
+                             "bar_ts": row.bar_ts.isoformat()})
+        if not all((row.recipe_id, row.recipe_version, row.input_snapshot_id, row.source_hash)):
+            findings.append({"severity": "error", "code": "lineage_incomplete",
+                             "bar_ts": row.bar_ts.isoformat()})
     return findings

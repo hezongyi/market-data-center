@@ -17,7 +17,7 @@ from data_center.catalog.manifest import (
     validate_manifest,
     write_manifest,
 )
-from data_center.domain.models import IngestJob
+from data_center.domain.models import DeriveJob, IngestJob
 from data_center.observability import check_alerts
 
 
@@ -34,12 +34,38 @@ class LocalWorker:
         self.capacity_policy = capacity_policy
 
     def submit(self, job: IngestJob):
-        return self.ledger.enqueue_job(job.model_dump(mode="json"))
+        from data_center.platform import enqueue_ingest_plan
+
+        run_ids = enqueue_ingest_plan(ledger=self.ledger, job=job)
+        # Preserve the historical single-run API.  Multi-window callers can
+        # use submit_many to retain every child run id.
+        return run_ids[0]
+
+    def submit_many(self, job: IngestJob) -> list[str]:
+        from data_center.platform import enqueue_ingest_plan
+
+        return enqueue_ingest_plan(ledger=self.ledger, job=job)
 
     def submit_economic(self, *, series_id, start=None, end=None, schema_version="economic_observations.v2"):
         return self.ledger.enqueue_job({"job_id": f"fred-{series_id}", "dataset_id": "economic_observations",
                                         "provider": "fred", "series_id": series_id, "start": start, "end": end,
                                         "schema_version": schema_version})
+
+    def submit_derive(self, job: DeriveJob) -> str:
+        from data_center.catalog.snapshot import Catalog
+        from data_center.platform_registry import REGISTRY
+
+        recipe = REGISTRY.recipe(job.recipe_id, job.recipe_version)
+        snapshot = Catalog(self.root).resolve(
+            recipe.input_dataset,
+            {"provider": job.provider, "symbol": job.symbol, "timeframe": recipe.source_timeframe},
+        )
+        if not snapshot.parts:
+            raise ValueError("derive input snapshot is empty")
+        if job.input_snapshot_id is not None and job.input_snapshot_id != snapshot.snapshot_id:
+            raise ValueError("derive input snapshot does not match current catalog")
+        payload = job.model_copy(update={"input_snapshot_id": snapshot.snapshot_id}).model_dump(mode="json")
+        return self.ledger.enqueue_job(payload)
 
     @contextmanager
     def _ownership(self):
@@ -128,7 +154,7 @@ class LocalWorker:
                 return False
             directory = self.root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
             directory.mkdir(parents=True, exist_ok=True)
-            (directory / "request.json").write_text(json.dumps(claimed))
+            (directory / "request.json").write_text(json.dumps({**claimed, "canonical_root": str(self.root)}))
             started = time.monotonic()
             process = None
             result = {}

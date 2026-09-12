@@ -1,5 +1,6 @@
 import hmac
 import json
+import math
 import sqlite3
 import tempfile
 import time
@@ -18,11 +19,13 @@ from data_center.catalog.manifest import (
     manifest_path,
     validate_manifest,
 )
-from data_center.catalog.registry import DATASETS
+from data_center.catalog.registry import iter_dataset_definitions
 from data_center.catalog.snapshot import selector_hash
 from data_center.deployment import validated_runtime_identity
-from data_center.domain.models import IngestJob
+from data_center.domain.models import DeriveJob, IngestJob
+from data_center.ingest.worker import LocalWorker
 from data_center.observability import run_metrics
+from data_center.platform import enqueue_ingest_plan
 from data_center.quality.checks import check_provider_bars
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
@@ -111,6 +114,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "meta": {"request_id": current_request_id(), "schema_version": "v1"},
                 "errors": [{"code": code, "message": str(exc)}],
             },
+        )
+
+    @app.exception_handler(ValueError)
+    async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"data": None,
+                     "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                     "errors": [{"code": "invalid_request", "message": str(exc)}]},
         )
 
     @app.exception_handler(CapacityProtectedError)
@@ -217,7 +229,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/datasets")
     def datasets() -> dict:
-        return {"data": list(DATASETS.values()), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return {"data": [definition.as_dict() for definition in iter_dataset_definitions()],
+                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
@@ -241,9 +254,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
-        capacity_policy.require_ingest_capacity(config.canonical_root)
-        run_id = ledger.enqueue_job({**job.model_dump(mode="json"), "request_id": current_request_id()})
-        payload = {"status": "queued", "job_id": job.job_id, "run_id": run_id}
+        requested_days = max(0, math.ceil((job.end - job.start).total_seconds() / 86_400))
+        if job.run_kind == "backfill":
+            capacity_policy.require_backfill_capacity(config.canonical_root, requested_days=requested_days)
+        else:
+            capacity_policy.require_ingest_capacity(config.canonical_root)
+        run_ids = enqueue_ingest_plan(ledger=ledger, job=job, request_id=current_request_id())
+        payload = {"status": "queued", "job_id": job.job_id, "run_id": run_ids[0],
+                   "run_ids": run_ids, "window_count": len(run_ids)}
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/bars")
@@ -275,6 +293,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d") -> dict:
         payload = provider_bars_coverage(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe)
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+
+    @app.get(f"{config.api_prefix}/market-bars")
+    def market_bars(symbol: str, provider: str, timeframe: str, price_basis: str,
+                    recipe_id: str, recipe_version: str, start: str | None = None,
+                    end: str | None = None, page_size: int | None = None,
+                    cursor: str | None = None) -> dict:
+        from datetime import datetime
+
+        started = time.monotonic()
+        page = query_engine.market_bars_page(
+            provider=provider, symbol=symbol, timeframe=timeframe, price_basis=price_basis,
+            recipe_id=recipe_id, recipe_version=recipe_version,
+            start=datetime.fromisoformat(start) if start else None,
+            end=datetime.fromisoformat(end) if end else None,
+            page_size=page_size, cursor=cursor,
+        )
+        print(json.dumps({"event": "data_query", "request_id": current_request_id(),
+                          "dataset": "market_bars",
+                          "selector_hash": selector_hash({"provider": provider, "symbol": symbol,
+                                                          "timeframe": timeframe, "price_basis": price_basis,
+                                                          "recipe_id": recipe_id, "recipe_version": recipe_version}),
+                          "snapshot_id": page.snapshot_id,
+                          "query_mode": f"recipe:{recipe_id}@{recipe_version}",
+                          "page_size": page_size,
+                          "duration_seconds": round(time.monotonic() - started, 4)}),
+              flush=True)
+        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
+                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
+                "next_cursor": page.next_cursor}
+        if page.warning:
+            meta["warnings"] = [page.warning]
+        return {"data": page.rows, "meta": meta, "errors": []}
+
+    @app.post(f"{config.api_prefix}/derive/runs", status_code=202)
+    def derive(job: DeriveJob, x_api_key: str | None = Header(default=None)) -> dict:
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
+            raise HTTPException(status_code=401, detail="invalid api key")
+        capacity_policy.require_ingest_capacity(config.canonical_root)
+        run_id = LocalWorker(config.canonical_root, ledger).submit_derive(job)
+        return {"data": {"status": "queued", "job_id": job.job_id, "run_id": run_id,
+                         "input_snapshot_id": ledger.get(run_id).get("input_snapshot_id")},
+                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/quality/checks")
     def quality_check(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:

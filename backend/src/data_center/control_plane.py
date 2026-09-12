@@ -1,0 +1,393 @@
+"""Provider-agnostic control-plane primitives.
+
+These small interfaces are the seam between provider adapters and the local
+worker.  They intentionally return immutable plans/results so a run can be
+replayed and audited without reinterpreting mutable configuration.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+TIMEFRAME_DELTAS: dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1d": timedelta(days=1),
+    "1w": timedelta(days=7),
+    # Calendar-month semantics are handled by the transform executor and the
+    # coverage evaluator.  The duration is retained as a conservative cadence
+    # for generic planning and validation callers.
+    "1mo": timedelta(days=30),
+}
+
+
+def timeframe_delta(timeframe: str) -> timedelta:
+    """Resolve a canonical timeframe to its duration at the control-plane seam."""
+    try:
+        return TIMEFRAME_DELTAS[timeframe]
+    except KeyError as exc:
+        raise ValueError(f"unsupported timeframe: {timeframe}") from exc
+
+
+class ProviderCapability(BaseModel):
+    provider: str
+    asset_classes: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
+    timeframes: tuple[str, ...] = ()
+    # A provider may expose native higher periods while the platform's
+    # canonical maintenance contract intentionally allows only its raw source
+    # timeframe (for example Dukascopy 1m BID).
+    maintenance_timeframes: tuple[str, ...] = ()
+    price_bases: tuple[str, ...] = ("raw",)
+    max_window_days: int = Field(default=31, ge=1)
+    session_profile: str = "default"
+
+
+class InstrumentMetadata(BaseModel):
+    provider: str
+    symbol: str
+    canonical_symbol: str
+    asset_class: str
+    currency: str
+    session_profile: str
+    calendar_profile: str
+    provider_symbol: str | None = None
+    approved: bool = True
+
+
+class QualityProfile(BaseModel):
+    profile_id: str
+    require_utc: bool = True
+    require_unique_primary_key: bool = True
+    require_ohlc: bool = True
+    require_session_coverage: bool = True
+
+
+class MaintenancePolicy(BaseModel):
+    policy_id: str = "default"
+    max_window_days: int = Field(default=7, ge=1)
+    tail_days: int = Field(default=2, ge=1)
+    shard_days: int = Field(default=7, ge=1)
+    closed_bar_lag_minutes: int = Field(default=1, ge=0)
+
+
+class SessionProfile(BaseModel):
+    profile_id: str
+    mode: Literal["continuous", "weekdays"] = "continuous"
+
+    def is_open(self, value: datetime) -> bool:
+        stamp = _utc(value)
+        return self.mode == "continuous" or stamp.weekday() < 5
+
+
+class TransformRecipe(BaseModel):
+    recipe_id: str
+    version: str
+    input_dataset: str
+    output_dataset: str
+    source_timeframe: str
+    target_timeframe: str
+    allowed_schema_versions: tuple[str, ...]
+    session_profile: str = "utc_24x7"
+    calendar_profile: str = "continuous"
+    aggregation: Literal["ohlcv", "identity"] = "ohlcv"
+    partial_bucket_policy: Literal["drop", "allow"] = "drop"
+    missing_input_policy: Literal["fail", "allow"] = "fail"
+    materialization: Literal["persisted", "ephemeral"] = "persisted"
+    publication_policy: Literal["canonical", "research_only"] = "canonical"
+    downstream_targets: tuple[str, ...] = ()
+    input_recipe_id: str | None = None
+    input_recipe_version: str | None = None
+
+
+class ControlPlaneRegistry:
+    """Versioned provider capability and recipe registry."""
+
+    def __init__(self) -> None:
+        self._capabilities: dict[str, ProviderCapability] = {}
+        self._recipes: dict[tuple[str, str], TransformRecipe] = {}
+        self._sessions: dict[str, SessionProfile] = {}
+        self._instruments: dict[tuple[str, str], InstrumentMetadata] = {}
+        self._quality_profiles: dict[str, QualityProfile] = {}
+        self._maintenance_policies: dict[str, MaintenancePolicy] = {}
+
+    def register_capability(self, capability: ProviderCapability) -> ProviderCapability:
+        current = self._capabilities.get(capability.provider)
+        if current is not None and current != capability:
+            raise ValueError(f"provider capability already registered: {capability.provider}")
+        self._capabilities[capability.provider] = capability
+        return capability
+
+    def capability(self, provider: str) -> ProviderCapability:
+        try:
+            return self._capabilities[provider]
+        except KeyError as exc:
+            raise ValueError(f"provider capability is not registered: {provider}") from exc
+
+    def register_recipe(self, recipe: TransformRecipe) -> TransformRecipe:
+        key = (recipe.recipe_id, recipe.version)
+        current = self._recipes.get(key)
+        if current is not None and current != recipe:
+            raise ValueError(f"recipe version already registered: {recipe.recipe_id}@{recipe.version}")
+        self._recipes[key] = recipe
+        return recipe
+
+    def recipe(self, recipe_id: str, version: str) -> TransformRecipe:
+        try:
+            return self._recipes[(recipe_id, version)]
+        except KeyError as exc:
+            raise ValueError(f"recipe is not registered: {recipe_id}@{version}") from exc
+
+    def recipes(self) -> tuple[TransformRecipe, ...]:
+        return tuple(self._recipes.values())
+
+    def dependency_graph(self) -> dict[str, tuple[dict[str, str], ...]]:
+        """Return the recipe dependency graph as an immutable read model."""
+        graph: dict[str, list[dict[str, str]]] = {}
+        for recipe in sorted(self._recipes.values(), key=lambda item: (item.input_dataset,
+                                                                        item.recipe_id,
+                                                                        item.version)):
+            graph.setdefault(recipe.input_dataset, []).append({
+                "output_dataset": recipe.output_dataset,
+                "recipe_id": recipe.recipe_id,
+                "recipe_version": recipe.version,
+            })
+        return {dataset: tuple(edges) for dataset, edges in graph.items()}
+
+    def register_session(self, profile: SessionProfile) -> SessionProfile:
+        current = self._sessions.get(profile.profile_id)
+        if current is not None and current != profile:
+            raise ValueError(f"session profile already registered: {profile.profile_id}")
+        self._sessions[profile.profile_id] = profile
+        return profile
+
+    def session(self, profile_id: str) -> SessionProfile:
+        try:
+            return self._sessions[profile_id]
+        except KeyError as exc:
+            raise ValueError(f"session profile is not registered: {profile_id}") from exc
+
+    def register_instrument(self, metadata: InstrumentMetadata) -> InstrumentMetadata:
+        key = (metadata.provider, metadata.symbol)
+        current = self._instruments.get(key)
+        if current is not None and current != metadata:
+            raise ValueError(f"instrument already registered: {metadata.provider}/{metadata.symbol}")
+        self._instruments[key] = metadata
+        return metadata
+
+    def instrument(self, provider: str, symbol: str) -> InstrumentMetadata:
+        try:
+            return self._instruments[(provider, symbol)]
+        except KeyError as exc:
+            raise ValueError(f"instrument is not registered: {provider}/{symbol}") from exc
+
+    def register_quality_profile(self, profile: QualityProfile) -> QualityProfile:
+        current = self._quality_profiles.get(profile.profile_id)
+        if current is not None and current != profile:
+            raise ValueError(f"quality profile already registered: {profile.profile_id}")
+        self._quality_profiles[profile.profile_id] = profile
+        return profile
+
+    def quality_profile(self, profile_id: str) -> QualityProfile:
+        try:
+            return self._quality_profiles[profile_id]
+        except KeyError as exc:
+            raise ValueError(f"quality profile is not registered: {profile_id}") from exc
+
+    def register_maintenance_policy(self, policy: MaintenancePolicy) -> MaintenancePolicy:
+        current = self._maintenance_policies.get(policy.policy_id)
+        if current is not None and current != policy:
+            raise ValueError(f"maintenance policy already registered: {policy.policy_id}")
+        self._maintenance_policies[policy.policy_id] = policy
+        return policy
+
+    def maintenance_policy(self, policy_id: str = "default") -> MaintenancePolicy:
+        try:
+            return self._maintenance_policies[policy_id]
+        except KeyError as exc:
+            raise ValueError(f"maintenance policy is not registered: {policy_id}") from exc
+
+    def maintenance_policies(self) -> tuple[MaintenancePolicy, ...]:
+        return tuple(self._maintenance_policies.values())
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    dataset_id: str
+    selector: tuple[tuple[str, str], ...]
+    row_count: int
+    min_ts: datetime | None
+    max_ts: datetime | None
+    duplicate_count: int = 0
+    gap_count: int = 0
+    physical_coverage: str = "empty"
+    session_coverage: str = "unknown"
+    quality_status: str = "not_run"
+    readiness_status: str = "not_ready"
+    latest_complete_boundary: datetime | None = None
+    missing_timestamps: tuple[datetime, ...] = ()
+    # The cadence is part of the coverage result so a gap-repair plan does not
+    # silently assume one-minute bars when the same evaluator is used for a
+    # different source timeframe.
+    timeframe: timedelta = timedelta(minutes=1)
+    calendar_unit: str = "fixed"
+
+    def as_dict(self) -> dict:
+        return {
+            "dataset_id": self.dataset_id,
+            "selector": dict(self.selector),
+            "row_count": self.row_count,
+            "min_ts": self.min_ts.isoformat() if self.min_ts else None,
+            "max_ts": self.max_ts.isoformat() if self.max_ts else None,
+            "duplicate_count": self.duplicate_count,
+            "gap_count": self.gap_count,
+            "physical_coverage": self.physical_coverage,
+            "session_coverage": self.session_coverage,
+            "quality_status": self.quality_status,
+            "readiness_status": self.readiness_status,
+            "latest_complete_boundary": self.latest_complete_boundary.isoformat() if self.latest_complete_boundary else None,
+            "missing_timestamp_count": len(self.missing_timestamps),
+            "timeframe_seconds": int(self.timeframe.total_seconds()),
+            "calendar_unit": self.calendar_unit,
+        }
+
+
+@dataclass(frozen=True)
+class IngestWindow:
+    start: datetime
+    end: datetime
+    reason: str
+    ordinal: int
+
+    def __post_init__(self) -> None:
+        if self.start.tzinfo is None or self.end.tzinfo is None:
+            raise ValueError("maintenance windows must use timezone-aware timestamps")
+        if self.end <= self.start:
+            raise ValueError("maintenance window must be non-empty")
+
+    def as_dict(self) -> dict:
+        return {"start": self.start.isoformat(), "end": self.end.isoformat(),
+                "reason": self.reason, "ordinal": self.ordinal, "semantics": "half-open"}
+
+
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _advance_boundary(value: datetime, *, timeframe: timedelta, calendar_unit: str) -> datetime:
+    if calendar_unit == "fixed":
+        return value + timeframe
+    if calendar_unit == "week":
+        return value + timedelta(days=7)
+    if calendar_unit == "month":
+        year, month = value.year, value.month
+        if month == 12:
+            return value.replace(year=year + 1, month=1, day=1)
+        return value.replace(month=month + 1, day=1)
+    raise ValueError(f"unsupported coverage calendar unit: {calendar_unit}")
+
+
+def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Iterable[Mapping],
+                      timeframe: timedelta = timedelta(minutes=1), quality_status: str = "pass",
+                      session_profile: SessionProfile | None = None,
+                      requested_start: datetime | None = None, requested_end: datetime | None = None,
+                      calendar_unit: str = "fixed") -> CoverageResult:
+    """Evaluate physical and key coverage without assuming a provider."""
+    if timeframe <= timedelta(0):
+        raise ValueError("coverage timeframe must be positive")
+    timestamps = [_utc(row["bar_ts"]) for row in rows if row.get("bar_ts") is not None]
+    unique = sorted(set(timestamps))
+    duplicate_count = len(timestamps) - len(unique)
+    session_profile = session_profile or SessionProfile(profile_id="continuous")
+    expected: list[datetime] = []
+    if unique or (requested_start is not None and requested_end is not None):
+        cursor = _utc(requested_start) if requested_start is not None else unique[0]
+        boundary = _utc(requested_end) if requested_end is not None else unique[-1] + timeframe
+        while cursor < boundary:
+            if session_profile.is_open(cursor):
+                expected.append(cursor)
+            cursor = _advance_boundary(cursor, timeframe=timeframe, calendar_unit=calendar_unit)
+    missing = sorted(set(expected) - set(unique))
+    gaps = len(missing)
+    minimum, maximum = (unique[0], unique[-1]) if unique else (None, None)
+    physical = "empty" if not unique else "present"
+    session_coverage = "complete" if expected and not missing else "incomplete" if expected else "unknown"
+    readiness = ("ready" if unique and duplicate_count == 0 and gaps == 0 and quality_status == "pass"
+                 else "not_ready")
+    latest_complete = maximum
+    if expected:
+        latest_complete = None
+        observed = set(unique)
+        for stamp in expected:
+            if stamp not in observed:
+                break
+            latest_complete = stamp
+    return CoverageResult(dataset_id=dataset_id, selector=tuple(sorted(selector.items())), row_count=len(timestamps),
+                           min_ts=minimum, max_ts=maximum, duplicate_count=duplicate_count, gap_count=gaps,
+                           physical_coverage=physical, session_coverage=session_coverage,
+                           quality_status=quality_status, readiness_status=readiness,
+                           latest_complete_boundary=latest_complete, missing_timestamps=tuple(missing),
+                           timeframe=timeframe, calendar_unit=calendar_unit)
+
+
+def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult | None = None,
+                     policy: MaintenancePolicy | None = None, reason: str = "backfill",
+                     timeframe: timedelta | None = None) -> list[IngestWindow]:
+    """Create bounded, deterministic half-open windows for backfill/tail/gap repair."""
+    start, end = _utc(start), _utc(end)
+    if end <= start:
+        return []
+    policy = policy or MaintenancePolicy()
+    span = min(policy.shard_days, policy.max_window_days)
+    cadence = timeframe or (coverage.timeframe if coverage is not None else timedelta(minutes=1))
+    if cadence <= timedelta(0):
+        raise ValueError("maintenance timeframe must be positive")
+    targets = [(start, end, reason)]
+    if coverage is not None and coverage.missing_timestamps:
+        missing = list(coverage.missing_timestamps)
+        targets = []
+        gap_start = gap_end = missing[0]
+        for stamp in missing[1:]:
+            if stamp - gap_end == cadence:
+                gap_end = stamp
+            else:
+                targets.append((gap_start, gap_end + cadence, "gap_repair"))
+                gap_start = gap_end = stamp
+        targets.append((gap_start, gap_end + cadence, "gap_repair"))
+    windows: list[IngestWindow] = []
+    cursor = start
+    ordinal = 0
+    for target_start, target_end, target_reason in targets:
+        cursor = target_start
+        while cursor < target_end:
+            window_end = min(cursor + timedelta(days=span), target_end)
+            windows.append(IngestWindow(cursor, window_end, target_reason, ordinal))
+            cursor = window_end
+            ordinal += 1
+    return windows
+
+
+def plan_tail(*, watermark: datetime | None, now: datetime, policy: MaintenancePolicy | None = None) -> list[IngestWindow]:
+    policy = policy or MaintenancePolicy()
+    now = _utc(now)
+    start = _utc(watermark) if watermark is not None else now - timedelta(days=policy.tail_days)
+    return plan_maintenance(start=start, end=now, policy=policy, reason="tail")
+
+
+def immutable_execution_plan(*, run_kind: str, run_scope: str, dataset_id: str,
+                             selector: Mapping[str, str], windows: Iterable[IngestWindow],
+                             config_digest: str | None = None) -> dict:
+    """Serialize the exact control-plane interpretation handed to a worker."""
+    return {"run_kind": run_kind, "run_scope": run_scope, "dataset_id": dataset_id,
+            "selector": dict(sorted(selector.items())), "windows": [window.as_dict() for window in windows],
+            "config_digest": config_digest}

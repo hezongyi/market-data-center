@@ -1,4 +1,4 @@
-from data_center.domain.models import ProviderBar
+from data_center.domain.models import MarketBar, ProviderBar
 
 REQUIRED_FIELDS = tuple(ProviderBar.model_fields)
 SCHEMA_VERSION = "provider_bars.v1"
@@ -8,6 +8,7 @@ ECONOMIC_REQUIRED_FIELDS = ("series_id", "provider", "observation_date", "releas
                             "frequency", "units", "seasonal_adjustment", "vintage_start", "vintage_end",
                             "availability_policy", "availability_lag_days", "ingest_ts", "source_hash")
 ECONOMIC_PIT_REQUIRED_FIELDS = ECONOMIC_REQUIRED_FIELDS + ("source", "missing_reason")
+MARKET_BARS_SCHEMA_VERSION = "market_bars.v1"
 
 
 def validate_provider_bars(rows: list[ProviderBar]) -> None:
@@ -16,9 +17,38 @@ def validate_provider_bars(rows: list[ProviderBar]) -> None:
     keys = {(row.provider, row.symbol, row.timeframe, row.bar_ts) for row in rows}
     if len(keys) != len(rows):
         raise ValueError("provider_bars contains duplicate primary keys")
+    timestamps = [row.bar_ts for row in rows]
+    if any(timestamp.tzinfo is None or timestamp.utcoffset() is None for timestamp in timestamps):
+        raise ValueError("provider_bars timestamps must be timezone-aware")
+    if any(timestamp.utcoffset().total_seconds() != 0 for timestamp in timestamps):
+        raise ValueError("provider_bars timestamps must be UTC")
+    if timestamps != sorted(timestamps):
+        raise ValueError("provider_bars timestamps must be sorted ascending")
     for row in rows:
         if row.high < max(row.open, row.close) or row.low > min(row.open, row.close):
             raise ValueError(f"invalid OHLC at {row.bar_ts.isoformat()}")
+
+
+def validate_market_bars(rows: list[MarketBar]) -> None:
+    if not rows:
+        raise ValueError("market_bars cannot be empty")
+    keys = {(row.provider, row.symbol, row.timeframe, row.bar_ts, row.price_basis,
+             row.session_profile, row.recipe_id, row.recipe_version) for row in rows}
+    if len(keys) != len(rows):
+        raise ValueError("market_bars contains duplicate primary keys")
+    if [row.bar_ts for row in rows] != sorted(row.bar_ts for row in rows):
+        raise ValueError("market_bars timestamps must be sorted ascending")
+    for row in rows:
+        if row.bar_ts.tzinfo is None or row.ingest_ts.tzinfo is None:
+            raise ValueError("market_bars timestamps must be timezone-aware")
+        if row.bar_ts.utcoffset() is None or row.ingest_ts.utcoffset() is None:
+            raise ValueError("market_bars timestamps must be timezone-aware")
+        if row.bar_ts.utcoffset().total_seconds() != 0 or row.ingest_ts.utcoffset().total_seconds() != 0:
+            raise ValueError("market_bars timestamps must be UTC")
+        if row.high < max(row.open, row.close) or row.low > min(row.open, row.close):
+            raise ValueError(f"invalid OHLC at {row.bar_ts.isoformat()}")
+        if not all((row.recipe_id, row.recipe_version, row.input_snapshot_id, row.source_hash)):
+            raise ValueError("market_bars lineage is incomplete")
 
 
 def validate_economic_observations(rows: list[dict], *, schema_version: str = ECONOMIC_SCHEMA_VERSION) -> None:
