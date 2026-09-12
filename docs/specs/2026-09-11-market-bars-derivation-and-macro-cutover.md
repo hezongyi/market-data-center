@@ -102,3 +102,6 @@ rollback、BID-only selector、分页快照一致性和 60 秒观察窗口。
 `query preview dataset --dataset market_bars` flag-on 读路径均返回相同 snapshot、recipe、
 lineage 和 `price_basis=bid`。该证据确认派生链路已可生产消费，但不等同于将所有
 macro-market-lab 入口的默认 flag 打开；默认 cutover 仍需按观察期和 rollback 门禁推进。
+
+对应正式验收 receipt：
+`operations/dukascopy_derived_multiperiod_acceptance_v3/2026-09-12T144651.156050+0000-399800ab24664c8d9610a334d16b7120.json`。
