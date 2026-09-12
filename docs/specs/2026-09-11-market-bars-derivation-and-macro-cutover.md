@@ -105,3 +105,8 @@ macro-market-lab 入口的默认 flag 打开；默认 cutover 仍需按观察期
 
 对应正式验收 receipt：
 `operations/dukascopy_derived_multiperiod_acceptance_v3/2026-09-12T144651.156050+0000-399800ab24664c8d9610a334d16b7120.json`。
+
+随后对 macro-market-lab 的实际 `query preview dataset` 入口进行了约 70 秒、6 次
+连续 flag-on 观察，6/6 成功且 row count/range 稳定；观察 receipt 为
+`operations/macro_market_lab_consumer_observation/2026-09-12T145221.853526+0000-d479ea06017b4f6290ec4196f2ccc9f8.json`。
+该入口仍保持可回滚的显式 flag 模式，尚未将默认配置切换为 Data Center。
