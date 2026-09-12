@@ -112,3 +112,11 @@ macro-market-lab 入口的默认 flag 打开；默认 cutover 仍需按观察期
 该入口已在 macro-market-lab `0b090c7` 合并为默认 Data Center read path；设置
 `MACRO_MARKET_USE_DATA_CENTER_BARS=0` 可回滚到 legacy reader。该切换仅覆盖
 bar preview/query 入口，其他本地写入和维护 workflow 不因此宣称已迁移。
+
+随后 macro-market-lab 的生产 `marketlab-market-bars-maintenance.service` 已切换到
+Data Center `derived_maintenance_runner`（macro-market-lab `47bc790`）。真实 systemd
+执行 receipt 为
+`operations/derived_market_bars_maintenance/2026-09-12T231556.218239+0000-e9567cd6d5eb400ea7c8356466b09a13.json`：
+8 个 Dukascopy symbol 目标中 5 个已幂等完成、3 个因 provider gap 保持
+`degraded`，`failed_count=0`，service exit status=0。`macro-daily` 的 yfinance
+维护仍保留旧 workflow，未被错误纳入此次 Dukascopy ownership cutover。
