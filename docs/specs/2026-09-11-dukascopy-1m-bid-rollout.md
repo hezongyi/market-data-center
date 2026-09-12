@@ -55,9 +55,11 @@ S1 是 planner、watermark、gap repair、幂等和 contract tests；S2 是核�
 
 S1/S2 的 contract test 必须证明 planner、coverage、quality、capacity 和 receipt 逻辑可用于至少一个非 Dukascopy provider；Dukascopy 特有行为只保留在 connector、capability 和 profile。
 
-2026-09-12 生产已激活 release `ea58dc768846-d05c341d`（source commit
-`ea58dc768846c7556ed840bf9982f87e8dcf9218`）。容量策略按 operator 授权调整为
+2026-09-12 生产已激活 release `77979f3588b1-a626e764`（source commit
+`77979f3588b1f93f4828401353759deee5ca2bf9`）。容量策略按 operator 授权调整为
 warning 5%、critical 2%；当前约 11.68% free，状态为 `ok`，critical 保护仍保留。
+在磁盘为 TB 级且状态为 `ok` 时，容量不作为本阶段 1m/派生工作的阻塞项；仍保留
+critical 写保护，不自动删除或改写 canonical 数据。
 真实维护证据包括：BTCUSD 2-day 1m BID（2880 行）、EURUSD gap repair（60 行），
 以及同一 EURUSD 窗口幂等重跑（`window_count=0`）。随后 EURUSD、GBPUSD、USDCAD、
 USDJPY、AUDJPY、GBPJPY、XAUUSD 的固定工作日窗口各补齐 60 行并达到 `ready`。
@@ -81,3 +83,7 @@ coverage 不完整而重试/dead-letter，未发布不完整数据；receipt 为
 `2026-09-12T034658.205100+0000-b2fe49db145f4a0fafaa49027b5684d2.json`。因此生产
 allowlist 已收回 BTCUSD，避免在供应商恢复前制造持续重试负载；该回收是运行策略，
 不是放宽质量门禁。
+
+当前版本又完成两轮 BTCUSD timer 幂等观察（04:19、04:35 UTC），均为 `pass`、
+`window_count=0`、`readiness_status=ready`；最新 receipt 为
+`2026-09-12T043555.446169+0000-f33b95d23d464e35b83a8dec1329d71a.json`。

@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation deployed; protected-main production smoke passed; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; macro-market-lab default cutover pending
+状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; macro-market-lab default cutover pending
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
@@ -19,6 +19,12 @@ market_bars 1d  -> market_bars 1w/1mo
 路由由 recipe registry 配置，不由 provider 名称硬编码。recipe executor 只读取已发布 input snapshot，按 session profile、calendar、trading date、partial bucket policy 和质量策略计算，再发布独立 immutable output。
 
 每次派生先解析 `DatasetDefinition` 和 recipe，生成 immutable execution plan。recipe 必须声明 `materialization=persisted|ephemeral`、`publication_policy=canonical|research_only`、依赖范围和受影响窗口规则。正式 `market_bars` 使用 `persisted/canonical`；临时研究结果不得进入 current catalog。
+
+`data_center.derived_maintenance_runner` 是统一运维入口。它按 recipe 依赖层逐层刷新
+catalog snapshot，计算受影响的完整 bucket，使用同一 snapshot/recipe/window 做幂等检查，
+然后通过 `/api/v1/derive/runs` 投递给标准 worker。`--dry-run` 只生成计划和 receipt；
+实际运行不能绕过 API、ledger、staging 或 readiness 门禁。这样新增 provider 时只需注册
+capability、instrument 和 recipe，不需要复制一套派生调度器。
 
 ## 派生 receipt 与 lineage
 
@@ -80,7 +86,12 @@ recipe 和 input snapshot。当前 `.env.local` 已配置 flag-on 的本地运�
 一致性和 60 秒失败率为 0；正式默认 cutover 仍需将该观察证据扩展到实际运行入口，
 不能把本地环境变量配置等同于所有 consumer 已切换。
 
-2026-09-12 的 consumer acceptance 已重新绑定 release `ea58dc768846-d05c341d`：
+2026-09-12 的 consumer acceptance 已重新绑定 release `77979f3588b1-a626e764`：
 flag-on source 为 `data_center`，flag-off 保持 legacy reader，Data Center 和 consumer
 观察期失败率均为 0，readiness 为 `ready`。正式默认 flag 仍保持关闭，直到各实际运行
 入口完成同等观察和 rollback 证据。
+
+重新验收 receipt：
+`/home/quant/market_lake/evidence/data-center/operations/dukascopy_consumer_parity/2026-09-12T043840.242152+0000-ab789afdab8a4992b32680cc5b56d9bb.json`。
+该 receipt 的 `deployment_id` 为 `77979f3588b1-a626e764`，覆盖 flag-on、legacy
+rollback、BID-only selector、分页快照一致性和 60 秒观察窗口。

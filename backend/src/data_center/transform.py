@@ -148,6 +148,28 @@ class TransformExecutor:
             raise ValueError("recipe materialization conflicts with dataset definition")
         if recipe.publication_policy != output.publication_policy:
             raise ValueError("recipe publication policy conflicts with dataset definition")
+        # Resolve selector constraints before touching any parquet.  This is a
+        # deliberate seam: recipes can be reused by multiple providers while
+        # a specialised recipe can still restrict the instruments/price basis
+        # it is semantically valid for.
+        provider = selector.get("provider")
+        symbol = selector.get("symbol")
+        if not provider or not symbol:
+            raise ValueError("recipe selector requires provider and symbol")
+        if recipe.allowed_providers and provider not in recipe.allowed_providers:
+            raise ValueError("recipe selector provider is not allowed")
+        if recipe.allowed_symbols and symbol not in recipe.allowed_symbols:
+            raise ValueError("recipe selector symbol is not allowed")
+        selector_asset_class = selector.get("asset_class")
+        if recipe.allowed_asset_classes and selector_asset_class is not None and selector_asset_class not in recipe.allowed_asset_classes:
+            raise ValueError("recipe selector asset class is not allowed")
+        selector_price_basis = selector.get("price_basis") or selector.get("price_type")
+        if recipe.allowed_price_bases and selector_price_basis is not None and selector_price_basis not in recipe.allowed_price_bases:
+            raise ValueError("recipe selector price basis is not allowed")
+        if recipe.quality_profile is not None:
+            # Fail closed for a typo rather than silently using a different
+            # quality contract from the dataset definition.
+            REGISTRY.quality_profile(recipe.quality_profile)
         source_width = TIMEFRAMES.get(recipe.source_timeframe)
         target_width = TIMEFRAMES.get(recipe.target_timeframe)
         if source_width is None or target_width is None or target_width < source_width:
@@ -177,6 +199,8 @@ class TransformExecutor:
         source_bases = {getattr(row, "price_type", getattr(row, "price_basis", None)) for row in source}
         if len(source_bases) != 1:
             raise ValueError("recipe selector must resolve exactly one price basis")
+        if recipe.allowed_price_bases and source_bases - set(recipe.allowed_price_bases):
+            raise ValueError("recipe input price basis is not allowed")
         groups: dict[datetime, list[ProviderBar | MarketBar]] = defaultdict(list)
         for row in source:
             groups[_bucket_for_timeframe(row.bar_ts, recipe.target_timeframe)].append(row)
@@ -270,6 +294,13 @@ class TransformExecutor:
             "source_timeframe": recipe.source_timeframe, "target_timeframe": recipe.target_timeframe,
             "session_profile": recipe.session_profile, "calendar_profile": recipe.calendar_profile,
             "materialization": recipe.materialization, "publication_policy": recipe.publication_policy,
+            "selector_constraints": {
+                "allowed_providers": list(recipe.allowed_providers),
+                "allowed_asset_classes": list(recipe.allowed_asset_classes),
+                "allowed_symbols": list(recipe.allowed_symbols),
+                "allowed_price_bases": list(recipe.allowed_price_bases),
+            },
+            "quality_profile": recipe.quality_profile or output.quality_profile,
             "aggregation_version": self.version, "input_hash": input_hash, "output_hash": output_hash,
             "input_coverage": input_coverage.as_dict(), "output_coverage": output_coverage.as_dict(),
         }
@@ -279,7 +310,7 @@ class TransformExecutor:
             "instrument_digest": config_digest(instrument),
             "session_profile_digest": config_digest(session),
             "calendar_digest": _hash(recipe.calendar_profile),
-            "quality_profile_digest": config_digest(REGISTRY.quality_profile(output.quality_profile)),
+            "quality_profile_digest": config_digest(REGISTRY.quality_profile(recipe.quality_profile or output.quality_profile)),
         }
         quality = {"status": "pass", "finding_count": 0, "findings": [],
                    "input_coverage": input_coverage.as_dict(),
@@ -306,7 +337,25 @@ class TransformExecutor:
 
 def recomputation_plan(*, recipe: TransformRecipe, selectors: list[dict[str, str]],
                        affected_start: datetime, affected_end: datetime) -> dict:
+    """Expand an inclusive affected interval to complete output buckets.
+
+    Callers that hold a half-open interval should pass an instant strictly
+    inside the interval for ``affected_end`` (the derived maintenance runner
+    does this explicitly).
+    """
     start = _bucket_for_timeframe(affected_start, recipe.target_timeframe)
+    lookback = max(1, recipe.recompute_lookback_buckets)
+    # Keep the default one bucket exactly as before.  Additional lookback is
+    # useful for recipes whose session/calendar boundary can move when a late
+    # source bar is repaired (for example a trading-day rollup).
+    for _ in range(lookback - 1):
+        if recipe.target_timeframe == "1mo":
+            if start.month == 1:
+                start = start.replace(year=start.year - 1, month=12)
+            else:
+                start = start.replace(month=start.month - 1)
+        else:
+            start -= TIMEFRAMES[recipe.target_timeframe]
     end = _next_bucket(
         _bucket_for_timeframe(affected_end + timedelta(microseconds=1), recipe.target_timeframe),
         recipe.target_timeframe,
