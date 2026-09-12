@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import time
 from contextvars import ContextVar
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -293,13 +293,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"data": page.rows, "meta": meta, "errors": []}
 
     @app.get(f"{config.api_prefix}/provider-bars/coverage")
-    def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d") -> dict:
+    def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d",
+                                       start: str | None = None, end: str | None = None) -> dict:
         payload = provider_bars_coverage(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe)
         # For the governed 1m rollout expose session-aware coverage as an
         # additive response.  This makes the distinction between a globally
         # degraded history and its individually safe ready intervals visible
         # to consumers without changing the legacy summary fields.
-        if provider == "dukascopy" and timeframe == "1m":
+        if provider == "dukascopy" and timeframe == "1m" and start is not None and end is not None:
             rows = query_provider_bars(
                 config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe,
             )
@@ -309,17 +310,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     session = REGISTRY.session(instrument.session_profile)
                 except ValueError:
                     session = REGISTRY.session("utc_24x7")
-                timestamps = [row["bar_ts"] for row in rows if row.get("bar_ts") is not None]
-                first, last = min(timestamps), max(timestamps)
                 payload = coverage_for_rows(
                     dataset_id="provider_bars",
                     selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
                     rows=rows,
                     session_profile=session,
-                    requested_start=first,
-                    requested_end=last + timedelta(minutes=1),
+                    requested_start=datetime.fromisoformat(start),
+                    requested_end=datetime.fromisoformat(end),
                     timeframe=timedelta(minutes=1),
                 ).as_dict()
+        elif provider == "dukascopy" and timeframe == "1m":
+            # A min/max summary must not infer gaps across periods that were
+            # never requested/observed (for example sparse historical imports).
+            payload = {**payload, "coverage_scope": "summary",
+                       "readiness_status": "unknown", "ready_interval_count": 0,
+                       "ready_intervals": [], "gap_count": None,
+                       "missing_timestamp_count": None}
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/market-bars")
