@@ -7,7 +7,7 @@
 > 后续实现以三份拆分 spec 为准；本文件保留完整背景、讨论和历史决策。
 
 日期：2026-09-11  
-状态：approved for implementation  
+状态：superseded / historical decision record（实施以三份拆分 spec 为准）
 前置 spec：`2026-09-08-data-center-foundation`、`2026-09-10-dukascopy-provider-ingest`、`2026-09-10-production-hardening-and-consumer-migration`
 
 ## 决策摘要

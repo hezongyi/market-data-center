@@ -1,7 +1,7 @@
 # Data Center Foundation Specification
 
 日期：2026-09-08
-状态：approved for MVP implementation
+状态：implemented / accepted（MVP）
 
 ## 目标
 
@@ -29,4 +29,3 @@
 ## 迁移策略
 
 新 repo 先独立实现 core 和 API；`macro-market-lab` 通过 `DataCenterClient` 逐步切换只读查询，再迁移 ingest、quality 和 maintenance。不得让 Web UI 或其他 repo 直接依赖 canonical 文件路径、SQLite 表结构或 provider 原始响应。
-

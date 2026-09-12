@@ -1,7 +1,7 @@
 # Production Readiness Design
 
 日期：2026-09-09
-状态：approved for implementation
+状态：implemented / accepted
 
 ## 目标
 
@@ -38,4 +38,3 @@
 - 错误任务按 retry policy 结束为 `failed` 或 `dead_letter`。
 - live/ready/metrics 返回稳定 schema。
 - systemd service/timer 在重启后保持 enabled/active，并通过 smoke。
-

@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; latest production 5m materialization and macro-market-lab default bar-preview cutover merged; broader consumer migration remains governed by the inventory below
+状态：implemented / accepted（Dukascopy 派生、bar preview/query 与 maintenance ownership 已切换；其他 consumer 按 current-state 矩阵独立迁移）
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
