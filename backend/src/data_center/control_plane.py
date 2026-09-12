@@ -76,6 +76,10 @@ class MaintenancePolicy(BaseModel):
     max_window_days: int = Field(default=7, ge=1)
     tail_days: int = Field(default=2, ge=1)
     shard_days: int = Field(default=7, ge=1)
+    # Some providers return incomplete results for long intraday requests even
+    # when the same interval is complete in a smaller request.  Keep this as
+    # policy data so the planner remains provider-agnostic.
+    shard_minutes: int | None = Field(default=None, ge=1)
     closed_bar_lag_minutes: int = Field(default=1, ge=0)
 
 
@@ -358,6 +362,9 @@ def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult
         return []
     policy = policy or MaintenancePolicy()
     span = min(policy.shard_days, policy.max_window_days)
+    shard_delta = (timedelta(minutes=policy.shard_minutes)
+                   if policy.shard_minutes is not None
+                   else timedelta(days=span))
     cadence = timeframe or (coverage.timeframe if coverage is not None else timedelta(minutes=1))
     if cadence <= timedelta(0):
         raise ValueError("maintenance timeframe must be positive")
@@ -395,7 +402,7 @@ def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult
     for target_start, target_end, target_reason in targets:
         cursor = target_start
         while cursor < target_end:
-            window_end = min(cursor + timedelta(days=span), target_end)
+            window_end = min(cursor + shard_delta, target_end)
             windows.append(IngestWindow(cursor, window_end, target_reason, ordinal))
             cursor = window_end
             ordinal += 1

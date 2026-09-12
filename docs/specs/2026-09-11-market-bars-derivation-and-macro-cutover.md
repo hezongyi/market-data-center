@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation deployed; protected-main production smoke passed; core-symbol 5m canary passed; macro-market-lab full cutover pending
+状态：derivation deployed; protected-main production smoke passed; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; macro-market-lab default cutover pending
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
@@ -60,7 +60,17 @@ Parity 至少比较 row count、min/max timestamp、trading date、OHLCV hash、
 
 2026-09-12 生产验证已完成 8 个 Dukascopy approved symbols 的固定窗口
 `provider_bars 1m BID -> market_bars 5m` worker staging、immutable manifest、lineage、
-readiness 和 HTTP query readback（每个窗口 12 根 5m bars）。macro-market-lab 的
-只读 DataCenter adapter 已用 `query preview dataset` 在 EURUSD 1m 上验证，返回
-70 行、明确 `price_type=bid`；默认 feature flag 仍保持关闭，尚未完成 legacy
-parity、观察期和默认 consumer cutover。
+readiness 和 HTTP query readback（每个窗口 12 根 5m bars）。在同一完整且已 ready
+的 2026-09-10 12:00--13:00 UTC 1m snapshot 上，15m/30m/1h recipe 又完成 23 个
+真实 acceptance runs（8 个 symbol，EURUSD 的 15m 已先行单独验证），全部 `pass`，
+输出分别为每小时 4/2/1 根，均为 `price_basis=bid`，并写入独立 manifest/lineage。
+这些证据证明派生 executor 的多周期和多品种复用，但不代表 4h/1d/1w/1mo 已具备
+完整历史覆盖：完整工作日回补仍被真实内部缺口保护性拒绝，需先完成可用的 1m
+coverage 后再做高周期 canonical materialization。
+
+macro-market-lab 的只读 Data Center adapter 已用 `query preview dataset` 在 EURUSD
+5m 上真实返回 Data Center 数据，包含 `source=data_center`、`price_basis=bid`、
+recipe 和 input snapshot。当前 `.env.local` 已配置 flag-on 的本地运行入口，但
+代码默认仍为 flag-off，consumer acceptance 已验证 flag-on、legacy rollback、分页
+一致性和 60 秒失败率为 0；正式默认 cutover 仍需将该观察证据扩展到实际运行入口，
+不能把本地环境变量配置等同于所有 consumer 已切换。
