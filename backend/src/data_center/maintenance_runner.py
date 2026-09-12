@@ -149,7 +149,7 @@ def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
     cutoff = _utc(now) - timedelta(minutes=cooldown_minutes)
     recent: set[tuple[str, str]] = set()
     for run in runs:
-        if (run.get("status") != "dead_letter" or run.get("provider") != provider
+        if (run.get("status") not in {"failed", "dead_letter"} or run.get("provider") != provider
                 or run.get("symbol") != symbol or run.get("run_scope") != run_scope
                 or run.get("run_kind") != "gap_repair"):
             continue
@@ -206,6 +206,40 @@ def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
     return recent
 
 
+def _exclude_planned_windows(*, candidates: Iterable[dict], planned: Iterable[dict]) -> list[dict]:
+    """Remove intervals already covered by the primary maintenance plan."""
+    occupied = [
+        (_utc(datetime.fromisoformat(str(window["start"]))),
+         _utc(datetime.fromisoformat(str(window["end"]))))
+        for window in planned
+    ]
+    uncovered: list[dict] = []
+    for candidate in candidates:
+        segments = [
+            (_utc(datetime.fromisoformat(str(candidate["start"]))),
+             _utc(datetime.fromisoformat(str(candidate["end"]))))
+        ]
+        for occupied_start, occupied_end in occupied:
+            remaining: list[tuple[datetime, datetime]] = []
+            for segment_start, segment_end in segments:
+                if occupied_end <= segment_start or occupied_start >= segment_end:
+                    remaining.append((segment_start, segment_end))
+                    continue
+                if segment_start < occupied_start:
+                    remaining.append((segment_start, occupied_start))
+                if occupied_end < segment_end:
+                    remaining.append((occupied_end, segment_end))
+            segments = remaining
+        for segment_start, segment_end in segments:
+            uncovered.append({
+                **candidate,
+                "start": segment_start.isoformat(),
+                "end": segment_end.isoformat(),
+                "ordinal": len(uncovered),
+            })
+    return uncovered
+
+
 def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy,
                            session_profile=None) -> list[dict]:
     """Plan the observed suffix after an interior provider gap.
@@ -259,12 +293,15 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
     failures = 0
     gap_cooldown_runs: list[dict] = []
     if policy.gap_retry_cooldown_minutes > 0:
-        try:
-            gap_cooldown_runs = _request(session, base_url, "GET", "/runs", params={"status": "dead_letter"})
-        except (requests.RequestException, RuntimeError, KeyError, TypeError, ValueError):
-            # A missing cooldown lookup must not turn a read-only diagnostic
-            # into a false suppression; normal governed retries remain safe.
-            gap_cooldown_runs = []
+        for terminal_status in ("failed", "dead_letter"):
+            try:
+                gap_cooldown_runs.extend(_request(
+                    session, base_url, "GET", "/runs", params={"status": terminal_status},
+                ))
+            except (requests.RequestException, RuntimeError, KeyError, TypeError, ValueError):
+                # A missing cooldown lookup must not turn a read-only diagnostic
+                # into a false suppression; normal governed retries remain safe.
+                continue
     try:
         for target in targets:
             result = {"provider": target.provider, "symbol": target.symbol,
@@ -289,6 +326,9 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                 recovery_windows = _tail_recovery_windows(
                     coverage=coverage, start=start, end=end, policy=policy,
                     session_profile=session_profile,
+                )
+                recovery_windows = _exclude_planned_windows(
+                    candidates=recovery_windows, planned=windows,
                 )
                 if recovery_windows:
                     windows.extend(recovery_windows)
