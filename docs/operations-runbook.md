@@ -92,6 +92,13 @@ watermark; repeated attempts for the same terminal gap are governed by the
 provider policy cooldown, while the dead-letter and retry history remain
 immutable.
 
+Maintenance windows are clipped by the registered instrument session before
+they are queued. Weekly open/close and daily break boundaries use the profile's
+IANA timezone, so DST changes do not require UTC constants. Registered holiday
+dates are excluded as legal closures. Confirm `expected_timestamp_count`,
+`closed_timestamp_count`, `gap_count`, and `session_coverage` together when
+auditing a receipt; min/max timestamps alone are not coverage evidence.
+
 Readiness separates `read_status`, `write_status`, and `capacity_status`. `capacity_status=warning` keeps ordinary ingest available but blocks unattended backfills over 31 days. `capacity_status=critical` returns `507 capacity_protected` for new ingest while reads and restore remain available.
 
 ## Capacity response

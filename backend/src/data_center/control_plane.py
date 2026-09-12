@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 TIMEFRAME_DELTAS: dict[str, timedelta] = {
     "1m": timedelta(minutes=1),
@@ -89,11 +90,55 @@ class MaintenancePolicy(BaseModel):
 
 class SessionProfile(BaseModel):
     profile_id: str
-    mode: Literal["continuous", "weekdays"] = "continuous"
+    mode: Literal["continuous", "weekdays", "weekly"] = "continuous"
+    timezone: str = "UTC"
+    weekly_open_minute: int | None = Field(default=None, ge=0, lt=7 * 24 * 60)
+    weekly_close_minute: int | None = Field(default=None, ge=0, lt=7 * 24 * 60)
+    daily_breaks: tuple[tuple[int, int], ...] = ()
+    closed_local_dates: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> SessionProfile:
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown session timezone: {self.timezone}") from exc
+        if self.mode == "weekly" and (
+            self.weekly_open_minute is None
+            or self.weekly_close_minute is None
+            or self.weekly_open_minute == self.weekly_close_minute
+        ):
+            raise ValueError("weekly session requires distinct open and close boundaries")
+        for break_start, break_end in self.daily_breaks:
+            if not 0 <= break_start < break_end <= 24 * 60:
+                raise ValueError(f"invalid daily session break: {self.profile_id}")
+        for closed_date in self.closed_local_dates:
+            date.fromisoformat(closed_date)
+        return self
 
     def is_open(self, value: datetime) -> bool:
-        stamp = _utc(value)
-        return self.mode == "continuous" or stamp.weekday() < 5
+        stamp = _utc(value).astimezone(ZoneInfo(self.timezone))
+        if stamp.date().isoformat() in self.closed_local_dates:
+            return False
+        if self.mode == "continuous":
+            open_now = True
+        elif self.mode == "weekdays":
+            open_now = stamp.weekday() < 5
+        else:
+            if self.weekly_open_minute is None or self.weekly_close_minute is None:
+                raise ValueError(f"weekly session boundaries are required: {self.profile_id}")
+            minute = stamp.weekday() * 24 * 60 + stamp.hour * 60 + stamp.minute
+            if self.weekly_open_minute < self.weekly_close_minute:
+                open_now = self.weekly_open_minute <= minute < self.weekly_close_minute
+            else:
+                open_now = minute >= self.weekly_open_minute or minute < self.weekly_close_minute
+        if not open_now:
+            return False
+        minute_of_day = stamp.hour * 60 + stamp.minute
+        for break_start, break_end in self.daily_breaks:
+            if break_start <= minute_of_day < break_end:
+                return False
+        return True
 
 
 class TransformRecipe(BaseModel):
@@ -263,6 +308,8 @@ class CoverageResult:
     max_ts: datetime | None
     duplicate_count: int = 0
     gap_count: int = 0
+    expected_timestamp_count: int = 0
+    closed_timestamp_count: int = 0
     physical_coverage: str = "empty"
     session_coverage: str = "unknown"
     quality_status: str = "not_run"
@@ -284,6 +331,8 @@ class CoverageResult:
             "max_ts": self.max_ts.isoformat() if self.max_ts else None,
             "duplicate_count": self.duplicate_count,
             "gap_count": self.gap_count,
+            "expected_timestamp_count": self.expected_timestamp_count,
+            "closed_timestamp_count": self.closed_timestamp_count,
             "physical_coverage": self.physical_coverage,
             "session_coverage": self.session_coverage,
             "quality_status": self.quality_status,
@@ -346,12 +395,15 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
     duplicate_count = len(timestamps) - len(unique)
     session_profile = session_profile or SessionProfile(profile_id="continuous")
     expected: list[datetime] = []
+    closed_timestamp_count = 0
     if unique or (requested_start is not None and requested_end is not None):
         cursor = _utc(requested_start) if requested_start is not None else unique[0]
         boundary = _utc(requested_end) if requested_end is not None else unique[-1] + timeframe
         while cursor < boundary:
             if session_profile.is_open(cursor):
                 expected.append(cursor)
+            else:
+                closed_timestamp_count += 1
             cursor = _advance_boundary(cursor, timeframe=timeframe, calendar_unit=calendar_unit)
     missing = sorted(set(expected) - set(unique))
     gaps = len(missing)
@@ -370,6 +422,8 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
             latest_complete = stamp
     return CoverageResult(dataset_id=dataset_id, selector=tuple(sorted(selector.items())), row_count=len(timestamps),
                            min_ts=minimum, max_ts=maximum, duplicate_count=duplicate_count, gap_count=gaps,
+                           expected_timestamp_count=len(expected),
+                           closed_timestamp_count=closed_timestamp_count,
                            physical_coverage=physical, session_coverage=session_coverage,
                            quality_status=quality_status, readiness_status=readiness,
                            latest_complete_boundary=latest_complete, missing_timestamps=tuple(missing),
@@ -378,7 +432,8 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
 
 def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult | None = None,
                      policy: MaintenancePolicy | None = None, reason: str = "backfill",
-                     timeframe: timedelta | None = None) -> list[IngestWindow]:
+                     timeframe: timedelta | None = None,
+                     session_profile: SessionProfile | None = None) -> list[IngestWindow]:
     """Create bounded, deterministic half-open windows for backfill/tail/gap repair."""
     start, end = _utc(start), _utc(end)
     if end <= start:
@@ -419,10 +474,25 @@ def plan_maintenance(*, start: datetime, end: datetime, coverage: CoverageResult
                 targets.append((gap_start, gap_end + cadence, "gap_repair"))
                 gap_start = gap_end = stamp
         targets.append((gap_start, gap_end + cadence, "gap_repair"))
-    windows: list[IngestWindow] = []
-    cursor = start
-    ordinal = 0
+    session_profile = session_profile or SessionProfile(profile_id="continuous")
+    open_targets: list[tuple[datetime, datetime, str]] = []
     for target_start, target_end, target_reason in targets:
+        cursor = target_start
+        open_start: datetime | None = None
+        while cursor < target_end:
+            open_now = session_profile.is_open(cursor)
+            if open_now and open_start is None:
+                open_start = cursor
+            if not open_now and open_start is not None:
+                open_targets.append((open_start, cursor, target_reason))
+                open_start = None
+            cursor = min(cursor + cadence, target_end)
+        if open_start is not None:
+            open_targets.append((open_start, target_end, target_reason))
+
+    windows: list[IngestWindow] = []
+    ordinal = 0
+    for target_start, target_end, target_reason in open_targets:
         cursor = target_start
         while cursor < target_end:
             window_end = min(cursor + shard_delta, target_end)

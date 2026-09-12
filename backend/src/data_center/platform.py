@@ -70,13 +70,17 @@ def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
     reason = "gap_repair" if job.run_kind == "gap_repair" else "backfill" if job.run_kind == "backfill" else "ingest"
     windows = _plan_maintenance(start=job.start, end=job.end, coverage=coverage,
                                 policy=effective_policy, reason=reason,
-                                timeframe=timeframe_delta(job.timeframe))
+                                timeframe=timeframe_delta(job.timeframe),
+                                session_profile=session_profile)
     digests = {
         "dataset_digest": config_digest(definition),
         "capability_digest": config_digest(capability),
         "instrument_digest": config_digest(instrument),
         "session_profile_digest": config_digest(session_profile),
-        "calendar_digest": config_digest({"calendar_profile": _metadata_value(instrument, "calendar_profile")}),
+        "calendar_digest": config_digest({
+            "calendar_profile": _metadata_value(instrument, "calendar_profile"),
+            "closed_local_dates": session_profile.closed_local_dates,
+        }),
         "quality_profile_digest": config_digest(REGISTRY.quality_profile(definition.quality_profile)),
         "maintenance_policy_digest": config_digest(effective_policy),
     }
