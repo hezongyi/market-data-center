@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import time
 from contextvars import ContextVar
+from datetime import timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -25,7 +26,8 @@ from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.ingest.worker import LocalWorker
 from data_center.observability import run_metrics
-from data_center.platform import enqueue_ingest_plan
+from data_center.platform import coverage_for_rows, enqueue_ingest_plan
+from data_center.platform_registry import REGISTRY
 from data_center.quality.checks import check_provider_bars
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
@@ -35,6 +37,7 @@ from data_center.storage.query import (
     QueryEngine,
     QueryValidationError,
     economic_observations_coverage,
+    query_provider_bars,
     provider_bars_coverage,
 )
 
@@ -292,6 +295,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/provider-bars/coverage")
     def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d") -> dict:
         payload = provider_bars_coverage(config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe)
+        # For the governed 1m rollout expose session-aware coverage as an
+        # additive response.  This makes the distinction between a globally
+        # degraded history and its individually safe ready intervals visible
+        # to consumers without changing the legacy summary fields.
+        if provider == "dukascopy" and timeframe == "1m":
+            rows = query_provider_bars(
+                config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe,
+            )
+            if rows:
+                try:
+                    instrument = REGISTRY.instrument(provider, symbol)
+                    session = REGISTRY.session(instrument.session_profile)
+                except ValueError:
+                    session = REGISTRY.session("utc_24x7")
+                timestamps = [row["bar_ts"] for row in rows if row.get("bar_ts") is not None]
+                first, last = min(timestamps), max(timestamps)
+                payload = coverage_for_rows(
+                    dataset_id="provider_bars",
+                    selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
+                    rows=rows,
+                    session_profile=session,
+                    requested_start=first,
+                    requested_end=last + timedelta(minutes=1),
+                    timeframe=timedelta(minutes=1),
+                ).as_dict()
         return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
 
     @app.get(f"{config.api_prefix}/market-bars")
