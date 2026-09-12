@@ -1,0 +1,187 @@
+/* Final Phase 2-4 layout constraints layered over the original token sheet. */
+.app-shell {
+  transition: grid-template-columns 180ms ease;
+}
+
+.app-shell * {
+  letter-spacing: 0 !important;
+}
+
+.sidebar {
+  position: relative;
+}
+
+.collapse-button {
+  position: absolute;
+  top: 31px;
+  right: -12px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid #41616b;
+  border-radius: 50%;
+  background: #183740;
+  color: #dce9eb;
+  box-shadow: 0 2px 8px #08232933;
+}
+
+.shell-collapsed {
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+
+.shell-collapsed .sidebar {
+  padding-inline: 15px;
+}
+
+.shell-collapsed .brand {
+  justify-content: center;
+}
+
+.shell-collapsed .brand > div,
+.shell-collapsed .sidebar nav span,
+.shell-collapsed .sidebar-foot {
+  display: none;
+}
+
+.shell-collapsed .sidebar nav button {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.segmented {
+  display: inline-flex;
+  margin: 0 0 18px;
+  padding: 3px;
+  border: 1px solid #d5e0e2;
+  border-radius: 8px;
+  background: #eef3f4;
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #647980;
+  padding: 7px 11px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.segmented button.active {
+  background: #fff;
+  color: var(--teal);
+  box-shadow: 0 1px 4px #19353d18;
+}
+
+.explorer-toolbar select {
+  width: 100%;
+  min-width: 170px;
+  border: 1px solid #cbd7da;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.drawer-action {
+  margin-top: 22px;
+}
+
+.alerts-panel {
+  grid-column: 1 / -1;
+}
+
+.alert-list {
+  display: grid;
+  gap: 10px;
+}
+
+.alert-list > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #edf2f3;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alert-list > div:first-child {
+  border-top: 0;
+}
+
+.metric,
+.panel,
+.confirm-dialog,
+.notice,
+.capacity-banner {
+  border-radius: 8px;
+}
+
+.brand,
+.page-header h1,
+.panel-heading h2,
+.metric strong,
+.health-score strong {
+  letter-spacing: 0;
+}
+
+@media (max-width: 900px) {
+  .shell-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .collapse-button {
+    display: none;
+  }
+
+  .shell-collapsed .sidebar {
+    padding: 15px;
+  }
+
+  .shell-collapsed .brand {
+    justify-content: flex-start;
+  }
+
+  .shell-collapsed .brand > div,
+  .shell-collapsed .sidebar nav span,
+  .shell-collapsed .sidebar-foot {
+    display: initial;
+  }
+
+  .shell-collapsed .sidebar nav button {
+    justify-content: flex-start;
+    padding: 11px 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .sidebar nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .sidebar nav button {
+    justify-content: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 10px 6px;
+    font-size: 12px;
+  }
+
+  .operations-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .operations-grid .operation-command {
+    grid-column: 1;
+  }
+
+  .alerts-panel {
+    grid-column: 1;
+  }
+}

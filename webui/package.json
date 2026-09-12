@@ -9,7 +9,9 @@
     "test:e2e": "node ../scripts/browser_acceptance.cjs"
   },
   "dependencies": {
+    "@tanstack/react-table": "8.21.3",
     "@vitejs/plugin-react": "4.4.1",
+    "lucide-react": "1.44.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "typescript": "5.8.3",
