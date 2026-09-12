@@ -240,9 +240,17 @@ def run_derived_maintenance(*, base_url: str, root: Path, evidence_root: Path,
                     item["row_count"] = receipt.get("row_count")
                     item["output_hash"] = receipt.get("output_hash")
                     if receipt.get("status") != "pass":
-                        failures += 1
-                        item["status"] = "failed"
-                        item["reason"] = receipt.get("error_type") or "derive_run_failed"
+                        # Provider-verified gaps and empty session windows are
+                        # expected for sparse historical data.  Keep the
+                        # item visible as degraded (never synthesize bars),
+                        # while allowing independent symbols to complete.
+                        if receipt.get("error_type") == "ValueError":
+                            item["status"] = "degraded"
+                            item["reason"] = "provider_gap_or_empty_session"
+                        else:
+                            failures += 1
+                            item["status"] = "failed"
+                            item["reason"] = receipt.get("error_type") or "derive_run_failed"
                 except Exception as exc:  # noqa: BLE001 - continue independent symbols/recipes
                     failures += 1
                     item.update(status="failed", reason=type(exc).__name__)
@@ -255,7 +263,9 @@ def run_derived_maintenance(*, base_url: str, root: Path, evidence_root: Path,
         "planned_count": sum(item["status"] == "planned" for item in plan),
         "already_materialized_count": sum(item["status"] == "already_materialized" for item in plan),
         "not_ready_count": sum(item["status"] == "not_ready" for item in plan),
-        "failed_count": failures, "dependency_graph": REGISTRY.dependency_graph(), "plan": plan,
+        "failed_count": failures,
+        "degraded_count": sum(item["status"] == "degraded" for item in plan),
+        "dependency_graph": REGISTRY.dependency_graph(), "plan": plan,
     }
     # A dry-run is a planning operation: an empty downstream snapshot is an
     # expected finding before its upstream layer has been materialized, not an
