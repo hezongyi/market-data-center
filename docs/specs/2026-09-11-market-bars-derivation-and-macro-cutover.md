@@ -1,7 +1,7 @@
 # Market Bars Derivation and macro-market-lab Cutover Specification
 
 日期：2026-09-11  
-状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; macro-market-lab default cutover pending
+状态：derivation executor deployed; generic derived-maintenance runner implemented and bounded-plan tested; core-symbol 5m canary passed; 15m/30m/1h bounded multi-symbol acceptance passed; latest production 5m materialization and macro-market-lab read-only adapter acceptance passed; macro-market-lab default cutover pending
 平台前置：`2026-09-11-data-center-market-data-platform`  
 数据前置：`2026-09-11-dukascopy-1m-bid-rollout`
 
@@ -95,3 +95,10 @@ flag-on source 为 `data_center`，flag-off 保持 legacy reader，Data Center �
 `/home/quant/market_lake/evidence/data-center/operations/dukascopy_consumer_parity/2026-09-12T043840.242152+0000-ab789afdab8a4992b32680cc5b56d9bb.json`。
 该 receipt 的 `deployment_id` 为 `77979f3588b1-a626e764`，覆盖 flag-on、legacy
 rollback、BID-only selector、分页快照一致性和 60 秒观察窗口。
+
+在最新 Data Center deployment `d115c4a3bd71-fe6419a9` 上，已再次通过生产 worker
+执行 EURUSD `1m BID -> 5m`（2026-09-10 12:00--13:00 UTC），生成 12 根
+`market_bars`；HTTP `market-bars` readback 与 macro-market-lab 的
+`query preview dataset --dataset market_bars` flag-on 读路径均返回相同 snapshot、recipe、
+lineage 和 `price_basis=bid`。该证据确认派生链路已可生产消费，但不等同于将所有
+macro-market-lab 入口的默认 flag 打开；默认 cutover 仍需按观察期和 rollback 门禁推进。
