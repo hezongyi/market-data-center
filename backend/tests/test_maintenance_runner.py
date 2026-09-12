@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from data_center.control_plane import CoverageResult, MaintenancePolicy
 from data_center.maintenance_runner import (
+    _exclude_planned_windows,
     _isolate_incomplete_window,
     _recent_gap_windows,
     _tail_recovery_windows,
@@ -114,6 +115,37 @@ def test_recent_dead_letter_gap_is_suppressed_by_exact_window_and_cooldown():
         runs=runs, provider="dukascopy", symbol="BTCUSD", run_scope="maintenance",
         now=now, cooldown_minutes=0,
     )
+
+
+def test_recent_terminal_failed_gap_is_also_suppressed():
+    now = datetime(2026, 9, 12, 5, 0, tzinfo=timezone.utc)
+    runs = [{
+        "status": "failed", "provider": "dukascopy", "symbol": "BTCUSD",
+        "run_scope": "maintenance", "run_kind": "gap_repair",
+        "finished_at": "2026-09-12T04:59:00+00:00",
+        "execution_plan": {"windows": [{
+            "start": "2026-09-12T02:21:00+00:00", "end": "2026-09-12T02:22:00+00:00",
+            "reason": "gap_repair",
+        }]},
+    }]
+
+    assert _recent_gap_windows(
+        runs=runs, provider="dukascopy", symbol="BTCUSD", run_scope="maintenance",
+        now=now, cooldown_minutes=180,
+    ) == {("2026-09-12T02:21:00+00:00", "2026-09-12T02:22:00+00:00")}
+
+
+def test_tail_recovery_excludes_intervals_already_in_primary_plan():
+    candidates = [{
+        "start": "2026-09-12T06:09:00+00:00", "end": "2026-09-12T06:48:00+00:00",
+        "reason": "tail", "ordinal": 0, "semantics": "half-open",
+    }]
+    planned = [{
+        "start": "2026-09-12T06:09:00+00:00", "end": "2026-09-12T06:48:00+00:00",
+        "reason": "gap_repair", "ordinal": 5, "semantics": "half-open",
+    }]
+
+    assert _exclude_planned_windows(candidates=candidates, planned=planned) == []
 
 
 def test_maintenance_continues_tail_after_gap_window_failure(monkeypatch, tmp_path):
