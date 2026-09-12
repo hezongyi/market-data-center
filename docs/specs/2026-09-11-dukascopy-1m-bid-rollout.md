@@ -43,7 +43,8 @@ execute_ingest(windows) -> receipts
 
 ## Coverage 与 ready 区间语义
 
-历史 1m 数据不要求在每个自然分钟都有报价。`ready` 针对一个明确的半开请求区间
+历史 1m 数据不要求在每个自然分钟都有报价，也不能把从未请求/观察过的历史跨度推断
+成 provider 缺口。`ready` 针对一个明确的半开请求区间
 `[start,end)`，表示该区间内所有应交易的分钟都存在、顺序/主键/质量检查通过；它不
 表示该品种从历史起点到最新时刻没有任何缺口。合法闭市分钟不计入应交易分钟。
 
@@ -58,6 +59,10 @@ execute_ingest(windows) -> receipts
 | `ready` | 当前请求区间完整且质量通过 | 可查询、可派生 |
 | `degraded` | 数据集中存在已解释缺口，但仍有可消费的 `ready_intervals` | 只消费 ready 区间；展示缺口 |
 | `not_ready` | 没有可安全消费的区间或存在结构性错误 | 不发布、不派生 |
+
+coverage API 不带 `start/end` 时只返回物理 `min_ts/max_ts` 摘要，不计算跨未观察历史的
+缺口；要获得 `readiness_status`、`gap_count` 和 `ready_intervals`，必须传入明确的
+`start` 与 `end` 请求范围。
 
 ## 品种与 rollout
 
