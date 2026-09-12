@@ -107,6 +107,19 @@ class TransformRecipe(BaseModel):
     missing_input_policy: Literal["fail", "allow"] = "fail"
     materialization: Literal["persisted", "ephemeral"] = "persisted"
     publication_policy: Literal["canonical", "research_only"] = "canonical"
+    # Optional selector constraints keep recipe semantics explicit without
+    # coupling the executor to a provider name.  Empty tuples mean that the
+    # recipe is reusable for every value accepted by the input dataset.
+    allowed_providers: tuple[str, ...] = ()
+    allowed_asset_classes: tuple[str, ...] = ()
+    allowed_symbols: tuple[str, ...] = ()
+    allowed_price_bases: tuple[str, ...] = ()
+    # A repaired source bar can affect the containing output bucket and (for
+    # calendar/session transforms) an explicitly configured lookback.  The
+    # runner uses this value when constructing a recomputation plan; execution
+    # remains a separate, auditable step.
+    recompute_lookback_buckets: int = Field(default=1, ge=1)
+    quality_profile: str | None = None
     downstream_targets: tuple[str, ...] = ()
     input_recipe_id: str | None = None
     input_recipe_version: str | None = None
@@ -156,9 +169,14 @@ class ControlPlaneRegistry:
     def dependency_graph(self) -> dict[str, tuple[dict[str, str], ...]]:
         """Return the recipe dependency graph as an immutable read model."""
         graph: dict[str, list[dict[str, str]]] = {}
-        for recipe in sorted(self._recipes.values(), key=lambda item: (item.input_dataset,
-                                                                        item.recipe_id,
-                                                                        item.version)):
+        # Keep the graph deterministic and source-first.  The latter matters
+        # to maintenance planners that walk the graph after a raw repair:
+        # provider_bars must be considered before market_bars rollups even
+        # though a lexical sort would place ``market_bars`` first.
+        for recipe in sorted(self._recipes.values(), key=lambda item: (
+            0 if item.input_dataset == "provider_bars" else 1,
+            item.input_dataset, item.recipe_id, item.version,
+        )):
             graph.setdefault(recipe.input_dataset, []).append({
                 "output_dataset": recipe.output_dataset,
                 "recipe_id": recipe.recipe_id,

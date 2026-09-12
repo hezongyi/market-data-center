@@ -51,6 +51,40 @@ systemctl --user is-active market-data-center-api.service market-data-center-wor
 
 If readiness is not `ready`, inspect the worker heartbeat and queue metrics first. Restart the API and worker together only after confirming the ledger and canonical root are the same configured paths.
 
+## Derived market-bars maintenance
+
+Derived bars are maintained by the generic recipe runner, not by a
+provider-specific aggregation script.  The runner resolves the registered
+dependency graph, binds each job to an immutable input snapshot, expands a
+half-open affected interval to complete output buckets, and skips a result
+already materialized from that same snapshot.  Each non-skipped job is queued
+through the API and published by the normal worker/staging path.
+
+Preview a bounded plan first (this writes only an operational receipt):
+
+```bash
+PYTHONPATH=backend/src python -m data_center.derived_maintenance_runner \
+  --provider dukascopy --symbols BTCUSD \
+  --recipes utc-24x7-1m-to-5m-ohlcv@1 \
+  --start 2026-09-10T12:00:00+00:00 --end 2026-09-10T13:00:00+00:00 \
+  --dry-run
+```
+
+Run only after the preview shows a ready input snapshot and a bounded window:
+
+```bash
+PYTHONPATH=backend/src python -m data_center.derived_maintenance_runner \
+  --provider dukascopy --symbols BTCUSD \
+  --recipes utc-24x7-1m-to-5m-ohlcv@1 \
+  --start 2026-09-10T12:00:00+00:00 --end 2026-09-10T13:00:00+00:00 \
+  --run-scope production
+```
+
+Do not schedule `1d -> 1w/1mo` until the upstream `1m -> 1d` coverage is
+`ready`; a not-ready source must fail closed and must not publish a partial
+canonical result.  Repaired raw windows should be followed by a runner pass
+for the affected recipes so downstream snapshots and lineage are refreshed.
+
 Readiness separates `read_status`, `write_status`, and `capacity_status`. `capacity_status=warning` keeps ordinary ingest available but blocks unattended backfills over 31 days. `capacity_status=critical` returns `507 capacity_protected` for new ingest while reads and restore remain available.
 
 ## Capacity response
