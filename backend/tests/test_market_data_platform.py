@@ -143,6 +143,19 @@ def test_gap_repair_uses_coverage_timeframe_and_merges_adjacent_gaps():
     ]
 
 
+def test_planner_supports_intraday_shard_minutes():
+    start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    windows = plan_maintenance(
+        start=start, end=start + timedelta(minutes=150),
+        policy=MaintenancePolicy(shard_days=7, shard_minutes=60),
+    )
+    assert [(window.start, window.end) for window in windows] == [
+        (start, start + timedelta(minutes=60)),
+        (start + timedelta(minutes=60), start + timedelta(minutes=120)),
+        (start + timedelta(minutes=120), start + timedelta(minutes=150)),
+    ]
+
+
 def test_maintenance_planner_is_idempotent_when_requested_range_is_ready():
     start = datetime(2026, 1, 5, tzinfo=timezone.utc)
     end = start + timedelta(minutes=10)

@@ -20,7 +20,7 @@ import requests
 
 from data_center.evidence import operation_receipt, write_receipt
 from data_center.platform import coverage_from_catalog, plan_maintenance_from_catalog
-from data_center.platform_registry import REGISTRY
+from data_center.platform_registry import REGISTRY, maintenance_policy_for
 from data_center.settings import Settings
 
 
@@ -79,7 +79,7 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
     start, end = _utc(start), _utc(end)
     if end <= start:
         raise ValueError("maintenance end must be after start")
-    policy = REGISTRY.maintenance_policy()
+    policy = maintenance_policy_for(provider, "1m")
     capability = REGISTRY.capability(provider)
     if end - start > timedelta(days=min(policy.max_window_days, capability.max_window_days)):
         raise ValueError("maintenance request exceeds the registered provider window")
@@ -173,7 +173,8 @@ def main() -> None:
     parser.add_argument("--run-scope", choices=("maintenance", "production"), default="maintenance")
     args = parser.parse_args()
     end = _closed_minute_boundary(args.end or datetime.now(timezone.utc))
-    start = _utc(args.start or (end - timedelta(days=REGISTRY.maintenance_policy().tail_days)))
+    policy = maintenance_policy_for(args.provider, "1m")
+    start = _utc(args.start or (end - timedelta(days=policy.tail_days)))
     configured_symbols = settings.maintenance_symbol_list()
     selected_symbols = args.symbols if args.symbols is not None else configured_symbols or None
     report = run_maintenance(

@@ -1,7 +1,7 @@
 # Dukascopy 1m BID Rollout Specification
 
 日期：2026-09-11  
-状态：S1 implemented; protected-main production smoke passed; S2 canary maintenance active; full-universe continuous maintenance pending
+状态：S1 implemented; protected-main production smoke passed; S2 bounded multi-symbol evidence active; full-universe continuous maintenance pending
 平台前置：`2026-09-11-data-center-market-data-platform`
 
 ## 决策
@@ -64,4 +64,11 @@ USDJPY、AUDJPY、GBPJPY、XAUUSD 的固定工作日窗口各补齐 60 行并达
 
 维护 timer 已启用，生产 env 设置 `DATACENTER_MAINTENANCE_SYMBOLS=BTCUSD`，自动
 canary 已成功触发并产生 1 个目标、0 failures 的 receipt；FX/金属仍需在不同交易
-时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。
+时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。2026-09-12
+的生产观察还记录了两类重要结果：BTCUSD 最近分钟窗口出现供应商缺口时，质量门禁
+返回 `QualityError/coverage_not_ready` 且没有 canonical publication；容量仍为 `ok`。
+对 2026-09-10 12:00--13:00 UTC 的 8 个 approved symbol 固定窗口维护全部通过，
+receipt 为 `2026-09-12T023548.252823+0000-e8b9e7629d7f4aa499b68e6e7301ed25.json`。
+完整工作日回补因 FX/金属存在真实内部缺口而被拒绝，receipt 为
+`2026-09-12T024139.631067+0000-10216f769bb048749df78c0c18c0f908.json`；该失败是
+预期的质量保护证据，不得通过填补或放宽门禁解决。

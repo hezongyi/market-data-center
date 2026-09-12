@@ -26,6 +26,10 @@ REGISTRY.register_session(SessionProfile(profile_id="instrument", mode="continuo
 REGISTRY.register_maintenance_policy(MaintenancePolicy(
     policy_id="default", max_window_days=31, tail_days=2, shard_days=7, closed_bar_lag_minutes=1,
 ))
+REGISTRY.register_maintenance_policy(MaintenancePolicy(
+    policy_id="dukascopy_1m", max_window_days=31, tail_days=2, shard_days=7,
+    shard_minutes=60, closed_bar_lag_minutes=1,
+))
 REGISTRY.register_quality_profile(QualityProfile(profile_id="provider_bars"))
 REGISTRY.register_quality_profile(QualityProfile(profile_id="market_bars"))
 REGISTRY.register_quality_profile(QualityProfile(profile_id="economic_observations",
@@ -123,3 +127,13 @@ def resolve_capability(provider: str, *, allow_unregistered: bool = False) -> Pr
         return ProviderCapability(provider=provider, asset_classes=("*",), timeframes=("*",),
                                   price_bases=("raw",), max_window_days=31,
                                   session_profile="utc_24x7")
+
+
+def maintenance_policy_for(provider: str, timeframe: str) -> MaintenancePolicy:
+    """Resolve the most specific registered policy, then use the platform default."""
+    for policy_id in (f"{provider}_{timeframe}", "default"):
+        try:
+            return REGISTRY.maintenance_policy(policy_id)
+        except ValueError:
+            continue
+    raise ValueError("default maintenance policy is not registered")
