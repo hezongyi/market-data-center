@@ -42,6 +42,8 @@ API 将 ingest 请求写入 SQLite durable queue；`market-data-center-worker.se
 Dukascopy `provider_bars` 的 `1m BID` 尾部/缺口，先读取 catalog coverage 再生成 bounded windows，
 通过 API/worker 执行并写入标准 `market_data_1m_maintenance` receipt。它不执行超过注册窗口的无人值守回补；
 容量为 `warning` 时仍遵循 31 天门禁。首次启用前应先用 `--symbols` 做小范围观察，确认 receipt、gap 和容量状态。
+分片前会按 instrument 的带时区 session profile 排除周末、日内休市和已登记 holiday；coverage receipt
+分别记录 expected、closed 和 missing minute，合法闭市不会进入 provider 请求或被误报为内部 gap。
 生产 canary 可在 env 文件设置 `DATACENTER_MAINTENANCE_SYMBOLS=BTCUSD,EURUSD`；该 allowlist 只
 限制 timer 默认选择，人工命令传入 `--symbols` 时以命令行选择为准。空值表示使用全部 approved symbols，
 不应在没有观察期证据时启用空值配置。

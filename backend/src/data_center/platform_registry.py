@@ -18,8 +18,17 @@ REGISTRY = ControlPlaneRegistry()
 
 REGISTRY.register_session(SessionProfile(profile_id="utc_24x7", mode="continuous"))
 REGISTRY.register_session(SessionProfile(profile_id="weekdays_utc", mode="weekdays"))
-REGISTRY.register_session(SessionProfile(profile_id="dukascopy_fx_weekdays_utc", mode="weekdays"))
-REGISTRY.register_session(SessionProfile(profile_id="dukascopy_metals_weekdays_utc", mode="weekdays"))
+REGISTRY.register_session(SessionProfile(
+    profile_id="dukascopy_fx_weekdays_utc", mode="weekly", timezone="America/New_York",
+    weekly_open_minute=6 * 24 * 60 + 17 * 60,
+    weekly_close_minute=4 * 24 * 60 + 17 * 60,
+))
+REGISTRY.register_session(SessionProfile(
+    profile_id="dukascopy_metals_weekdays_utc", mode="weekly", timezone="America/New_York",
+    weekly_open_minute=6 * 24 * 60 + 18 * 60,
+    weekly_close_minute=4 * 24 * 60 + 17 * 60,
+    daily_breaks=((17 * 60, 18 * 60),),
+))
 REGISTRY.register_session(SessionProfile(profile_id="dukascopy_crypto_24x7", mode="continuous"))
 REGISTRY.register_session(SessionProfile(profile_id="exchange", mode="weekdays"))
 REGISTRY.register_session(SessionProfile(profile_id="instrument", mode="continuous"))

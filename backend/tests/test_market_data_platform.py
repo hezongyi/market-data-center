@@ -123,6 +123,8 @@ def test_coverage_separates_physical_session_quality_and_readiness():
     assert coverage.quality_status == "pass"
     assert coverage.readiness_status == "ready"
     assert coverage.latest_complete_boundary == monday
+    assert coverage.expected_timestamp_count == 2
+    assert coverage.closed_timestamp_count == 2 * 24 * 60
     assert coverage.as_dict()["first_missing_ts"] is None
 
 
@@ -155,6 +157,58 @@ def test_planner_supports_intraday_shard_minutes():
         (start, start + timedelta(minutes=60)),
         (start + timedelta(minutes=60), start + timedelta(minutes=120)),
         (start + timedelta(minutes=120), start + timedelta(minutes=150)),
+    ]
+
+
+def test_weekly_session_profile_tracks_new_york_dst():
+    session = SessionProfile(
+        profile_id="fx", mode="weekly", timezone="America/New_York",
+        weekly_open_minute=6 * 24 * 60 + 17 * 60,
+        weekly_close_minute=4 * 24 * 60 + 17 * 60,
+    )
+
+    assert not session.is_open(datetime(2026, 9, 6, 20, 59, tzinfo=timezone.utc))
+    assert session.is_open(datetime(2026, 9, 6, 21, 0, tzinfo=timezone.utc))
+    assert not session.is_open(datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc))
+    assert not session.is_open(datetime(2026, 1, 4, 21, 59, tzinfo=timezone.utc))
+    assert session.is_open(datetime(2026, 1, 4, 22, 0, tzinfo=timezone.utc))
+
+
+def test_session_profile_can_exclude_registered_local_holiday():
+    session = SessionProfile(
+        profile_id="holiday", mode="weekdays", timezone="America/New_York",
+        closed_local_dates=("2026-12-25",),
+    )
+
+    assert not session.is_open(datetime(2026, 12, 25, 15, 0, tzinfo=timezone.utc))
+    assert session.is_open(datetime(2026, 12, 24, 15, 0, tzinfo=timezone.utc))
+
+
+def test_ingest_planner_excludes_weekend_and_daily_session_breaks():
+    fx_job = IngestJob(
+        job_id="fx-weekend", provider="dukascopy", symbol="EURUSD", asset_class="fx",
+        timeframe="1m", start=datetime(2026, 9, 11, 19, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 12, 2, 0, tzinfo=timezone.utc), run_scope="maintenance",
+    )
+    fx_plan = build_ingest_plan(
+        job=fx_job, policy=MaintenancePolicy(shard_minutes=60),
+    )
+    assert [(window["start"], window["end"]) for window in fx_plan["windows"]] == [
+        ("2026-09-11T19:00:00+00:00", "2026-09-11T20:00:00+00:00"),
+        ("2026-09-11T20:00:00+00:00", "2026-09-11T21:00:00+00:00"),
+    ]
+
+    metal_job = IngestJob(
+        job_id="metal-break", provider="dukascopy", symbol="XAUUSD", asset_class="commodity",
+        timeframe="1m", start=datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 10, 23, 0, tzinfo=timezone.utc), run_scope="maintenance",
+    )
+    metal_plan = build_ingest_plan(
+        job=metal_job, policy=MaintenancePolicy(shard_minutes=60),
+    )
+    assert [(window["start"], window["end"]) for window in metal_plan["windows"]] == [
+        ("2026-09-10T20:00:00+00:00", "2026-09-10T21:00:00+00:00"),
+        ("2026-09-10T22:00:00+00:00", "2026-09-10T23:00:00+00:00"),
     ]
 
 

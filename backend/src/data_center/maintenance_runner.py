@@ -206,7 +206,8 @@ def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
     return recent
 
 
-def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy) -> list[dict]:
+def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy,
+                           session_profile=None) -> list[dict]:
     """Plan the observed suffix after an interior provider gap.
 
     ``plan_maintenance`` correctly prioritizes gap repair when a coverage
@@ -227,7 +228,7 @@ def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy) 
         return []
     return [window.as_dict() for window in plan_windows(
         start=suffix_start, end=_utc(end), coverage=None, policy=policy,
-        reason="tail", timeframe=cadence,
+        reason="tail", timeframe=cadence, session_profile=session_profile,
     )]
 
 
@@ -282,8 +283,12 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                 planned = build_ingest_plan(job=job, coverage=coverage, policy=policy)
                 result["coverage_before"] = coverage.as_dict()
                 windows = list(planned["windows"])
+                session_profile = REGISTRY.session(REGISTRY.instrument(
+                    target.provider, target.symbol,
+                ).session_profile)
                 recovery_windows = _tail_recovery_windows(
                     coverage=coverage, start=start, end=end, policy=policy,
+                    session_profile=session_profile,
                 )
                 if recovery_windows:
                     windows.extend(recovery_windows)
