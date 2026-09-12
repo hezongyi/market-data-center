@@ -26,7 +26,7 @@ PYTHONPATH=backend/src python -m data_center.deployment stage "$(git rev-parse o
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable market-data-center-api.service market-data-center-worker.service
-systemctl --user enable --now market-data-center-smoke.timer market-data-center-provider-acceptance.timer market-data-center-monitor.timer
+systemctl --user enable --now market-data-center-smoke.timer market-data-center-provider-acceptance.timer market-data-center-monitor.timer market-data-center-1m-maintenance.timer
 PYTHONPATH=backend/src python -m data_center.deployment activate RELEASE_ID \
   --release-root "$HOME/market-data-center/releases" \
   --evidence-root /home/quant/market_lake/evidence/data-center
@@ -36,6 +36,12 @@ curl -fsS http://127.0.0.1:18380/api/v1/health/ready
 API 将 ingest 请求写入 SQLite durable queue；`market-data-center-worker.service` 领取任务并更新同一 `run_id` 的状态。API 与 worker 必须使用相同的 `DATACENTER_CANONICAL_ROOT` 和 `DATACENTER_LEDGER_PATH`。
 
 `market-data-center-monitor.timer` 每分钟运行一次 `data_center.observability`，检查 heartbeat、积压和质量失败并写入幂等 alert outbox；配置 `DATACENTER_ALERT_WEBHOOK_URL` 才会发送外部 webhook。monitor 不改变数据写入结果。
+
+`market-data-center-1m-maintenance.timer` 每 15 分钟调用
+`data_center.maintenance_runner`。runner 只选择 control-plane approved instruments，默认维护
+Dukascopy `provider_bars` 的 `1m BID` 尾部/缺口，先读取 catalog coverage 再生成 bounded windows，
+通过 API/worker 执行并写入标准 `market_data_1m_maintenance` receipt。它不执行超过注册窗口的无人值守回补；
+容量为 `warning` 时仍遵循 31 天门禁。首次启用前应先用 `--symbols` 做小范围观察，确认 receipt、gap 和容量状态。
 
 在具备网络、`httpx`、`yfinance` 和 `FRED_API_KEY` 的环境执行生产验收：
 

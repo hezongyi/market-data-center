@@ -1,7 +1,7 @@
 # Dukascopy 1m BID Rollout Specification
 
 日期：2026-09-11  
-状态：approved for implementation  
+状态：S1 implemented; protected-main production smoke passed; S2 full-universe continuous maintenance pending
 平台前置：`2026-09-11-data-center-market-data-platform`
 
 ## 决策
@@ -54,3 +54,7 @@ execute_ingest(windows) -> receipts
 S1 是 planner、watermark、gap repair、幂等和 contract tests；S2 是核心品种持续维护和正式 acceptance。S1/S2 完成前，不得声称 Dukascopy 已具备全品种 1m 持续维护能力，也不得关闭旧 consumer maintenance。
 
 S1/S2 的 contract test 必须证明 planner、coverage、quality、capacity 和 receipt 逻辑可用于至少一个非 Dukascopy provider；Dukascopy 特有行为只保留在 connector、capability 和 profile。
+
+2026-09-12 已完成一个真实生产 smoke（EURUSD、10 分钟、1m BID）并完成新的
+`1m -> 5m` API/worker 回读；当前仍需运行 approved symbol manifest 的 tail/gap
+maintenance 观察期，才能关闭 S2。

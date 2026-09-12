@@ -1,0 +1,16 @@
+[Unit]
+Description=Market Data Center governed 1m maintenance
+After=market-data-center-api.service market-data-center-worker.service
+Requires=market-data-center-api.service market-data-center-worker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/market-data-center/releases/current
+EnvironmentFile=%h/.config/market-data-center/env
+Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
+Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.maintenance_runner --provider dukascopy --run-scope maintenance
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=default.target

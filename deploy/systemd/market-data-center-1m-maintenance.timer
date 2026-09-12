@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic governed Dukascopy 1m maintenance
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+Persistent=true
+Unit=market-data-center-1m-maintenance.service
+
+[Install]
+WantedBy=timers.target
