@@ -12,11 +12,18 @@ from data_center.quality.errors import QualityError
 from data_center.transform import TransformExecutor
 
 
-def safe_failure_result(exc: Exception) -> dict:
+def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
     """Convert provider failures to the exact path-safe payload persisted by workers."""
     if isinstance(exc, QualityError):
+        # A provider can temporarily omit bars from an otherwise valid window.
+        # Maintenance runs must retry this coverage signal so a later timer
+        # pass can repair it; structural/schema quality failures remain final.
+        retryable_coverage = (
+            (job or {}).get("run_scope") in {"maintenance", "production"}
+            and any(item.get("code") == "coverage_not_ready" for item in exc.findings)
+        )
         return {"error_type": "QualityError", "failure_stage": "quality", "error": "quality checks failed",
-                "retryable": False,
+                "retryable": retryable_coverage,
                 "quality_summary": {"status": "fail", "finding_count": len(exc.findings),
                                     "findings": exc.findings}}
     return {"error_type": type(exc).__name__, "failure_stage": "execute", "error": "ingest failed",
@@ -57,7 +64,7 @@ def main():
         result = {"receipt": receipt}
     except Exception as exc:  # noqa: BLE001 - child must convert every failure to a safe result
         # Provider exception URLs can contain API keys. Persist only the category.
-        result = safe_failure_result(exc)
+        result = safe_failure_result(exc, job)
     temporary = directory / "result.tmp"
     temporary.write_text(json.dumps(result))
     temporary.replace(directory / "result.json")

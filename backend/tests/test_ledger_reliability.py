@@ -18,6 +18,28 @@ def test_failed_jobs_retry_then_dead_letter(tmp_path: Path):
     assert ledger.claim_next_job() is None
 
 
+def test_coverage_quality_failure_is_retryable_for_maintenance():
+    from data_center.ingest.process import safe_failure_result
+    from data_center.quality.errors import QualityError
+
+    result = safe_failure_result(
+        QualityError("coverage", [{"code": "coverage_not_ready"}]),
+        {"run_scope": "maintenance"},
+    )
+    assert result["retryable"] is True
+
+
+def test_structural_quality_failure_is_not_retryable_for_maintenance():
+    from data_center.ingest.process import safe_failure_result
+    from data_center.quality.errors import QualityError
+
+    result = safe_failure_result(
+        QualityError("schema", [{"code": "duplicate_timestamp"}]),
+        {"run_scope": "maintenance"},
+    )
+    assert result["retryable"] is False
+
+
 def test_heartbeat_age_is_recorded(tmp_path: Path):
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     assert ledger.heartbeat_age_seconds() is None
