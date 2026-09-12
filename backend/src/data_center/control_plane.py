@@ -81,6 +81,10 @@ class MaintenancePolicy(BaseModel):
     # policy data so the planner remains provider-agnostic.
     shard_minutes: int | None = Field(default=None, ge=1)
     closed_bar_lag_minutes: int = Field(default=1, ge=0)
+    # A terminal provider gap is retried less frequently than the short worker
+    # retry loop.  Zero keeps the default stateless behavior for providers that
+    # do not opt into a governed cooldown.
+    gap_retry_cooldown_minutes: int = Field(default=0, ge=0)
 
 
 class SessionProfile(BaseModel):
@@ -286,6 +290,7 @@ class CoverageResult:
             "readiness_status": self.readiness_status,
             "latest_complete_boundary": self.latest_complete_boundary.isoformat() if self.latest_complete_boundary else None,
             "missing_timestamp_count": len(self.missing_timestamps),
+            "first_missing_ts": self.missing_timestamps[0].isoformat() if self.missing_timestamps else None,
             "timeframe_seconds": int(self.timeframe.total_seconds()),
             "calendar_unit": self.calendar_unit,
         }

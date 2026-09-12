@@ -123,6 +123,7 @@ def test_coverage_separates_physical_session_quality_and_readiness():
     assert coverage.quality_status == "pass"
     assert coverage.readiness_status == "ready"
     assert coverage.latest_complete_boundary == monday
+    assert coverage.as_dict()["first_missing_ts"] is None
 
 
 def test_gap_repair_uses_coverage_timeframe_and_merges_adjacent_gaps():
@@ -138,6 +139,7 @@ def test_gap_repair_uses_coverage_timeframe_and_merges_adjacent_gaps():
         policy=MaintenancePolicy(shard_days=1),
     )
     assert coverage.missing_timestamps == (start + 2 * timeframe, start + 3 * timeframe)
+    assert coverage.as_dict()["first_missing_ts"] == (start + 2 * timeframe).isoformat()
     assert [(window.start, window.end, window.reason) for window in windows] == [
         (start + 2 * timeframe, start + 4 * timeframe, "gap_repair"),
     ]
