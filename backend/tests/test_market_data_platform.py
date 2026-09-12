@@ -142,6 +142,16 @@ def test_gap_repair_uses_coverage_timeframe_and_merges_adjacent_gaps():
     )
     assert coverage.missing_timestamps == (start + 2 * timeframe, start + 3 * timeframe)
     assert coverage.as_dict()["first_missing_ts"] == (start + 2 * timeframe).isoformat()
+    assert coverage.readiness_status == "degraded"
+    assert coverage.as_dict()["ready_intervals"] == [
+        {"start": start.isoformat(), "end": (start + 2 * timeframe).isoformat(),
+         "semantics": "half-open"},
+        {"start": (start + 4 * timeframe).isoformat(), "end": (start + 6 * timeframe).isoformat(),
+         "semantics": "half-open"},
+    ]
+    assert coverage.is_ready_for(start, start + 2 * timeframe)
+    assert coverage.is_ready_for(start + 4 * timeframe, start + 6 * timeframe)
+    assert not coverage.is_ready_for(start, start + 6 * timeframe)
     assert [(window.start, window.end, window.reason) for window in windows] == [
         (start + 2 * timeframe, start + 4 * timeframe, "gap_repair"),
     ]

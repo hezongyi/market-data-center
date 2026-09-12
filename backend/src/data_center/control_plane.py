@@ -316,11 +316,25 @@ class CoverageResult:
     readiness_status: str = "not_ready"
     latest_complete_boundary: datetime | None = None
     missing_timestamps: tuple[datetime, ...] = ()
+    # Half-open intervals containing only expected, observed bars.  A dataset
+    # can therefore be ``degraded`` globally while still exposing safe
+    # contiguous ranges for query and derivation consumers.
+    ready_intervals: tuple[tuple[datetime, datetime], ...] = ()
     # The cadence is part of the coverage result so a gap-repair plan does not
     # silently assume one-minute bars when the same evaluator is used for a
     # different source timeframe.
     timeframe: timedelta = timedelta(minutes=1)
     calendar_unit: str = "fixed"
+
+    def is_ready_for(self, start: datetime, end: datetime) -> bool:
+        """Whether the half-open range is wholly inside a ready interval."""
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("coverage range must use timezone-aware timestamps")
+        start, end = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+        if end <= start:
+            return False
+        return any(interval_start <= start and end <= interval_end
+                   for interval_start, interval_end in self.ready_intervals)
 
     def as_dict(self) -> dict:
         return {
@@ -340,6 +354,12 @@ class CoverageResult:
             "latest_complete_boundary": self.latest_complete_boundary.isoformat() if self.latest_complete_boundary else None,
             "missing_timestamp_count": len(self.missing_timestamps),
             "first_missing_ts": self.missing_timestamps[0].isoformat() if self.missing_timestamps else None,
+            "ready_interval_count": len(self.ready_intervals),
+            "ready_intervals": [
+                {"start": start.isoformat(), "end": end.isoformat(),
+                 "semantics": "half-open"}
+                for start, end in self.ready_intervals
+            ],
             "timeframe_seconds": int(self.timeframe.total_seconds()),
             "calendar_unit": self.calendar_unit,
         }
@@ -410,12 +430,36 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
     minimum, maximum = (unique[0], unique[-1]) if unique else (None, None)
     physical = "empty" if not unique else "present"
     session_coverage = "complete" if expected and not missing else "incomplete" if expected else "unknown"
-    readiness = ("ready" if unique and duplicate_count == 0 and gaps == 0 and quality_status == "pass"
-                 else "not_ready")
+    # A missing provider bar must not make every other interval unusable.  Keep
+    # the global state explicit (``degraded``), while returning the exact
+    # half-open contiguous ranges that are safe for downstream consumers.
+    observed = set(unique)
+    ready_intervals: list[tuple[datetime, datetime]] = []
+    interval_start: datetime | None = None
+    previous_expected: datetime | None = None
+    for stamp in expected:
+        is_contiguous = (previous_expected is not None
+                         and stamp == previous_expected + timeframe)
+        if stamp not in observed or (interval_start is not None and not is_contiguous):
+            if interval_start is not None and previous_expected is not None:
+                ready_intervals.append((interval_start, previous_expected + timeframe))
+            interval_start = None
+        if stamp in observed and interval_start is None:
+            interval_start = stamp
+        previous_expected = stamp
+    if interval_start is not None and previous_expected is not None:
+        ready_intervals.append((interval_start, previous_expected + timeframe))
+    if not unique or duplicate_count or quality_status != "pass":
+        readiness = "not_ready"
+    elif gaps == 0:
+        readiness = "ready"
+    elif ready_intervals:
+        readiness = "degraded"
+    else:
+        readiness = "not_ready"
     latest_complete = maximum
     if expected:
         latest_complete = None
-        observed = set(unique)
         for stamp in expected:
             if stamp not in observed:
                 break
@@ -427,6 +471,7 @@ def evaluate_coverage(*, dataset_id: str, selector: Mapping[str, str], rows: Ite
                            physical_coverage=physical, session_coverage=session_coverage,
                            quality_status=quality_status, readiness_status=readiness,
                            latest_complete_boundary=latest_complete, missing_timestamps=tuple(missing),
+                           ready_intervals=tuple(ready_intervals),
                            timeframe=timeframe, calendar_unit=calendar_unit)
 
 
