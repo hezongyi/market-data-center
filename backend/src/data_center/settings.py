@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     monitor_delivery_timeout_seconds: float = 5.0
     monitor_delivery_budget_seconds: float = 20.0
     worker_timeout_seconds: float = 120.0
+    # Optional production canary allowlist for the governed 1m maintenance
+    # scheduler.  CLI --symbols remains an explicit per-run override.
+    maintenance_symbols: str | None = None
     capacity_warning_free_ratio: float = 0.15
     capacity_critical_free_ratio: float = 0.10
 
@@ -49,4 +52,14 @@ class Settings(BaseSettings):
         return CapacityPolicy(
             warning_free_ratio=self.capacity_warning_free_ratio,
             critical_free_ratio=self.capacity_critical_free_ratio,
+        )
+
+    def maintenance_symbol_list(self) -> tuple[str, ...]:
+        """Return the normalized scheduler allowlist from env configuration."""
+        import re
+
+        return tuple(
+            symbol.upper()
+            for symbol in re.split(r"[\s,]+", self.maintenance_symbols or "")
+            if symbol.strip()
         )

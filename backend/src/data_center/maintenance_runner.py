@@ -174,9 +174,11 @@ def main() -> None:
     args = parser.parse_args()
     end = _closed_minute_boundary(args.end or datetime.now(timezone.utc))
     start = _utc(args.start or (end - timedelta(days=REGISTRY.maintenance_policy().tail_days)))
+    configured_symbols = settings.maintenance_symbol_list()
+    selected_symbols = args.symbols if args.symbols is not None else configured_symbols or None
     report = run_maintenance(
         base_url=args.base_url, root=settings.canonical_root, evidence_root=settings.evidence_root,
-        provider=args.provider, symbols=args.symbols, start=start, end=end, run_scope=args.run_scope,
+        provider=args.provider, symbols=selected_symbols, start=start, end=end, run_scope=args.run_scope,
     )
     print(json.dumps({"result": report["result"], "receipt": report["receipt"],
                       "target_count": report["details"]["target_count"],
