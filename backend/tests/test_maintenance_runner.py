@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from data_center.control_plane import CoverageResult, MaintenancePolicy
 from data_center.maintenance_runner import (
+    _isolate_incomplete_window,
     _recent_gap_windows,
     _tail_recovery_windows,
     run_maintenance,
@@ -50,6 +51,38 @@ def test_tail_recovery_starts_after_observed_suffix_and_never_crosses_gap():
     assert [(item["start"], item["end"], item["reason"]) for item in windows] == [
         ("2026-09-12T03:09:00+00:00", "2026-09-12T03:39:00+00:00", "tail"),
     ]
+
+
+def test_failed_response_with_observed_suffix_splits_around_gap():
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 12, 3, 9, tzinfo=timezone.utc)
+    missing = datetime(2026, 9, 12, 2, 21, tzinfo=timezone.utc)
+    receipt = {"quality_summary": {"findings": [{
+        "code": "coverage_not_ready", "coverage": {
+            "first_missing_ts": missing.isoformat(), "max_ts": "2026-09-12T03:08:00+00:00",
+            "timeframe_seconds": 60,
+        },
+    }]}}
+
+    assert _isolate_incomplete_window(start=start, end=end, receipt=receipt) == (
+        missing, missing + timedelta(minutes=1),
+        [(start, missing), (missing + timedelta(minutes=1), end)],
+    )
+
+
+def test_failed_response_without_observed_suffix_stays_bounded():
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    missing = datetime(2026, 9, 12, 2, 21, tzinfo=timezone.utc)
+    receipt = {"quality_summary": {"findings": [{
+        "code": "coverage_not_ready", "coverage": {
+            "first_missing_ts": missing.isoformat(), "max_ts": "2026-09-12T02:20:00+00:00",
+            "timeframe_seconds": 60,
+        },
+    }]}}
+
+    assert _isolate_incomplete_window(
+        start=start, end=missing + timedelta(minutes=1), receipt=receipt,
+    ) is None
 
 
 def test_recent_dead_letter_gap_is_suppressed_by_exact_window_and_cooldown():
