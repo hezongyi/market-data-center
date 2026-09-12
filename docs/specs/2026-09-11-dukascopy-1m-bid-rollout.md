@@ -152,8 +152,9 @@ allowlist 已收回 BTCUSD，避免在供应商恢复前制造持续重试负载
   旧审计中的 `all_symbols_ready=false` 仅反映已废止的“全历史零缺口”规则。按
   provider-verified-gap 规则，8 个 symbol 均有可消费 ready 区间，3 个 degraded
   symbol 的维护窗口缺口均有独立 provider verification receipt，S2 正式通过。
-- 最终生产 API coverage/readiness 验收 receipt 为
-  `operations/dukascopy_1m_s2_provider_verified_gap_acceptance/2026-09-12T134141.022183+0000-25e38caefd9e412eb14f43fbd7a682ca.json`。
-  在 deployment `d2fe84443721-6c38e5a3` 上，8 个 approved symbol 全部有物理数据和
-  `ready_intervals`；5 个全历史完整，3 个以 `degraded` 显式暴露缺口；API/worker
-  readiness、BID-only、queue=0 和 capacity=ok 全部通过。
+- 最新生产 API coverage/readiness 验收 receipt 为
+  `operations/dukascopy_1m_s2_provider_verified_gap_acceptance/2026-09-12T141713.651705+0000-e47873b80348497d8c11f210fbca4e39.json`。
+  在 deployment `d115c4a3bd71-fe6419a9` 上，8 个 approved symbol 在明确验收窗口均有物理数据和
+  可消费的 `ready_intervals`；EURUSD 的已知 provider 缺口在定向窗口内以 `degraded` 显式暴露，
+  无范围 summary 不对未观察历史推断缺口；API/worker readiness、queue=0、capacity=ok 及
+  deployment identity 一致性全部通过。
