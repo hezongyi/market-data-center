@@ -18,8 +18,9 @@ from pathlib import Path
 
 import requests
 
+from data_center.control_plane import plan_maintenance as plan_windows
 from data_center.evidence import operation_receipt, write_receipt
-from data_center.platform import coverage_from_catalog, plan_maintenance_from_catalog
+from data_center.platform import build_ingest_plan, coverage_from_catalog
 from data_center.platform_registry import REGISTRY, maintenance_policy_for
 from data_center.settings import Settings
 
@@ -81,6 +82,105 @@ def _wait_run(session: requests.Session, base_url: str, run_id: str, deadline: f
         time.sleep(1.0)
 
 
+def _window_key(window: dict) -> tuple[str, str]:
+    """Normalize a half-open window for exact gap de-duplication."""
+    return (
+        _utc(datetime.fromisoformat(str(window["start"]))).isoformat(),
+        _utc(datetime.fromisoformat(str(window["end"]))).isoformat(),
+    )
+
+
+def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
+                        run_scope: str, now: datetime,
+                        cooldown_minutes: int) -> set[tuple[str, str]]:
+    """Find terminal gap windows still inside the configured retry cooldown."""
+    if cooldown_minutes <= 0:
+        return set()
+    cutoff = _utc(now) - timedelta(minutes=cooldown_minutes)
+    recent: set[tuple[str, str]] = set()
+    for run in runs:
+        if (run.get("status") != "dead_letter" or run.get("provider") != provider
+                or run.get("symbol") != symbol or run.get("run_scope") != run_scope
+                or run.get("run_kind") != "gap_repair"):
+            continue
+        finished_text = run.get("finished_at") or run.get("at")
+        if not finished_text:
+            continue
+        try:
+            if _utc(datetime.fromisoformat(str(finished_text))) < cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+        execution_plan = run.get("execution_plan") or {}
+        for window in execution_plan.get("windows") or ():
+            if window.get("reason") == "gap_repair":
+                try:
+                    recent.add(_window_key(window))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        for finding in (run.get("quality_summary") or {}).get("findings") or ():
+            if finding.get("code") != "coverage_not_ready":
+                continue
+            coverage = finding.get("coverage") or {}
+            seconds = int(coverage.get("timeframe_seconds") or 0)
+            missing_text = coverage.get("first_missing_ts")
+            complete_text = coverage.get("latest_complete_boundary")
+            if not missing_text and complete_text and seconds > 0:
+                missing_text = (_utc(datetime.fromisoformat(str(complete_text)))
+                                + timedelta(seconds=seconds)).isoformat()
+            if not missing_text or seconds <= 0:
+                continue
+            try:
+                missing = _utc(datetime.fromisoformat(str(missing_text)))
+            except (TypeError, ValueError):
+                continue
+            recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
+        findings = (run.get("quality_summary") or {}).get("findings") or ()
+        for finding in findings:
+            if finding.get("code") != "coverage_not_ready":
+                continue
+            coverage = finding.get("coverage") or {}
+            seconds = int(coverage.get("timeframe_seconds") or 0)
+            missing_text = coverage.get("first_missing_ts")
+            complete_text = coverage.get("latest_complete_boundary")
+            if not missing_text and complete_text and seconds > 0:
+                missing_text = (_utc(datetime.fromisoformat(str(complete_text)))
+                                + timedelta(seconds=seconds)).isoformat()
+            if not missing_text or seconds <= 0:
+                continue
+            try:
+                missing = _utc(datetime.fromisoformat(str(missing_text)))
+            except (TypeError, ValueError):
+                continue
+            recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
+    return recent
+
+
+def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy) -> list[dict]:
+    """Plan the observed suffix after an interior provider gap.
+
+    ``plan_maintenance`` correctly prioritizes gap repair when a coverage
+    object contains missing timestamps.  For a provider that permanently omits
+    one minute, that alone would also stop the watermark from advancing.  A
+    suffix is safe to fetch when rows exist after the last missing cadence; it
+    starts strictly after the observed maximum and can therefore never include
+    the unresolved gap.
+    """
+    if not coverage.missing_timestamps or coverage.max_ts is None:
+        return []
+    cadence = coverage.timeframe
+    interior_missing = [stamp for stamp in coverage.missing_timestamps if stamp <= coverage.max_ts]
+    if not interior_missing:
+        return []
+    suffix_start = max(_utc(start), coverage.max_ts + cadence)
+    if suffix_start >= _utc(end):
+        return []
+    return [window.as_dict() for window in plan_windows(
+        start=suffix_start, end=_utc(end), coverage=None, policy=policy,
+        reason="tail", timeframe=cadence,
+    )]
+
+
 def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider: str = "dukascopy",
                     symbols: Iterable[str] | None = None, start: datetime, end: datetime,
                     run_scope: str = "maintenance", poll_deadline_seconds: float = 900.0) -> dict:
@@ -106,6 +206,14 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
         session.headers["X-API-Key"] = api_key
     results: list[dict] = []
     failures = 0
+    gap_cooldown_runs: list[dict] = []
+    if policy.gap_retry_cooldown_minutes > 0:
+        try:
+            gap_cooldown_runs = _request(session, base_url, "GET", "/runs", params={"status": "dead_letter"})
+        except (requests.RequestException, RuntimeError, KeyError, TypeError, ValueError):
+            # A missing cooldown lookup must not turn a read-only diagnostic
+            # into a false suppression; normal governed retries remain safe.
+            gap_cooldown_runs = []
     try:
         for target in targets:
             result = {"provider": target.provider, "symbol": target.symbol,
@@ -120,33 +228,89 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                     asset_class=target.asset_class, timeframe="1m", start=start, end=end,
                     run_scope=run_scope, run_kind="ingest",
                 )
-                planned = plan_maintenance_from_catalog(root=root, job=job, policy=policy)
-                result["coverage_before"] = planned["coverage"]
-                windows = planned["plan"]["windows"]
+                coverage = coverage_from_catalog(root=root, job=job)
+                planned = build_ingest_plan(job=job, coverage=coverage, policy=policy)
+                result["coverage_before"] = coverage.as_dict()
+                windows = list(planned["windows"])
+                recovery_windows = _tail_recovery_windows(
+                    coverage=coverage, start=start, end=end, policy=policy,
+                )
+                if recovery_windows:
+                    windows.extend(recovery_windows)
+                    result["recovery_window_count"] = len(recovery_windows)
+                else:
+                    result["recovery_window_count"] = 0
                 result["window_count"] = len(windows)
-                for ordinal, window in enumerate(windows):
+                result["unresolved_gaps"] = []
+                recent_gaps = _recent_gap_windows(
+                    runs=gap_cooldown_runs, provider=provider, symbol=target.symbol,
+                    run_scope=run_scope, now=datetime.now(timezone.utc),
+                    cooldown_minutes=policy.gap_retry_cooldown_minutes,
+                )
+                result["suppressed_gap_count"] = 0
+                pending = [(window, None) for window in windows]
+                window_failures = 0
+                while pending:
+                    window, recovery_of = pending.pop(0)
                     window_start = datetime.fromisoformat(window["start"])
                     window_end = datetime.fromisoformat(window["end"])
                     reason = window.get("reason", "ingest")
                     run_kind = "gap_repair" if reason == "gap_repair" else "ingest"
+                    ordinal = len(result["runs"])
+                    if run_kind == "gap_repair" and _window_key(window) in recent_gaps:
+                        result["suppressed_gap_count"] += 1
+                        result["unresolved_gaps"].append({
+                            "start": window_start.isoformat(), "end": window_end.isoformat(),
+                            "run_id": None, "reason": "recent_dead_letter_cooldown",
+                            "error_type": "GapRetrySuppressed",
+                        })
+                        window_failures += 1
+                        continue
                     payload = {
                         "job_id": f"{job.job_id}-w{ordinal:04d}", "dataset_id": "provider_bars",
                         "provider": provider, "symbol": target.symbol, "asset_class": target.asset_class,
                         "timeframe": "1m", "start": window_start.isoformat(), "end": window_end.isoformat(),
                         "run_scope": run_scope, "run_kind": run_kind,
                     }
-                    submitted = _request(session, base_url, "POST", "/ingest/runs", json=payload)
-                    receipt = _wait_run(session, base_url, submitted["run_id"],
-                                        time.monotonic() + poll_deadline_seconds)
-                    result["runs"].append({"reason": reason, "run_id": submitted["run_id"],
-                                           "status": receipt.get("status"),
-                                           "row_count": receipt.get("row_count"),
-                                           "coverage": receipt.get("coverage"),
-                                           "error_type": receipt.get("error_type")})
-                    if receipt.get("status") != "pass":
-                        raise RuntimeError(f"maintenance run failed: {submitted['run_id']}")
+                    try:
+                        submitted = _request(session, base_url, "POST", "/ingest/runs", json=payload)
+                        receipt = _wait_run(session, base_url, submitted["run_id"],
+                                            time.monotonic() + poll_deadline_seconds)
+                        run_result = {"reason": reason, "run_id": submitted["run_id"],
+                                      "status": receipt.get("status"),
+                                      "row_count": receipt.get("row_count"),
+                                      "coverage": receipt.get("coverage"),
+                                      "error_type": receipt.get("error_type"),
+                                      "recovery_of": recovery_of,
+                                      "window": {"start": window_start.isoformat(),
+                                                 "end": window_end.isoformat(),
+                                                 "semantics": "half-open"}}
+                        result["runs"].append(run_result)
+                        if receipt.get("status") == "pass":
+                            continue
+                        window_failures += 1
+                        result["unresolved_gaps"].append({
+                            "start": window_start.isoformat(), "end": window_end.isoformat(),
+                            "run_id": submitted["run_id"], "reason": reason,
+                            "error_type": receipt.get("error_type"),
+                            "quality_summary": receipt.get("quality_summary"),
+                        })
+                    except Exception as exc:  # noqa: BLE001 - continue independent windows
+                        window_failures += 1
+                        result["runs"].append({
+                            "reason": reason, "run_id": None, "status": "failed",
+                            "row_count": None, "coverage": None,
+                            "error_type": type(exc).__name__, "recovery_of": recovery_of,
+                            "window": {"start": window_start.isoformat(),
+                                       "end": window_end.isoformat(), "semantics": "half-open"},
+                        })
                 result["coverage_after"] = coverage_from_catalog(root=root, job=job).as_dict()
-                result["status"] = "pass"
+                result["failed_window_count"] = window_failures
+                if window_failures:
+                    failures += 1
+                    result.update(status="failed", error_type="MaintenanceWindowError")
+                else:
+                    result["status"] = "pass"
             except Exception as exc:  # noqa: BLE001 - one symbol must not hide the others
                 failures += 1
                 result.update(status="failed", error_type=type(exc).__name__)
@@ -158,6 +322,7 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
         "provider": provider, "run_scope": run_scope, "timeframe": "1m",
         "requested_start": start.isoformat(), "requested_end": end.isoformat(),
         "target_count": len(targets), "failed_target_count": failures,
+        "gap_retry_cooldown_minutes": policy.gap_retry_cooldown_minutes,
         "targets": results, "capacity_before": capacity_before,
         "capacity_after": settings.capacity_policy().inspect(root).as_dict(),
     }

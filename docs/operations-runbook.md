@@ -85,6 +85,13 @@ Do not schedule `1d -> 1w/1mo` until the upstream `1m -> 1d` coverage is
 canonical result.  Repaired raw windows should be followed by a runner pass
 for the affected recipes so downstream snapshots and lineage are refreshed.
 
+If a provider leaves an interior minute absent, the maintenance runner keeps
+that exact gap in `unresolved_gaps` and never creates a synthetic bar or marks
+the dataset ready.  It can continue a separate tail after the observed
+watermark; repeated attempts for the same terminal gap are governed by the
+provider policy cooldown, while the dead-letter and retry history remain
+immutable.
+
 Readiness separates `read_status`, `write_status`, and `capacity_status`. `capacity_status=warning` keeps ordinary ingest available but blocks unattended backfills over 31 days. `capacity_status=critical` returns `507 capacity_protected` for new ingest while reads and restore remain available.
 
 ## Capacity response

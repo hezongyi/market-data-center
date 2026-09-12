@@ -70,6 +70,13 @@ canary 已成功触发。为应对 Dukascopy 长窗口返回不完整结果，ma
 `coverage_not_ready` 在 production/maintenance scope 下可重试，结构性质量错误仍为
 终态。release `ea58dc768846-d05c341d` 已完成部署和重试语义验收。
 
+维护 runner 对内部缺口保持 fail-closed：不生成合成分钟，也不把 readiness
+伪装成 ready。若缺口位于已观察数据的内部，缺口继续记录在
+`unresolved_gaps`；新到达的数据可从 observed watermark 后单独进入 canonical。
+同一 terminal gap 受 policy 的 `gap_retry_cooldown_minutes` 控制，避免 timer
+每轮重复产生相同 dead-letter。缺口真实补齐后仍须重新通过 coverage/readiness
+和下游派生验收。
+
 FX/金属仍需在不同交易时段完成持续 tail 观察后再扩大 allowlist，S2 尚未宣称全品种完成。2026-09-12
 的生产观察还记录了两类重要结果：BTCUSD 最近分钟窗口出现供应商缺口时，质量门禁
 返回 `QualityError/coverage_not_ready` 且没有 canonical publication；容量仍为 `ok`。
