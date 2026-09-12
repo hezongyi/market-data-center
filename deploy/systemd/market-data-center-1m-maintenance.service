@@ -10,7 +10,10 @@ EnvironmentFile=%h/.config/market-data-center/env
 Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
 Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
 ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.maintenance_runner --provider dukascopy --run-scope maintenance
-TimeoutStartSec=30min
+# A full approved-universe tail can contain independent provider-gap retries.
+# Keep the request bounded by the runner's registered 2-day tail while allowing
+# all shard receipts to settle without systemd truncating the audit receipt.
+TimeoutStartSec=2h
 
 [Install]
 WantedBy=default.target
