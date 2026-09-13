@@ -70,6 +70,10 @@ def _password_ok(password: str, encoded: str | None) -> bool:
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError): return False
 
+def _password_hash(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    return f"{salt.hex()}${hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1).hex()}"
+
 
 def current_request_id():
     return _request_id.get()
@@ -193,6 +197,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if session: _sessions.pop(session, None)
         result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
         response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
+
+    @app.get(f"{config.api_prefix}/auth/me")
+    def auth_me(session: str | None = Cookie(default=None, alias="mdc_session")):
+        valid = bool(session and session in _sessions and _sessions[session][1] > time.time())
+        if not valid: raise HTTPException(status_code=401, detail="not authenticated")
+        return api_envelope({"username": _sessions[session][0], "expires_at": _sessions[session][1]})
+
+    @app.post(f"{config.api_prefix}/auth/change-password")
+    def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session")):
+        require_api_key(config, None, session)
+        current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
+        if not _password_ok(current, config.auth_password_hash) or len(replacement) < 12:
+            raise HTTPException(status_code=422, detail="invalid password change")
+        config.auth_password_hash = _password_hash(replacement)
+        _sessions.clear()
+        return api_envelope({"changed": True})
 
     @app.middleware("http")
     async def audit_request(request: Request, call_next):

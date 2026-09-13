@@ -50,6 +50,9 @@ class RoutePolicy:
 # queue work but predate the audit trail; they are listed explicitly so the
 # decision stays visible instead of implied.
 MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
+    ("POST", "/api/v1/auth/login"): RoutePolicy(False, False, {"username": "admin", "password": "bad"}, expect_status=401),
+    ("POST", "/api/v1/auth/logout"): RoutePolicy(False, False, expect_status=200),
+    ("POST", "/api/v1/auth/change-password"): RoutePolicy(True, False, {"current_password": "bad", "new_password": "bad"}, expect_status=401),
     ("POST", "/api/v1/maintenance/plans"): RoutePolicy(
         False, False, TASK_BODY, note="side-effect-free validation preview"),
     ("POST", "/api/v1/maintenance/tasks"): RoutePolicy(True, True, TASK_BODY, audit_action="maintenance.ingest"),
