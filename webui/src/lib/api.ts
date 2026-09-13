@@ -332,6 +332,7 @@ export type MaintenanceTaskRequest = {
   start: string;
   end: string;
   task_id?: string | null;
+  schedule?: "manual" | "hourly" | "daily";
 };
 
 export type MaintenanceTask = {

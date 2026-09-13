@@ -56,6 +56,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const [priceBasis, setPriceBasis] = useState("raw");
   const [start, setStart] = useState("2026-01-01");
   const [end, setEnd] = useState("2026-01-05");
+  const [schedule, setSchedule] = useState<"manual" | "hourly" | "daily">("manual");
   const [tracked, setTracked] = useState<string[]>([]);
   const [submissions, setSubmissions] = useState<QueuedEnvelope[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>(() => loadTemplates());
@@ -131,6 +132,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     price_basis: definition.dataset === "market_bars" ? priceBasis : null,
     start: isoFromInput(start),
     end: isoFromInput(end),
+    schedule,
   };
 
   const unavailableKind = runKindMatrix.length > 0 && !kindAvailable(runKind);
@@ -267,6 +269,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
         </select></label>
         <label>Start (UTC)<input aria-label="Task start date" type="date" value={start} onChange={event => setStart(event.target.value)} /></label>
         <label>End (UTC)<input aria-label="Task end date" type="date" value={end} onChange={event => setEnd(event.target.value)} /></label>
+        <label>Schedule<select aria-label="Task schedule" value={schedule} onChange={event => setSchedule(event.target.value as typeof schedule)}><option value="manual">Manual</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select></label>
       </FilterBar>
 
       {definition.dataset === "market_bars" && <FilterBar>
