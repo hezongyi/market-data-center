@@ -64,6 +64,14 @@ Committed constraints were unchanged from v0.3.3 (`e8c18665…`), so the existin
 
 Real-canonical walkthrough on the activated release (read-only): `operations/production_readiness_walkthrough/2026-09-13T103608…json` records readiness and metrics identity (`0.4.0` / `5dfc1b1` / `5dfc1b1c6803-377c1193`), the `/capabilities`, `/runs`+detail, `/quality/findings`, `/operations/{queue,capacity-history}` responses and four side-effect-free maintenance previews taken from production state at that time. The dukascopy EURUSD 1m gap-repair preview reported 11 windows with coverage `not_ready` and a non-zero gap count, the binance BTCUSDT 1m quality and dukascopy EURUSD 1m derive previews were submittable, and the yfinance SPY backfill preview refused to guess an asset class (`asset_class_required`). No preview queued a run or wrote a canonical part.
 
+## v0.4.1 protected-main evidence
+
+Patch release for the operations receipts panel. Release preparation PR #80 merged as protected-main commit `49ddbc55361d6cd04c25a27b42d1dcb17c2d918b`; the post-merge `Checks` `verify` job succeeded on that commit and local unified CI passed on the release branch (235 tests, browser acceptance 57 checks at 1440/390 including the new receipts-panel guard, `software_version=0.4.1`). Annotated tag `v0.4.1` points immutably to that commit and `Release` published the GitHub release with `release-receipt.json` (hosted Python 3.10/3.11/3.12, Node 22). Committed constraints were unchanged from v0.4.0, so the existing dependency refresh evidence still applies.
+
+`deployment_stage` produced release `49ddbc55361d-bd11ad0e` and `deployment_activate` switched `releases/current` to it with canonical and ledger hashes unchanged; readiness and metrics reported `software_version=0.4.1`, `source_commit=49ddbc5`, `deployment_id=49ddbc55361d-bd11ad0e`, the manifest's Web UI dist hash matched the served build, and API, worker and monitor units were active. Receipts: `operations/deployment_stage/2026-09-13T111406…json`, `operations/deployment_activate/2026-09-13T111443…json`, `operations/post_release_walkthrough/2026-09-13T111712…json`.
+
+The walkthrough receipt records the fix taking effect in production state: `GET /api/v1/operations/receipts` returned the thirteen actions the platform actually records (including `deployment_stage`, `deployment_activate`, `deployment_rollback`) and no `release`/`deployment` phantom names. No run was queued and no canonical part was written.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
