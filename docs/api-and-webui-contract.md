@@ -87,6 +87,9 @@ dataset、维护策略与 `write_status`，供表单校验和禁用不可用选�
 
 运维只读视图：`GET /api/v1/operations/queue`（队列深度与 `runs_by_status`）、
 `/operations/worker`（heartbeat 状态、in-flight jobs）、`/operations/capacity-history`（live 采样 +
-monitor 实际记录的容量迁移事件）、`/operations/receipts`（backup、restore、recovery drill、release、
-deployment receipt）以及 `/operations/audit`（写操作审计：actor 指纹、时间、selector、任务类型、结果；
+monitor 实际记录的容量迁移事件）、`/operations/receipts`（按**实际记录的动作名**返回 backup、backup_verify、restore、
+recovery_drill、capacity_check、deployment_stage/activate/rollback、deployment_runtime_failure、
+monitor、derived_market_bars_maintenance、real_release_webui_acceptance、post_release_rehearsal 等
+receipt；未记录的动作返回 null，Console 只渲染 API 实际报告的动作，因此不会为平台从不写入的名字
+显示"缺失"）以及 `/operations/audit`（写操作审计：actor 指纹、时间、selector、任务类型、结果；
 绝不保存凭据）。未被记录的历史不会被插值或补造。
