@@ -400,6 +400,7 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
   if (!envelope) return null;
   return <DetailDrawer title="Task details" onClose={onClose}>
     <dl className="detail-list">
+      <div><dt>Task ID</dt><dd><CopyId value={envelope.task_id} /></dd></div>
       <div><dt>Run kind</dt><dd>{envelope.run_kind}</dd></div>
       <div><dt>Dataset</dt><dd>{envelope.dataset_id}</dd></div>
       <div><dt>Run scope</dt><dd>{envelope.run_scope}</dd></div>
