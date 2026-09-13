@@ -18,7 +18,7 @@ import {
   Eye, FileSearch, Hammer, History, Info, Layers, Lock, RefreshCw, RotateCcw, ShieldAlert, Waves, XCircle,
 } from "lucide-react";
 import {
-  ConfirmDialog, DataTable, DetailDrawer, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge,
+  ConfirmDialog, CopyId, DataTable, DetailDrawer, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge,
 } from "../components/ui";
 import { messageOf, permissionOf, useMaintenanceMutation, useQuery, type PermissionState } from "../hooks";
 import type {
@@ -568,7 +568,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
     </ul>}
 
     <dl className="detail-list">
-      <div><dt>Finding id</dt><dd className="mono">{finding.finding_id ?? "—"}</dd></div>
+      <div><dt>Finding id</dt><dd>{finding.finding_id ? <CopyId value={finding.finding_id} /> : "—"}</dd></div>
       <div><dt>Severity</dt><dd>{finding.severity}</dd></div>
       <div><dt>Code</dt><dd className="mono">{finding.code}</dd></div>
       <div><dt>Dataset</dt><dd>{finding.dataset_id ?? "—"}</dd></div>
@@ -580,7 +580,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
       <div><dt>First observed</dt><dd>{utc(finding.first_observed_at)}</dd></div>
       <div><dt>Last observed</dt><dd>{utc(finding.last_observed_at)}</dd></div>
       <div><dt>Handling state</dt><dd>{state}{finding.state_updated_at ? <> · updated {utc(finding.state_updated_at)}</> : ""}</dd></div>
-      {finding.resolved_by_run_id && <div><dt>Resolved by run</dt><dd className="mono">{finding.resolved_by_run_id}</dd></div>}
+      {finding.resolved_by_run_id && <div><dt>Resolved by run</dt><dd><CopyId value={finding.resolved_by_run_id} /></dd></div>}
     </dl>
 
     {coverage && <>
@@ -609,8 +609,8 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
 
     <h3 className="detail-heading"><History size={14} /> Run linkage</h3>
     <dl className="detail-list">
-      <div><dt>Reporting run</dt><dd className="mono">{finding.run_id ?? "not recorded"}</dd></div>
-      <div><dt>Last observing run</dt><dd className="mono">{finding.last_run_id ?? "not recorded"}</dd></div>
+      <div><dt>Reporting run</dt><dd>{finding.run_id ? <CopyId value={finding.run_id} /> : "not recorded"}</dd></div>
+      <div><dt>Last observing run</dt><dd>{finding.last_run_id ? <CopyId value={finding.last_run_id} /> : "not recorded"}</dd></div>
     </dl>
     <div className="form-actions">
       <button className="secondary-button" aria-label="Open run" disabled={!finding.run_id}

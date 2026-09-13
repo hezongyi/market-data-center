@@ -6,7 +6,7 @@ import {
   Package, Pin, RefreshCw, ScrollText, ShieldAlert, ShieldCheck, Timer, XCircle,
 } from "lucide-react";
 import {
-  ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingSkeleton, MetricCard, PanelHeading, StatusBadge,
+  ConfirmDialog, CopyId, DataTable, EmptyState, ErrorState, LoadingSkeleton, MetricCard, PanelHeading, StatusBadge,
 } from "../components/ui";
 import { useQuery, type QueryResult } from "../hooks";
 import type {
@@ -120,8 +120,8 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
     { accessorKey: "at", header: "Time", cell: info => <span className="mono">{utc(String(info.getValue()))}</span> },
     { accessorKey: "action", header: "Action" },
     { accessorKey: "actor", header: "Actor", cell: info => <span className="mono" title="Non-reversible actor fingerprint; never a credential.">{String(info.getValue() ?? "—")}</span> },
-    { accessorKey: "task_id", header: "Task", cell: info => <span className="mono">{String(info.getValue() ?? "—")}</span> },
-    { accessorKey: "run_ids", header: "Runs", cell: ({ row }) => <span className="mono">{row.original.run_ids.length ? row.original.run_ids.join(", ") : "—"}</span> },
+    { accessorKey: "task_id", header: "Task", cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
+    { accessorKey: "run_ids", header: "Runs", cell: ({ row }) => row.original.run_ids.length ? <>{row.original.run_ids.map(id => <CopyId key={id} value={id} />)}</> : "—" },
     { accessorKey: "run_kind", header: "Kind", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
@@ -284,7 +284,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
 
       <section className="panel">
         <PanelHeading eyebrow="Deployment identity" title="Runtime" />
-        <dl className="detail-list"><div><dt>Deployment</dt><dd className="mono">{health?.deployment_id ?? "—"}</dd></div><div><dt>Version</dt><dd>{health?.software_version ?? "—"}</dd></div><div><dt>Source commit</dt><dd className="mono">{health?.source_commit ?? "—"}</dd></div><div><dt>Read path</dt><dd>{health?.read_status ?? "—"}</dd></div><div><dt>Write path</dt><dd>{health?.write_status ?? "—"}</dd></div><div><dt>Worker heartbeat</dt><dd>{health?.worker_heartbeat_age_seconds == null ? "—" : `${Math.round(health.worker_heartbeat_age_seconds)}s`}</dd></div></dl>
+        <dl className="detail-list"><div><dt>Deployment</dt><dd>{health?.deployment_id ? <CopyId value={health.deployment_id} /> : "—"}</dd></div><div><dt>Version</dt><dd>{health?.software_version ?? "—"}</dd></div><div><dt>Source commit</dt><dd>{health?.source_commit ? <CopyId value={health.source_commit} /> : "—"}</dd></div><div><dt>Read path</dt><dd>{health?.read_status ?? "—"}</dd></div><div><dt>Write path</dt><dd>{health?.write_status ?? "—"}</dd></div><div><dt>Worker heartbeat</dt><dd>{health?.worker_heartbeat_age_seconds == null ? "—" : `${Math.round(health.worker_heartbeat_age_seconds)}s`}</dd></div></dl>
         <p className="filter-note">Identity comes from the readiness envelope; the console never displays a commit it was not told.</p>
       </section>
 

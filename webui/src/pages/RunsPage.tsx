@@ -201,7 +201,7 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <div><dt>Selector</dt><dd className="mono">{Object.entries(run.selector).map(([key, value]) => `${key}=${value}`).join(" ") || "—"}</dd></div>
       <div><dt>Time range</dt><dd className="mono">{run.time_range ? <><TimeDisplay value={run.time_range.start} /> → <TimeDisplay value={run.time_range.end} /> ({run.time_range.semantics})</> : "—"}</dd></div>
       <div><dt>Windows</dt><dd>{run.window_count}</dd></div>
-      <div><dt>Input snapshot</dt><dd className="mono">{run.input_snapshot_id ?? "—"}</dd></div>
+      <div><dt>Input snapshot</dt><dd>{run.input_snapshot_id ? <CopyId value={run.input_snapshot_id} /> : "—"}</dd></div>
       <div><dt>Schema version</dt><dd className="mono">{run.schema_version ?? "—"}</dd></div>
       <div><dt>Rows</dt><dd>{run.row_count ?? "—"}</dd></div>
       <div><dt>Extent</dt><dd className="mono"><TimeDisplay value={run.min_ts ?? run.min_date} /> → <TimeDisplay value={run.max_ts ?? run.max_date} /></dd></div>
@@ -226,7 +226,7 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
 
     <h3 className="detail-heading"><GitBranch size={14} /> Retry chain</h3>
     <ol className="retry-chain">{run.retry_chain.map(link => <li key={link.run_id}>
-      <span className="mono">{link.run_id}</span>
+      <CopyId value={link.run_id} />
       <StatusBadge tone={tone(link.status)}>{link.status}</StatusBadge>
       <span className="filter-note">{link.relation} · {link.stage} · {utc(link.created_at)}</span>
     </li>)}</ol>
@@ -241,7 +241,7 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <h3 className="detail-heading">Findings</h3>
       <ul className="issue-list">{run.findings?.map(finding => <li key={finding.finding_id} className="issue info">
         <AlertTriangle size={14} /><b>{finding.severity}</b><span>{finding.message ?? finding.code}</span>
-        <code>{finding.finding_id}</code></li>)}</ul>
+        {finding.finding_id && <CopyId value={finding.finding_id} />}</li>)}</ul>
     </>}
 
     <h3 className="detail-heading"><FileText size={14} /> Manifest</h3>

@@ -403,11 +403,11 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
       <div><dt>Run kind</dt><dd>{envelope.run_kind}</dd></div>
       <div><dt>Dataset</dt><dd>{envelope.dataset_id}</dd></div>
       <div><dt>Run scope</dt><dd>{envelope.run_scope}</dd></div>
-      <div><dt>Runs</dt><dd className="mono">{envelope.run_ids.join(", ")}</dd></div>
+      <div><dt>Runs</dt><dd>{envelope.run_ids.map(id => <CopyId key={id} value={id} />)}</dd></div>
       <div><dt>Windows</dt><dd>{envelope.window_count}</dd></div>
-      <div><dt>Plan</dt><dd className="mono">{envelope.plan_id ?? "—"}</dd></div>
+      <div><dt>Plan</dt><dd>{envelope.plan_id ? <CopyId value={envelope.plan_id} /> : "—"}</dd></div>
       <div><dt>Submitted</dt><dd>{utc(envelope.submitted_at)}</dd></div>
-      <div><dt>Input snapshot</dt><dd className="mono">{envelope.input_snapshot_id ?? "—"}</dd></div>
+      <div><dt>Input snapshot</dt><dd>{envelope.input_snapshot_id ? <CopyId value={envelope.input_snapshot_id} /> : "—"}</dd></div>
       <div><dt>Audit id</dt><dd>{envelope.audit_id ?? "—"}</dd></div>
     </dl>
     {loading && <LoadingSkeleton rows={3} />}
