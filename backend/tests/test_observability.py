@@ -79,14 +79,38 @@ def test_delivery_batch_selects_undelivered_events_before_limiting(tmp_path, mon
     assert delivered == [event_ids[2]]
 
 
+class _BudgetClock:
+    """Deterministic monotonic clock: only an explicit attempt advances it.
+
+    The budget assertion must not depend on how quickly the runner schedules the
+    loop.  With the real clock a preempted runner could exceed the whole 50ms
+    budget before the first attempt started, which delivered zero failures and
+    reported ``pass``; that made this test a release gate flake.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def test_delivery_timeout_and_retries_are_bounded_by_total_budget(tmp_path, monkeypatch):
     sink = AlertSink(tmp_path)
     sink.emit("quality_failed", identity="run-budget", fields={"run_id": "run-budget"})
     timeouts = []
+    clock = _BudgetClock()
+    monkeypatch.setattr("data_center.observability.time", clock)
 
     def post(url, **kwargs):
         timeouts.append(kwargs["timeout"])
-        time.sleep(0.03)
+        clock.now += 0.03
         raise RuntimeError("unavailable")
 
     monkeypatch.setattr("requests.post", post)
@@ -94,14 +118,11 @@ def test_delivery_timeout_and_retries_are_bounded_by_total_budget(tmp_path, monk
         sink, "http://example.test", max_attempts=10, timeout_seconds=5.0, budget_seconds=0.05,
     )
     # The shared budget must stop the retry loop: each attempt consumes 0.03s of a
-    # 0.05s budget, so at most two attempts can start and the loop breaks on a
-    # non-positive remaining budget.  Asserting the attempt count and the per-attempt
-    # timeout expresses that bound directly; a wall-clock assertion on the elapsed
-    # time measured the runner's scheduling latency instead and flaked under load.
+    # 0.05s budget, so exactly two attempts start and the loop breaks on a
+    # non-positive remaining budget.
     assert result == {"status": "failed", "delivered": 0, "failed": 1}
-    assert timeouts and max(timeouts) <= 0.05
-    assert len(timeouts) <= 3
-    assert len(timeouts) < 10
+    assert len(timeouts) == 2, "the shared budget must stop the retry loop after two attempts"
+    assert max(timeouts) <= 0.05
 
 
 def test_metrics_and_monitor_detect_backlog_and_quality(tmp_path):
