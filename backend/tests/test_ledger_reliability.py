@@ -17,6 +17,14 @@ def test_failed_jobs_retry_then_dead_letter(tmp_path: Path):
     assert ledger.get(run_id)["status"] == "dead_letter"
     assert ledger.claim_next_job() is None
 
+def test_paused_maintenance_task_is_not_claimed(tmp_path: Path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    run_id = ledger.enqueue_job({"job_id": "paused-task", "dataset_id": "provider_bars", "run_scope": "maintenance"})
+    ledger.upsert_maintenance_task("paused-task", {"task_id": "paused-task", "run_ids": [run_id]}, "paused")
+    assert ledger.claim_next_job() is None
+    ledger.update_maintenance_task_status("paused-task", "enabled")
+    assert ledger.claim_next_job() is not None
+
 
 def test_coverage_quality_failure_is_retryable_for_maintenance():
     from data_center.ingest.process import safe_failure_result
