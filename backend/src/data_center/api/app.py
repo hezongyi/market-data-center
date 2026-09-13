@@ -76,13 +76,22 @@ def _password_hash(password: str) -> str:
 
 def _load_auth_state(config: Settings) -> None:
     if config.auth_password_hash or not config.auth_state_path or not config.auth_state_path.exists(): return
-    try: config.auth_password_hash = json.loads(config.auth_state_path.read_text()).get("password_hash")
+    try:
+        state = json.loads(config.auth_state_path.read_text())
+        config.auth_password_hash = state.get("password_hash")
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
     except (OSError, ValueError): return
 
 def _save_auth_state(config: Settings) -> None:
     if not config.auth_state_path or not config.auth_password_hash: return
     config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
-    config.auth_state_path.write_text(json.dumps({"password_hash": config.auth_password_hash}))
+    payload = {"password_hash": config.auth_password_hash,
+               "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
+    temporary = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(config.auth_state_path)
+    config.auth_state_path.chmod(0o600)
 
 
 def current_request_id():
@@ -205,7 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
         if username != config.auth_username or not _password_ok(password, config.auth_password_hash):
             raise HTTPException(status_code=401, detail="invalid credentials")
-        token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds)
+        token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds); _save_auth_state(config)
         response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return api_envelope({"username": username})
 
@@ -216,7 +225,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               "username": config.auth_username})
 
     @app.post(f"{config.api_prefix}/auth/initialize")
-    def auth_initialize(payload: dict, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+    def auth_initialize(payload: dict, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
         """Set the first operator password exactly once.
 
         A configured API key is required to bootstrap a password.  Loopback
@@ -225,6 +234,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         if config.auth_password_hash:
             raise HTTPException(status_code=409, detail="authentication is already initialized")
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") != f"{request.url.scheme}://{request.url.netloc}".rstrip("/"):
+            raise HTTPException(status_code=403, detail="origin not allowed")
         if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         username = str(payload.get("username") or config.auth_username).strip()
@@ -237,7 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/auth/logout")
     def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
-        if session: _sessions.pop(session, None)
+        if session: _sessions.pop(session, None); _save_auth_state(config)
         result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
         response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
 
