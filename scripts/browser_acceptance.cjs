@@ -208,6 +208,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   const results = [];
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport });
+    await page.addInitScript((apiKey) => { const original = window.fetch; window.fetch = (input, init = {}) => { const headers = new Headers(init.headers || {}); headers.set("X-API-Key", apiKey); return original(input, { ...init, headers }); }; }, key);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.addInitScript(() => localStorage.setItem("mdc.locale", "zh-CN"));
