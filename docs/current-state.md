@@ -6,7 +6,7 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 当前 deployment | `5dfc1b1c6803-377c1193`（`software_version=0.4.0`，`source_commit=5dfc1b1`） | `operations/deployment_activate/2026-09-13T101711…json`（`tag` 由 `operations/deployment_stage/2026-09-13T101522…json` 记录） |
+| 当前 deployment | `5dfc1b1c6803-377c1193`（`software_version=0.4.0`，`source_commit=5dfc1b1`）；`v0.4.1` 已发布，激活后本节随之更新 | `operations/deployment_activate/2026-09-13T101711…json`（`tag` 由 `operations/deployment_stage/2026-09-13T101522…json` 记录） |
 | API/worker | systemd active；readiness=ready | `/api/v1/health/ready` |
 | 容量/队列 | `capacity_status=ok`、queue=0 | `/api/v1/metrics` |
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
@@ -17,7 +17,7 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.4.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
+| 源码版本 | `0.4.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
 | 最新发布标签 | `v0.4.0` → `5dfc1b1c6803feb4b577040c0d5e5f21bed9b96e`（annotated；按仓库约定发布后不再移动，GitHub 的 immutable-release 平台开关未启用） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.4.0) + `release-receipt.json` |
 | 生产 deployment source commit | `5dfc1b1c6803feb4b577040c0d5e5f21bed9b96e`（= `v0.4.0`），是 protected `main` 的祖先 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
