@@ -403,38 +403,38 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
   ], []);
 
   return <>
-    <section className="panel quality-page" aria-label="Quality findings">
-      <PanelHeading eyebrow="Quality feedback" title="Quality findings"
+    <section className="panel quality-page" aria-label={t("Quality findings")}>
+      <PanelHeading eyebrow={t("Quality feedback")} title={t("Quality findings")}
         action={<div className="header-actions">
           {stateCounts && <span className="filter-note" aria-label="Handling state counts">
             {findingStates.map(state => `${stateCounts[state] ?? 0} ${state}`).join(" · ")}
           </span>}
           <StatusBadge tone="neutral">{page ? `${page.count} on this page` : "—"}</StatusBadge>
-          <button className="link-button" onClick={query.reload}>Refresh →</button>
+          <button className="link-button" onClick={query.reload}>{t("Refresh")} →</button>
         </div>} />
 
       <FilterBar>
-        <label>Severity<select aria-label="Severity" value={filters.severity}
+        <label>{t("Severity")}<select aria-label={t("Severity")} value={filters.severity}
           onChange={event => setFilter("severity", event.target.value)}>
           <option value="all">all</option>
           {severities.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding code<select aria-label="Finding code" value={filters.code}
+        <label>{t("Finding code")}<select aria-label={t("Finding code")} value={filters.code}
           onChange={event => setFilter("code", event.target.value)}>
           <option value="all">all</option>
           {codes.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Quality dataset<select aria-label="Quality dataset" value={filters.dataset}
+        <label>{t("Quality dataset")}<select aria-label={t("Quality dataset")} value={filters.dataset}
           onChange={event => setFilter("dataset", event.target.value)}>
           <option value="all">all</option>
           {datasets.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding state<select aria-label="Finding state" value={filters.state}
+        <label>{t("Finding state")}<select aria-label={t("Finding state")} value={filters.state}
           onChange={event => setFilter("state", event.target.value)}>
           <option value="all">all</option>
           {findingStates.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding run<input aria-label="Finding run" value={filters.run} placeholder="run id"
+        <label>{t("Finding run")}<input aria-label={t("Finding run")} value={filters.run} placeholder={t("run id")}
           onChange={event => setFilter("run", event.target.value)} /></label>
         <label>Finding from date<input aria-label="Finding from date" type="date" value={filters.from}
           onChange={event => setFilter("from", event.target.value)} /></label>
@@ -593,7 +593,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
         <div><dt>Missing timestamps</dt><dd>{coverage.view.missing_timestamp_count ?? "—"}</dd></div>
         <div><dt>Expected timestamps</dt><dd>{coverage.view.expected_timestamp_count ?? "—"}</dd></div>
         <div><dt>Rows recorded</dt><dd>{coverage.view.row_count ?? "—"}</dd></div>
-        <div><dt>Latest complete boundary</dt><dd className="mono">{coverage.view.latest_complete_boundary ?? "—"}</dd></div>
+        <div><dt>Latest complete boundary</dt><dd>{coverage.view.latest_complete_boundary ? <TimeDisplay value={coverage.view.latest_complete_boundary} /> : "—"}</dd></div>
       </dl>
       <p className="filter-note">Ready intervals ({(coverage.view.ready_intervals ?? []).length})</p>
       {(coverage.view.ready_intervals ?? []).length > 0
@@ -842,7 +842,7 @@ function RepairPreview({ preview, warnings, submitting, onConfirm, onEdit }: {
         {preview.coverage.readiness_status ?? "unknown"}</StatusBadge></dd></div>
       <div><dt>Gap count</dt><dd>{preview.coverage.gap_count ?? "—"}</dd></div>
       <div><dt>Ready intervals</dt><dd>{preview.coverage.ready_interval_count ?? 0}</dd></div>
-      <div><dt>Latest complete boundary</dt><dd className="mono">{preview.coverage.latest_complete_boundary ?? "—"}</dd></div>
+        <div><dt>Latest complete boundary</dt><dd>{preview.coverage.latest_complete_boundary ? <TimeDisplay value={preview.coverage.latest_complete_boundary} /> : "—"}</dd></div>
     </dl>}
 
     {errors.length > 0 && <ul className="issue-list" aria-label="Validation errors">

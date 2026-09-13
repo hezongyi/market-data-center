@@ -216,7 +216,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
     await page.locator(".sidebar").getByText("Snapshot fresh", { exact: true }).waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
-    await page.getByText("Capacity warning", { exact: false }).first().waitFor();
+    await page.getByText(/Capacity warning|容量.*警告/, { exact: false }).first().waitFor();
     await page.getByText("降级与失败运行", { exact: true }).waitFor();
     await page.getByRole("button", { name: "English", exact: true }).click();
     await page.getByText("Degraded and failed runs", { exact: true }).waitFor();

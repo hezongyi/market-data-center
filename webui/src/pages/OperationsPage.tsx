@@ -222,8 +222,8 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
         </PanelQueryState>
       </section>
 
-      <section className="panel" aria-label="Worker activity">
-        <PanelHeading eyebrow="Liveness" title="Worker activity" action={<div className="header-actions">
+      <section className="panel" aria-label={t("Worker activity")}>
+        <PanelHeading eyebrow={t("Liveness")} title={t("Worker activity")} action={<div className="header-actions">
           {worker.data && <StatusBadge tone={heartbeatTone(worker.data.heartbeat_status)}>
             {heartbeatIcon(worker.data.heartbeat_status)}heartbeat {worker.data.heartbeat_status}</StatusBadge>}
           <button className="link-button" aria-label="Refresh worker activity" onClick={worker.reload}><RefreshCw size={12} /> Refresh →</button>
