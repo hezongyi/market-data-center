@@ -260,6 +260,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = _request_id.set(request_id); session_token = _session_id.set(request.cookies.get("mdc_session"))
         started = time.monotonic()
         try:
+            origin = request.headers.get("origin")
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.cookies.get("mdc_session") and origin:
+                expected = f"{request.url.scheme}://{request.url.netloc}"
+                if origin.rstrip("/") != expected.rstrip("/"):
+                    raise HTTPException(status_code=403, detail="origin not allowed")
             response = await call_next(request)
         finally:
             _request_id.reset(token); _session_id.reset(session_token)
