@@ -58,9 +58,13 @@ const eventTone = (event: string): Tone =>
 const scopes: RunScope[] = ["production", "acceptance", "migration", "maintenance"];
 const timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
 const assetClasses = ["crypto", "fx", "commodity"];
-// The backend receipt index is keyed by these actions; the console shows every
-// one of them even when no receipt was recorded, so a gap is never hidden.
-const receiptActions = ["backup", "restore", "recovery_drill", "release", "deployment"] as const;
+// The console renders exactly the actions the API reports, so a record is
+// never shown as missing merely because the browser guessed a different name,
+// and an action the platform never writes cannot appear as a phantom gap.
+const receiptActionsOf = (latest: Record<string, OperationsReceipt | null>): string[] => {
+  const reported = Object.keys(latest);
+  return reported.length ? reported : ["backup", "restore", "recovery_drill"];
+};
 
 type OperationsPageProps = {
   apiKey: string;
@@ -301,7 +305,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
         </div>}
         {receipts.data && receipts.data.available && <>
           <ul className="receipt-list" aria-label="Latest receipt per action">
-            {receiptActions.map(action => {
+            {receiptActionsOf(latest).map(action => {
               const receipt: OperationsReceipt | null | undefined = latest[action];
               return <li key={action}>
                 <b>{action}</b>

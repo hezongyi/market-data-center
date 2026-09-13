@@ -470,6 +470,27 @@ def test_findings_require_the_api_key_for_state_changes(tmp_path) -> None:
     assert http.post(path, json={"state": "acknowledged"}, headers={"X-API-Key": "secret"}).status_code == 200
 
 
+def test_receipts_surface_under_the_actions_that_were_recorded(tmp_path) -> None:
+    """Every highlighted action must be one the platform writes, and vice versa."""
+    config = settings(tmp_path)
+    from data_center.evidence import operation_receipt, write_receipt
+
+    for action in ("deployment_activate", "capacity_check"):
+        write_receipt(config.evidence_root, operation_receipt(
+            action=action, command=f"{action} probe", started_at="2026-09-13T00:00:00+00:00",
+            result="pass", details={"deployment_id": "probe-release"}))
+    http = TestClient(create_app(config))
+    payload = http.get("/api/v1/operations/receipts").json()["data"]
+    assert payload["available"] is True
+    for action in ("deployment_activate", "capacity_check"):
+        assert payload["latest"][action]["action"] == action
+        assert payload["latest"][action]["result"] == "pass"
+    assert payload["latest"]["deployment_activate"]["deployment_id"] == "probe-release"
+    assert {item["action"] for item in payload["receipts"]} == {"deployment_activate", "capacity_check"}
+    # A name the platform does not write must not be reported as a recorded action.
+    assert "release" not in payload["latest"] and "deployment" not in payload["latest"]
+
+
 # -- capabilities --------------------------------------------------------
 
 
