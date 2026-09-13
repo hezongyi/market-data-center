@@ -467,6 +467,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                          capacity_policy=capacity_policy)
         return api_envelope(preview)
 
+    @app.get(f"{config.api_prefix}/maintenance/tasks")
+    def maintenance_tasks() -> dict:
+        return api_envelope(ledger.list_maintenance_tasks())
+
     @app.post(f"{config.api_prefix}/maintenance/tasks", status_code=202)
     def maintenance_task(request: MaintenanceTaskRequest, http_request: Request,
                          x_api_key: str | None = Header(default=None)) -> dict:

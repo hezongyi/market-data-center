@@ -18,6 +18,7 @@ class RunLedger:
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
+            conn.execute("create table if not exists maintenance_tasks (task_id text primary key, payload text not null, status text not null, updated_at text not null)")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -76,6 +77,15 @@ class RunLedger:
             payload["dead_letter_state"] = {"state": state[0], "acknowledged_at": state[1],
                                             "resolved_by_run_id": state[2], "resolved_at": state[3]}
         return payload
+
+    def upsert_maintenance_task(self, task_id: str, payload: dict, status: str = "queued") -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("insert into maintenance_tasks(task_id,payload,status,updated_at) values (?,?,?,?) on conflict(task_id) do update set payload=excluded.payload,status=excluded.status,updated_at=excluded.updated_at", (task_id, json.dumps(payload), status, datetime.now(timezone.utc).isoformat()))
+
+    def list_maintenance_tasks(self) -> list[dict]:
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute("select task_id,payload,status,updated_at from maintenance_tasks order by updated_at desc").fetchall()
+        return [{**json.loads(row[1]), "task_id": row[0], "status": row[2], "updated_at": row[3]} for row in rows]
 
     def findings(self) -> builtins.list[dict]:
         with sqlite3.connect(self.path) as conn:

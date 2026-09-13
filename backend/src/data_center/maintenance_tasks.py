@@ -494,6 +494,7 @@ def submit_task(*, request: MaintenanceTaskRequest, ledger, root: Path, capacity
         raise MaintenanceTaskError(f"unsupported dataset: {dataset_id}", code="unsupported_dataset")
 
     submitted_at = datetime.now(timezone.utc).isoformat()
+    ledger.upsert_maintenance_task(task["task_id"], {**task, "run_ids": run_ids, "submitted_at": submitted_at}, "queued")
     audit = ledger.record_write_audit({
         "action": f"maintenance.{request.run_kind}", "actor": actor, "request_id": request_id,
         "task_id": task["task_id"], "run_ids": run_ids, "run_kind": task["run_kind"],
