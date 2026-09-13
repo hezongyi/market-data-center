@@ -199,11 +199,11 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const protectedWrite = mutation.permission === "protected" || mutation.preview?.write_status === "protected";
 
   const submissionColumns: ColumnDef<QueuedEnvelope>[] = [
-    { accessorKey: "task_id", header: "Task", cell: info => <CopyId value={String(info.getValue())} /> },
+    { accessorKey: "task_id", header: t("Task"), cell: info => <CopyId value={String(info.getValue())} /> },
     { accessorKey: "run_kind", header: t("Kind") },
     { accessorKey: "dataset_id", header: t("Dataset") },
-    { accessorKey: "window_count", header: "Windows" },
-    { accessorKey: "submitted_at", header: "Submitted", cell: info => utc(String(info.getValue())) },
+    { accessorKey: "window_count", header: t("Windows") },
+    { accessorKey: "submitted_at", header: t("Submitted"), cell: info => utc(String(info.getValue())) },
   ];
 
   return <>
@@ -235,7 +235,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
         <span className="filter-note">Templates hold parameters only, never credentials, and stay in this browser.</span>
       </FilterBar>
 
-      <div className="run-kind-grid" role="radiogroup" aria-label="Run kind">
+      <div className="run-kind-grid" role="radiogroup" aria-label={t("Run kind")}>
         {runKinds.map(({ value, label, dataset, hint, icon: Icon }) => (
           <button key={value} role="radio" aria-checked={runKind === value} aria-label={label}
             disabled={!kindAvailable(value)}
@@ -248,7 +248,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       </div>
 
       <FilterBar>
-        <label>{t("Run scope")}<select aria-label="Run scope" value={runScope} onChange={event => setRunScope(event.target.value)}>
+        <label>{t("Run scope")}<select aria-label={t("Run scope")} value={runScope} onChange={event => setRunScope(event.target.value)}>
           {runScopeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></label>
         <label>{t("Provider")}<select aria-label="Task provider" value={provider}
@@ -257,7 +257,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
           {providers.map(item => <option key={item.provider} value={item.provider}>{item.provider}</option>)}
         </select></label>
         {economic
-          ? <label>Series ID<input aria-label="Task series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
+          ? <label>{t("Series ID")}<input aria-label="Task series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
           : <>
             <label>Symbol<input aria-label="Task symbol" value={symbol} onChange={event => setSymbol(event.target.value)} /></label>
             <label>Asset class<input aria-label="Asset class" value={assetClass} placeholder="auto"
@@ -303,8 +303,8 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       onConfirm={() => void mutation.submit()} onEdit={mutation.edit} submitting={mutation.state === "queued"} />}
 
     <section className="panel" aria-label="Maintenance task list">
-      <PanelHeading eyebrow={t("Maintenance tasks")} title={t("Task list")} action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>Refresh</button>} />
-      <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label><label>Dataset<select value={taskDatasetFilter} onChange={event => setTaskDatasetFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.dataset_id))).map(dataset => <option key={dataset} value={dataset}>{dataset}</option>)}</select></label><label>Kind<select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.run_kind))).map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label></FilterBar>
+      <PanelHeading eyebrow={t("Maintenance tasks")} title={t("Task list")} action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>{t("Refresh")}</button>} />
+      <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">{t("Queued")}</option><option value="running">{t("Running")}</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label><label>Dataset<select value={taskDatasetFilter} onChange={event => setTaskDatasetFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.dataset_id))).map(dataset => <option key={dataset} value={dataset}>{dataset}</option>)}</select></label><label>Kind<select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.run_kind))).map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label></FilterBar>
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => (!taskFilter || task.status === taskFilter) && (!taskDatasetFilter || task.dataset_id === taskDatasetFilter) && (!taskKindFilter || task.run_kind === taskKindFilter))} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
     {selectedRegistryTask && <DetailDrawer title={t("Maintenance task details")} onClose={() => setSelectedRegistryTask(null)}>
@@ -350,6 +350,7 @@ function PreviewPanel({ preview, state, warnings, submitting, onConfirm, onEdit 
   onConfirm: () => void;
   onEdit: () => void;
 }) {
+  const { t } = usePreferences();
   const errors = preview.validation.errors;
   const capacity = preview.capacity;
   return <section className="panel preview-panel" aria-label="Task preview">
@@ -375,9 +376,9 @@ function PreviewPanel({ preview, state, warnings, submitting, onConfirm, onEdit 
     {preview.coverage && <dl className="detail-list compact">
       <div><dt>Coverage readiness</dt><dd><StatusBadge tone={preview.coverage.readiness_status === "ready" ? "good" : "warn"}>
         {preview.coverage.readiness_status ?? "unknown"}</StatusBadge></dd></div>
-      <div><dt>Gap count</dt><dd>{preview.coverage.gap_count ?? "—"}</dd></div>
-      <div><dt>Ready intervals</dt><dd>{preview.coverage.ready_interval_count ?? 0}</dd></div>
-      <div><dt>Latest complete boundary</dt><dd className="mono">{preview.coverage.latest_complete_boundary ?? "—"}</dd></div>
+      <div><dt>{t("Gap count")}</dt><dd>{preview.coverage.gap_count ?? "—"}</dd></div>
+      <div><dt>{t("Ready intervals")}</dt><dd>{preview.coverage.ready_interval_count ?? 0}</dd></div>
+      <div><dt>{t("Latest complete boundary")}</dt><dd>{preview.coverage.latest_complete_boundary ? utc(preview.coverage.latest_complete_boundary) : "—"}</dd></div>
     </dl>}
 
     {errors.length > 0 && <ul className="issue-list" aria-label="Validation errors">
@@ -409,17 +410,18 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
   loading: boolean;
   onClose: () => void;
 }) {
+  const { t } = usePreferences();
   if (!envelope) return null;
   return <DetailDrawer title="Task details" onClose={onClose}>
     <dl className="detail-list">
       <div><dt>Task ID</dt><dd><CopyId value={envelope.task_id} /></dd></div>
-      <div><dt>Run kind</dt><dd>{envelope.run_kind}</dd></div>
+      <div><dt>{t("Run kind")}</dt><dd>{envelope.run_kind}</dd></div>
       <div><dt>Dataset</dt><dd>{envelope.dataset_id}</dd></div>
-      <div><dt>Run scope</dt><dd>{envelope.run_scope}</dd></div>
+      <div><dt>{t("Run scope")}</dt><dd>{envelope.run_scope}</dd></div>
       <div><dt>Runs</dt><dd>{envelope.run_ids.map(id => <CopyId key={id} value={id} />)}</dd></div>
-      <div><dt>Windows</dt><dd>{envelope.window_count}</dd></div>
+      <div><dt>{t("Windows")}</dt><dd>{envelope.window_count}</dd></div>
       <div><dt>Plan</dt><dd>{envelope.plan_id ? <CopyId value={envelope.plan_id} /> : "—"}</dd></div>
-      <div><dt>Submitted</dt><dd>{utc(envelope.submitted_at)}</dd></div>
+      <div><dt>{t("Submitted")}</dt><dd>{utc(envelope.submitted_at)}</dd></div>
       <div><dt>Input snapshot</dt><dd>{envelope.input_snapshot_id ? <CopyId value={envelope.input_snapshot_id} /> : "—"}</dd></div>
       <div><dt>Audit id</dt><dd>{envelope.audit_id ? <CopyId value={String(envelope.audit_id)} /> : "—"}</dd></div>
     </dl>

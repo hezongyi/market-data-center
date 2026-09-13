@@ -121,7 +121,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
     { accessorKey: "at", header: "Time", cell: info => <span className="mono">{utc(String(info.getValue()))}</span> },
     { accessorKey: "action", header: "Action" },
     { accessorKey: "actor", header: "Actor", cell: info => <span className="mono" title="Non-reversible actor fingerprint; never a credential.">{String(info.getValue() ?? "—")}</span> },
-    { accessorKey: "task_id", header: "Task", cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
+    { accessorKey: "task_id", header: t("Task"), cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
     { accessorKey: "run_ids", header: "Runs", cell: ({ row }) => row.original.run_ids.length ? <>{row.original.run_ids.map(id => <CopyId key={id} value={id} />)}</> : "—" },
     { accessorKey: "run_kind", header: "Kind", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
@@ -193,7 +193,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
     </section>
 
     <div className="operations-grid">
-      <section className="panel" aria-label="Maintenance queue">
+      <section className="panel" aria-label={t("Maintenance queue")}>
         <PanelHeading eyebrow={t("Ledger queue")} title={t("Maintenance queue")} action={<div className="header-actions">
           {queue.data && <StatusBadge tone={queue.data.queued ? "warn" : "good"}>
             {queue.data.queued ? `${queue.data.queued} queued` : "Queue empty"}</StatusBadge>}
@@ -216,7 +216,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
             {Object.keys(queue.data.runs_by_status ?? {}).length
               ? <div className="chip-row">{Object.entries(queue.data.runs_by_status).map(([status, count]) =>
                 <span className="stage-chip" key={status}>{status} · {count}</span>)}</div>
-              : <EmptyState title="No runs recorded yet" detail="The ledger counts a run here once a maintenance task is queued." />}
+              : <EmptyState title={t("No runs recorded yet")} detail="The ledger counts a run here once a maintenance task is queued." />}
             <p className="filter-note">Counts are read from the run ledger and job queue; this console never estimates queue depth.</p>
           </>}
         </PanelQueryState>
@@ -231,11 +231,11 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
         <PanelQueryState query={worker} emptyTitle="No worker activity recorded">
           {worker.data && <>
             <dl className="detail-list">
-              <div><dt>Heartbeat age</dt><dd>{worker.data.heartbeat_age_seconds == null ? "No heartbeat recorded" : `${worker.data.heartbeat_age_seconds.toFixed(1)} s`}</dd></div>
-              <div><dt>Heartbeat status</dt><dd><StatusBadge tone={heartbeatTone(worker.data.heartbeat_status)}>
+              <div><dt>{t("Heartbeat age")}</dt><dd>{worker.data.heartbeat_age_seconds == null ? "No heartbeat recorded" : `${worker.data.heartbeat_age_seconds.toFixed(1)} s`}</dd></div>
+              <div><dt>{t("Heartbeat status")}</dt><dd><StatusBadge tone={heartbeatTone(worker.data.heartbeat_status)}>
                 {heartbeatIcon(worker.data.heartbeat_status)}{worker.data.heartbeat_status}</StatusBadge></dd></div>
-              <div><dt>Freshness limit</dt><dd>{worker.data.heartbeat_limit_seconds} s</dd></div>
-              <div><dt>Observed</dt><dd className="mono">{utc(worker.data.observed_at)}</dd></div>
+              <div><dt>{t("Freshness limit")}</dt><dd>{worker.data.heartbeat_limit_seconds} s</dd></div>
+              <div><dt>{t("Observed")}</dt><dd className="mono">{utc(worker.data.observed_at)}</dd></div>
             </dl>
             <h3 className="detail-heading"><HeartPulse size={14} /> In-flight jobs ({worker.data.running_count})</h3>
             {runningJobs.length
@@ -284,14 +284,14 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
       </section>
 
       <section className="panel">
-        <PanelHeading eyebrow="Deployment identity" title="Runtime" />
+        <PanelHeading eyebrow={t("Deployment identity")} title={t("Runtime")} />
         <dl className="detail-list"><div><dt>Deployment</dt><dd>{health?.deployment_id ? <CopyId value={health.deployment_id} /> : "—"}</dd></div><div><dt>Version</dt><dd>{health?.software_version ?? "—"}</dd></div><div><dt>Source commit</dt><dd>{health?.source_commit ? <CopyId value={health.source_commit} /> : "—"}</dd></div><div><dt>Read path</dt><dd>{health?.read_status ?? "—"}</dd></div><div><dt>Write path</dt><dd>{health?.write_status ?? "—"}</dd></div><div><dt>Worker heartbeat</dt><dd>{health?.worker_heartbeat_age_seconds == null ? "—" : `${Math.round(health.worker_heartbeat_age_seconds)}s`}</dd></div></dl>
         <p className="filter-note">Identity comes from the readiness envelope; the console never displays a commit it was not told.</p>
       </section>
 
       <section className="panel operations-wide" aria-label="Capacity and recovery">
         <PanelHeading eyebrow="Storage protection" title="Capacity and recovery" action={<StatusBadge tone={capacity?.status === "critical" ? "bad" : capacity?.status === "warning" ? "warn" : "good"}>{capacity?.status ?? "unknown"}</StatusBadge>} />
-        {capacity ? <><div className="capacity-meter"><i style={{ width: `${Math.min(100, (1 - capacity.free_ratio) * 100)}%` }} /></div><dl className="detail-list"><div><dt>Total</dt><dd>{bytes(capacity.total_bytes)}</dd></div><div><dt>Used</dt><dd>{bytes(capacity.used_bytes)}</dd></div><div><dt>Warning threshold</dt><dd>{(capacity.warning_free_ratio * 100).toFixed(0)}%</dd></div><div><dt>Critical threshold</dt><dd>{(capacity.critical_free_ratio * 100).toFixed(0)}%</dd></div><div><dt>Latest backup</dt><dd>{metrics?.last_successful_backup_at ?? "Not recorded"}</dd></div><div><dt>Latest recovery drill</dt><dd>{metrics?.last_successful_recovery_drill_at ?? "Not recorded"}</dd></div></dl></> : <EmptyState title="Capacity unavailable" />}
+        {capacity ? <><div className="capacity-meter"><i style={{ width: `${Math.min(100, (1 - capacity.free_ratio) * 100)}%` }} /></div><dl className="detail-list"><div><dt>{t("Total")}</dt><dd>{bytes(capacity.total_bytes)}</dd></div><div><dt>{t("Used")}</dt><dd>{bytes(capacity.used_bytes)}</dd></div><div><dt>{t("Warning threshold")}</dt><dd>{(capacity.warning_free_ratio * 100).toFixed(0)}%</dd></div><div><dt>{t("Critical threshold")}</dt><dd>{(capacity.critical_free_ratio * 100).toFixed(0)}%</dd></div><div><dt>{t("Latest backup")}</dt><dd>{metrics?.last_successful_backup_at ? utc(metrics.last_successful_backup_at) : t("Not recorded")}</dd></div><div><dt>{t("Latest recovery drill")}</dt><dd>{metrics?.last_successful_recovery_drill_at ? utc(metrics.last_successful_recovery_drill_at) : t("Not recorded")}</dd></div></dl></> : <EmptyState title={t("Capacity unavailable")} />}
 
         <h3 className="detail-heading"><Package size={14} /> Latest receipt per action</h3>
         {receipts.status === "loading" && <LoadingSkeleton rows={2} />}
@@ -318,7 +318,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
                   <span>deployment {receipt.deployment_id ? <CopyId value={receipt.deployment_id} /> : "—"}</span>
                   <span className="filter-note">{receipt.reference}</span>
                   <span className="filter-note">{fieldsText(receipt.fields)}</span>
-                </> : <span className="filter-note">No receipt recorded</span>}
+                </> : <span className="filter-note">{t("No receipt recorded")}</span>}
               </li>;
             })}
           </ul>
@@ -357,7 +357,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
       <section className="panel operation-command operations-wide">
         <PanelHeading eyebrow="Authorized command" title="Queue ingest" />
         <form onSubmit={submit}>
-          <label>Run scope<select aria-label="Run scope" value={runScope} onChange={event => setRunScope(event.target.value as RunScope)}>{scopes.map(scope => <option key={scope} value={scope}>{scope}</option>)}</select></label>
+          <label>{t("Run scope")}<select aria-label={t("Run scope")} value={runScope} onChange={event => setRunScope(event.target.value as RunScope)}>{scopes.map(scope => <option key={scope} value={scope}>{scope}</option>)}</select></label>
           <label>Provider<input value={provider} onChange={event => setProvider(event.target.value)} /></label>
           <label>Symbol<input value={symbol} onChange={event => setSymbol(event.target.value)} /></label>
           <label>Asset class<select aria-label="Asset class" value={assetClass} onChange={event => setAssetClass(event.target.value)}>{assetClasses.map(value => <option key={value}>{value}</option>)}</select></label>
@@ -376,7 +376,8 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
 }
 
 function LockedState({ message }: { message: string | null }) {
-  return <div className="locked-state" role="status"><Lock size={18} /><div><b>Not authorized</b>
+  const { t } = usePreferences();
+  return <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("Not authorized")}</b>
     <p>{message ? `${message} · ` : ""}This operations view requires a valid API key. Open Session access, enter the key and retry.</p></div></div>;
 }
 

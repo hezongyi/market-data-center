@@ -107,13 +107,13 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
         <AlertTriangle size={11} />{row.original.degraded_reasons.length}</span>}
     </div> },
     { accessorKey: "stage", header: "Stage", cell: info => <span className="stage-chip"><Layers size={11} />{String(info.getValue())}</span> },
-    { accessorKey: "window_count", header: "Windows", cell: info => String(info.getValue() ?? 1) },
+    { accessorKey: "window_count", header: t("Windows"), cell: info => String(info.getValue() ?? 1) },
     { accessorKey: "manifest_status", header: "Manifest", cell: ({ row }) => row.original.manifest_status === "published"
       ? <span className="stage-chip"><FileText size={11} />published</span>
       : <span className="filter-note">{row.original.manifest_status.replace(/_/g, " ")}</span> },
     { accessorKey: "finding_count", header: "Findings", cell: info => String(info.getValue() ?? 0) },
     { accessorKey: "created_at", header: "Created", cell: info => utc(String(info.getValue() ?? "")) },
-    { id: "actions", header: "Actions", enableSorting: false, cell: ({ row }) => <div className="row-actions">
+    { id: "actions", header: t("Actions"), enableSorting: false, cell: ({ row }) => <div className="row-actions">
       {["failed", "dead_letter"].includes(row.original.status) && <button onClick={event => { event.stopPropagation(); setPending({ action: "retry", run: row.original }); }}>Retry</button>}
       {row.original.status === "dead_letter" && row.original.dead_letter_state?.state !== "acknowledged" && <button onClick={event => { event.stopPropagation(); setPending({ action: "acknowledge", run: row.original }); }}>Acknowledge</button>}
     </div> },
@@ -128,7 +128,7 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
       <FilterBar>
         <label>Status<select aria-label="Status" value={filters.status ?? "all"} onChange={event => setFilter("status", event.target.value)}>
           {statuses.map(value => <option key={value}>{value}</option>)}</select></label>
-        <label>Run kind<select aria-label="Run kind filter" value={filters.run_kind ?? "all"} onChange={event => setFilter("run_kind", event.target.value)}>
+        <label>{t("Run kind")}<select aria-label="Run kind filter" value={filters.run_kind ?? "all"} onChange={event => setFilter("run_kind", event.target.value)}>
           {runKinds.map(value => <option key={value}>{value}</option>)}</select></label>
         <label>Scope<select aria-label="Run scope filter" value={filters.run_scope ?? "all"} onChange={event => setFilter("run_scope", event.target.value)}>
           {runScopes.map(value => <option key={value}>{value}</option>)}</select></label>
@@ -141,16 +141,16 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
       {actionError && <div className="error-state" role="alert"><AlertTriangle size={18} /><div><b>Action rejected</b><p>{actionError}</p></div></div>}
       {query.status === "loading" && <LoadingSkeleton rows={5} />}
       {query.status === "error" && (query.permission === "unauthorized"
-        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>Not authorized</b><p>{query.error}</p></div></div>
+        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("Not authorized")}</b><p>{query.error}</p></div></div>
         : <ErrorState message={query.error ?? "Unable to load runs"} onRetry={query.reload} />)}
       {query.status === "empty" && <EmptyState title="No matching runs." detail="Adjust the filters or queue work from the Maintenance workspace." />}
       {query.status === "success" && <DataTable data={runs} columns={columns} empty="No matching runs." onRowClick={row => setSelected(row.run_id)} />}
 
       <div className="pager">
-        <button className="secondary-button" aria-label="Previous page" onClick={previousPage} disabled={!cursors.length}>
+        <button className="secondary-button" aria-label={t("Previous page")} onClick={previousPage} disabled={!cursors.length}>
           <ChevronLeft size={14} /> Previous</button>
         <span>Page {pageIndex + 1}{page ? ` · ${page.count} run(s)` : ""}</span>
-        <button className="secondary-button" aria-label="Next page" onClick={nextPage} disabled={!page?.has_more}>
+        <button className="secondary-button" aria-label={t("Next page")} onClick={nextPage} disabled={!page?.has_more}>
           <ChevronRight size={14} /> Next page</button>
         <span className="filter-note">Cursor paging is bound to these filters; changing a filter restarts at page 1.</span>
       </div>
@@ -173,6 +173,7 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
 }
 
 function RunDetailBody({ run, services }: { run: RunDetail; services: Services }) {
+  const { t } = usePreferences();
   const [manifest, setManifest] = useState<Record<string, unknown> | null>(null);
   const [manifestError, setManifestError] = useState("");
   const loadManifest = async () => {
@@ -197,14 +198,14 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
 
     <dl className="detail-list">
       <div><dt>Dataset</dt><dd>{run.dataset_id}</dd></div>
-      <div><dt>Run kind</dt><dd>{run.run_kind ?? "ingest"}</dd></div>
-      <div><dt>Run scope</dt><dd>{run.run_scope ?? "—"}</dd></div>
+      <div><dt>{t("Run kind")}</dt><dd>{run.run_kind ?? "ingest"}</dd></div>
+      <div><dt>{t("Run scope")}</dt><dd>{run.run_scope ?? "—"}</dd></div>
       <div><dt>Selector</dt><dd className="mono">{Object.entries(run.selector).map(([key, value]) => `${key}=${value}`).join(" ") || "—"}</dd></div>
       <div><dt>Time range</dt><dd className="mono">{run.time_range ? <><TimeDisplay value={run.time_range.start} /> → <TimeDisplay value={run.time_range.end} /> ({run.time_range.semantics})</> : "—"}</dd></div>
-      <div><dt>Windows</dt><dd>{run.window_count}</dd></div>
+      <div><dt>{t("Windows")}</dt><dd>{run.window_count}</dd></div>
       <div><dt>Input snapshot</dt><dd>{run.input_snapshot_id ? <CopyId value={run.input_snapshot_id} /> : "—"}</dd></div>
       <div><dt>Schema version</dt><dd className="mono">{run.schema_version ?? "—"}</dd></div>
-      <div><dt>Rows</dt><dd>{run.row_count ?? "—"}</dd></div>
+      <div><dt>{t("Rows")}</dt><dd>{run.row_count ?? "—"}</dd></div>
       <div><dt>Extent</dt><dd className="mono"><TimeDisplay value={run.min_ts ?? run.min_date} /> → <TimeDisplay value={run.max_ts ?? run.max_date} /></dd></div>
       <div><dt>Manifest</dt><dd>{run.manifest_status}</dd></div>
       <div><dt>Output hash</dt><dd>{run.output_hash ? <CopyId value={run.output_hash} /> : "—"}</dd></div>
