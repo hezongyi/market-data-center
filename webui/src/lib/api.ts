@@ -449,6 +449,7 @@ export type TaskPreview = {
   write_status: WriteStatus;
   generated_at: string;
 };
+export type MaintenanceTaskRecord = { task_id: string; run_kind: RunKind; dataset_id: string; status: string; run_ids?: string[]; submitted_at?: string; updated_at?: string };
 
 export type QueuedEnvelope = {
   status: "queued" | string;
@@ -679,6 +680,8 @@ export function createDataCenterClient(apiKey: string) {
     submitMaintenance: (task: MaintenanceTaskRequest) => request<QueuedEnvelope>("/maintenance/tasks", {
       method: "POST", body: JSON.stringify(task),
     }),
+    maintenanceTasks: () => request<MaintenanceTaskRecord[]>("/maintenance/tasks"),
+    updateMaintenanceTask: (taskId: string, status: "paused" | "enabled") => request<MaintenanceTaskRecord>(`/maintenance/tasks/${encodeURIComponent(taskId)}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     capabilities: () => request<Capabilities>("/capabilities"),
     findingsPage: (query: Record<string, string | number | null | undefined> = {}, cursor?: string | null) =>
       request<Finding[]>(`/quality/findings${queryString({ ...query, cursor })}`),
