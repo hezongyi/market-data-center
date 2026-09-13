@@ -33,7 +33,12 @@ from data_center.maintenance_tasks import (
     platform_capabilities,
     submit_task,
 )
-from data_center.observability import run_metrics
+from data_center.observability import AlertSink, run_metrics
+from data_center.operations_views import (
+    capacity_history,
+    operations_receipts,
+    worker_activity,
+)
 from data_center.platform import coverage_for_rows, enqueue_ingest_plan
 from data_center.platform_registry import REGISTRY
 from data_center.run_views import RunCursorError, RunValidationError, RunView
@@ -130,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     capacity_policy = config.capacity_policy()
     run_view = RunView(ledger, canonical_root=config.canonical_root,
                        cursor_secret=config.api_key or str(config.canonical_root))
+    alert_sink = AlertSink(config.evidence_root / "alerts", config.alerts_enabled)
     receipt_index = ReceiptIndex(config.evidence_root)
     identity = validated_runtime_identity(
         config.deployment_manifest, config.evidence_root, component="api", webui_dist=config.webui_dist,
@@ -358,10 +364,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                           "count": len(entries)}, "errors": []}
 
     @app.get(f"{config.api_prefix}/operations/capacity-history")
-    def operations_capacity_history() -> dict:
-        return {"data": {**capacity_policy.inspect(config.canonical_root).as_dict(),
-                         "fixed_measurement": config.capacity_fixed_free_ratio is not None},
-                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+    def operations_capacity_history(limit: int = 50) -> dict:
+        live = capacity_policy.inspect(config.canonical_root).as_dict()
+        live["fixed_measurement"] = config.capacity_fixed_free_ratio is not None
+        payload = capacity_history(alert_sink, live, limit=max(1, min(limit, 500)))
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                "errors": []}
+
+    @app.get(f"{config.api_prefix}/operations/worker")
+    def operations_worker() -> dict:
+        payload = worker_activity(ledger)
+        payload["worker_heartbeat_age_seconds"] = payload["heartbeat_age_seconds"]
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                "errors": []}
+
+    @app.get(f"{config.api_prefix}/operations/receipts")
+    def operations_receipts_view(limit: int = 5) -> dict:
+        payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
+        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
+                "errors": []}
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
     def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:

@@ -503,8 +503,9 @@ def test_market_bars_coverage_reports_recipe_semantics(tmp_path) -> None:
 def test_capacity_history_and_queue_views_are_read_only(tmp_path) -> None:
     http = client(tmp_path)
     history = http.get("/api/v1/operations/capacity-history").json()["data"]
-    assert set(history) >= {"status", "free_ratio", "warning_free_ratio", "critical_free_ratio"}
-    assert history["fixed_measurement"] is False
+    assert set(history["live"]) >= {"status", "free_ratio", "warning_free_ratio", "critical_free_ratio"}
+    assert history["live"]["fixed_measurement"] is False
+    assert history["events"] == [] and history["recorded_only"] is True
     queue = http.get("/api/v1/operations/queue").json()["data"]
     assert queue["queued"] == 0 and queue["runs_by_status"] == {}
 
@@ -518,3 +519,39 @@ def test_a_deployment_manifest_may_not_pin_a_fake_capacity_measurement(tmp_path)
     with pytest.raises(ValueError):
         config.capacity_policy()
     assert FixedCapacityPolicy.for_free_ratio(0.03).inspect(tmp_path).status == "critical"
+
+
+# -- operations read models ----------------------------------------------
+
+
+def test_worker_and_receipt_views_are_read_only(tmp_path) -> None:
+    config = settings(tmp_path)
+    from data_center.observability import AlertSink
+
+    ledger = RunLedger(config.ledger_path)
+    http = TestClient(create_app(config))
+    worker = http.get("/api/v1/operations/worker").json()["data"]
+    assert worker["heartbeat_status"] == "unknown" and worker["running_jobs"] == []
+    assert worker["queue"]["queued"] == 0
+
+    ledger.heartbeat()
+    heartbeat = http.get("/api/v1/operations/worker").json()["data"]
+    assert heartbeat["heartbeat_status"] == "fresh"
+    assert heartbeat["heartbeat_age_seconds"] < 60
+
+    receipts = http.get("/api/v1/operations/receipts").json()["data"]
+    assert set(receipts) >= {"available", "receipts", "latest"}
+    if receipts["available"]:
+        assert isinstance(receipts["receipts"], list)
+
+    # Capacity history only reports transitions the monitor recorded.
+    sink = AlertSink(config.evidence_root / "alerts", True)
+    sink.emit_transition("capacity", "warning", event="capacity_warning",
+                         fields={"status": "warning", "free_ratio": 0.03,
+                                 "warning_free_ratio": 0.05, "critical_free_ratio": 0.02})
+    history = http.get("/api/v1/operations/capacity-history").json()["data"]
+    assert history["recorded_only"] is True
+    assert history["event_count"] == 1
+    assert history["events"][0]["event"] == "capacity_warning"
+    assert history["live"]["status"] in {"ok", "warning", "critical"}
+    assert "fixed_measurement" in history["live"]
