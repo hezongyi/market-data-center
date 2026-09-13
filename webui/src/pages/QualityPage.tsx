@@ -789,7 +789,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
     {envelope && <div className="quality-queued">
       <ul className="issue-list" aria-label="Queued repair task">
         <li className="issue info"><CheckCircle2 size={14} /><b>queued</b>
-          <span>Task {envelope.task_id} queued {envelope.window_count} window(s) as <span className="mono">{queuedRunIds.join(", ") || "—"}</span>.</span></li>
+          <span>Task <CopyId value={envelope.task_id} /> queued {envelope.window_count} window(s) as {queuedRunIds.length ? queuedRunIds.map(id => <CopyId key={id} value={id} />) : "—"}.</span></li>
       </ul>
       {linkableRunId && (linked
         ? <p className="filter-note"><CheckCircle2 size={12} /> Run <span className="mono">{linked}</span> is recorded as resolving this finding.</p>
@@ -802,7 +802,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
     </div>}
 
     {confirmEnvelope && <ConfirmDialog title="Record this run as resolving the finding?"
-      detail={`${confirmEnvelope.run_ids[0] ?? confirmEnvelope.run_id ?? "the queued run"} will be linked to ${finding.finding_id ?? "this finding"} and the finding marked resolved. The state change is additive; the run receipt is not modified.`}
+      detail="The selected run will be linked to this finding and the finding marked resolved. The state change is additive; the run receipt is not modified."
       confirmLabel="Mark resolved by run" onConfirm={() => void linkRun()} onCancel={() => setConfirmEnvelope(null)} />}
   </>;
 }

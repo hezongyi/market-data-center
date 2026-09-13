@@ -102,15 +102,30 @@ def _refresh_sessions(config: Settings) -> None:
     except (OSError, ValueError, TypeError, KeyError):
         return
 
-def _save_auth_state(config: Settings) -> None:
-    if not config.auth_state_path or not config.auth_password_hash: return
+def _save_auth_state(config: Settings, mutation=None) -> None:
+    """Persist auth state with the read/modify/write inside one file lock."""
+    if not config.auth_state_path: return
     config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"password_hash": config.auth_password_hash,
-               "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
     lock_path = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".lock")
     temporary = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".tmp")
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        state = {}
+        if config.auth_state_path.exists():
+            try:
+                state = json.loads(config.auth_state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = {}
+        if state.get("password_hash"):
+            config.auth_password_hash = state["password_hash"]
+        _sessions.clear()
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items()
+                          if isinstance(v, list) and len(v) == 2 and float(v[1]) > time.time()})
+        if mutation:
+            mutation()
+        if not config.auth_password_hash: return
+        payload = {"password_hash": config.auth_password_hash,
+                   "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
         with temporary.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle)
             handle.flush()
@@ -243,7 +258,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
         if username != config.auth_username or not _password_ok(password, config.auth_password_hash):
             raise HTTPException(status_code=401, detail="invalid credentials")
-        token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds); _save_auth_state(config)
+        token = secrets.token_urlsafe(32)
+        _save_auth_state(config, lambda: _sessions.__setitem__(token, (username, time.time() + config.auth_session_ttl_seconds)))
         response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return api_envelope({"username": username})
 
@@ -295,7 +311,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/auth/logout")
     def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
-        if session: _sessions.pop(session, None); _save_auth_state(config)
+        if session: _save_auth_state(config, lambda: _sessions.pop(session, None))
         result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
         response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
 
@@ -317,10 +333,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
         if not _password_ok(current, config.auth_password_hash) or len(replacement) < 12:
             raise HTTPException(status_code=422, detail="invalid password change")
-        config.auth_password_hash = _password_hash(replacement)
-        _save_auth_state(config)
-        _sessions.clear()
-        _save_auth_state(config)
+        replacement_hash = _password_hash(replacement)
+        def rotate():
+            config.auth_password_hash = replacement_hash
+            _sessions.clear()
+        _save_auth_state(config, rotate)
         return api_envelope({"changed": True})
 
     @app.middleware("http")

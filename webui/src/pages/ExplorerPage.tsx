@@ -50,7 +50,7 @@ type CoverageView = {
 };
 
 const barColumns: ColumnDef<Bar>[] = [
-  { accessorKey: "bar_ts", header: "Timestamp", cell: info => <span className="mono">{String(info.getValue())}</span> },
+  { accessorKey: "bar_ts", header: "Timestamp", cell: info => <TimeDisplay value={String(info.getValue())} /> },
   { accessorKey: "open", header: "Open" },
   { accessorKey: "high", header: "High" },
   { accessorKey: "low", header: "Low" },
@@ -60,7 +60,7 @@ const barColumns: ColumnDef<Bar>[] = [
 const economicColumns: ColumnDef<EconomicObservation>[] = [
   { accessorKey: "observation_date", header: "Observation" },
   { accessorKey: "value", header: "Value", cell: info => String(info.getValue() ?? "—") },
-  { accessorKey: "release_ts", header: "Release", cell: info => String(info.getValue() ?? "—") },
+  { accessorKey: "release_ts", header: "Release", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
   { accessorKey: "frequency", header: "Frequency", cell: info => String(info.getValue() ?? "—") },
   { accessorKey: "units", header: "Units", cell: info => String(info.getValue() ?? "—") },
 ];
