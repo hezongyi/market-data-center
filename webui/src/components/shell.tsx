@@ -24,6 +24,7 @@ export function AppShell({ tab, onTab, health, apiKey, onApiKey, onRefresh, mess
   const client = createDataCenterClient(apiKey);
   useEffect(() => { void client.auth.me().then(result => { setUsername(result.data.username); setLoggedIn(true); }).catch(() => setLoggedIn(false)); }, [apiKey]);
   const login = async () => { try { const result = await client.auth.login(username, password); setUsername(result.data.username); setLoggedIn(true); setPassword(""); setAuthError(""); } catch (error) { setAuthError(error instanceof Error ? error.message : "Login failed"); } };
+  const initialize = async () => { try { await client.auth.initialize(username, password); setAuthMessage(t("Initialized. Sign in.")); setAuthError(""); } catch (error) { setAuthError(error instanceof Error ? error.message : "Initialization failed"); } };
   const changePassword = async () => { try { await client.auth.changePassword(currentPassword, newPassword); setLoggedIn(false); setCurrentPassword(""); setNewPassword(""); setAuthError(""); setAuthMessage(t("Password changed. Sign in again.")); } catch (error) { setAuthError(error instanceof Error ? error.message : "Password change failed"); } };
   const [collapsed, setCollapsed] = useState(false); const title = tab === "overview" ? "Good morning, data center" : items.find(item => item.key === tab)?.label ?? tab;
   const freshness = freshnessOf(health);
