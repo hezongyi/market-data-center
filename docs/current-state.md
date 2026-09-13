@@ -43,4 +43,4 @@
 1. yfinance macro-daily 数据域迁移。
 2. economic PIT/current consumer 全量切换。
 3. Dukascopy 历史 provider gap 不补造；高周期完整历史覆盖不作为已完成条件。
-4. `v0.3.0` 的 post-release rehearsal（clean-tag 安装、API/worker 启动、smoke、browser acceptance、回滚到 `v0.2.0`）尚未执行，回执落盘后需更新 `docs/release-checklist.md`。
+4. 1m maintenance 的 `failed` 语义待收敛：provider gap 的 gap-repair 窗口会以 `ValueError` 升级为 target/run 级 `failed`（`#57` 只对派生路径做了 `degraded` 分级），导致生产每约 16 分钟稳定报 `result=failed`；数据本身 `quality_status=pass`，未被伪造或丢失。

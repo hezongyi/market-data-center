@@ -24,7 +24,12 @@ Final evidence PR #5 merged as protected-main commit `54f002580a5c72cdd3da57ef12
 
 Release preparation PR #62 merged as protected-main commit `ec79720f65bdf6251d48fb3de0c7b4b2de9b6991`; post-merge `Checks` run `34729985896` passed the Python 3.10, 3.11, and 3.12 backend jobs, the Node 22 browser job, and aggregate `verify`. Local unified CI (`bash scripts/ci.sh all`) produced a passing `operational-receipt.v1` receipt at that commit: 174 tests, Ruff, dependency/compatibility/secret checks, Web build, isolated browser acceptance (29 checks at 1440/390), and service acceptance. `Dependency Refresh` run `34729925217` regenerated all three committed constraints byte-identically and passed the Python matrix plus service and browser acceptance. Annotated tag `v0.3.0` points immutably to that commit, and `Release` run `34730111851` published the GitHub release with `release-receipt.json`.
 
-Post-release rehearsal (clean-tag install, API/worker start, smoke, browser acceptance, and rollback to `v0.2.0`) has not yet been performed for `v0.3.0`. This section must be updated with its receipt location once it runs.
+Post-release rehearsal performed on 2026-09-13 with isolated roots and ephemeral ports; no production release root, systemd unit, or deployment activation was touched. Receipt: `operations/post_release_rehearsal/post-release-rehearsal.json` under the `release-closure-v0.3.0` evidence root. Clean `v0.3.0` checkout (`ec79720`) installed from `backend/constraints/py311.txt` and passed unified CI (174 tests, service acceptance, browser acceptance 29 checks at 1440/390). Rollback checkout `v0.2.0` (`54f00258`) installed from its committed constraints and passed unified CI (87 tests, service acceptance including smoke, browser acceptance at 1440/390). Raw per-leg receipts are retained alongside the rehearsal receipt.
+
+Two environment caveats apply when reproducing this rehearsal:
+
+- `v0.2.0`'s `scripts/ci.sh` predates the Chromium cache auto-discovery fix (`a11ecff`); `PLAYWRIGHT_BROWSER_EXECUTABLE` must be exported as described in `AGENTS.md`, otherwise browser acceptance looks for an absent managed `chromium_headless_shell` and fails.
+- `scripts/operations_acceptance.py` asserts that `CapacityPolicy(warning_free_ratio=0.99)` reports `warning`, which requires the filesystem backing `tempfile.gettempdir()` to be more than 1% occupied. On a completely free tmpfs the gate reports `ok` and the drill raises `RuntimeError("warning policy did not block broad backfill")`. This reproduces identically on `v0.2.0` and `v0.3.0`, so it is a harness defect rather than a release or rollback defect, and hosted CI does not expose it because runner `/tmp` is not empty.
 
 ## Release procedure
 
