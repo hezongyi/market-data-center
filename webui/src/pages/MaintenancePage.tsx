@@ -210,30 +210,30 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
 
   return <>
     <section className="panel" aria-label="Maintenance task form">
-      <PanelHeading eyebrow="Data maintenance" title="Create a maintenance task"
+      <PanelHeading eyebrow={t("Data maintenance")} title={t("Create a maintenance task")}
         action={<StatusBadge tone={capabilitiesUnavailable ? "bad" : derivedWriteTone(capabilities.data?.write_status)}>
           {capabilitiesUnavailable ? "Capabilities unavailable"
             : capabilities.data?.write_status === "protected" ? "Writes protected" : "Writes available"}
         </StatusBadge>} />
       <FilterBar>
-        <label>Task template<select aria-label="Task template" value={selectedTemplate}
+        <label>{t("Task template")}<select aria-label="Task template" value={selectedTemplate}
           onChange={event => applyTemplate(event.target.value)}>
           <option value="">— none —</option>
           {templates.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
         </select></label>
-        <label>Template name<input aria-label="Template name" value={templateName}
+        <label>{t("Template name")}<input aria-label="Template name" value={templateName}
           onChange={event => setTemplateName(event.target.value)} placeholder="nightly dukascopy 1m" /></label>
         <button className="secondary-button" onClick={() => {
           setTemplates(saveTemplate(templateName, task));
           setSelectedTemplate(templateName.trim());
           setTemplateName("");
           onMessage("Template saved in this browser; it is re-validated on every use.");
-        }} disabled={!templateName.trim()}>Save template</button>
+        }} disabled={!templateName.trim()}>{t("Save template")}</button>
         <button className="secondary-button" onClick={() => {
           if (!selectedTemplate) return;
           setTemplates(deleteTemplate(selectedTemplate));
           setSelectedTemplate("");
-        }} disabled={!selectedTemplate}>Delete template</button>
+        }} disabled={!selectedTemplate}>{t("Delete template")}</button>
         <span className="filter-note">Templates hold parameters only, never credentials, and stay in this browser.</span>
       </FilterBar>
 
@@ -250,10 +250,10 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       </div>
 
       <FilterBar>
-        <label>Run scope<select aria-label="Run scope" value={runScope} onChange={event => setRunScope(event.target.value)}>
+        <label>{t("Run scope")}<select aria-label="Run scope" value={runScope} onChange={event => setRunScope(event.target.value)}>
           {runScopeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select></label>
-        <label>Provider<select aria-label="Task provider" value={provider}
+        <label>{t("Provider")}<select aria-label="Task provider" value={provider}
           onChange={event => { setProvider(event.target.value); mutation.reset(); }}>
           <option value="fred">fred (economic series)</option>
           {providers.map(item => <option key={item.provider} value={item.provider}>{item.provider}</option>)}
@@ -265,21 +265,21 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
             <label>Asset class<input aria-label="Asset class" value={assetClass} placeholder="auto"
               onChange={event => setAssetClass(event.target.value)} /></label>
           </>}
-        <label>Timeframe<select aria-label="Task timeframe" value={timeframe} onChange={event => setTimeframe(event.target.value)}>
+        <label>{t("Timeframe")}<select aria-label="Task timeframe" value={timeframe} onChange={event => setTimeframe(event.target.value)}>
           {timeframes.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Start (UTC)<input aria-label="Task start date" type="date" value={start} onChange={event => setStart(event.target.value)} /></label>
-        <label>End (UTC)<input aria-label="Task end date" type="date" value={end} onChange={event => setEnd(event.target.value)} /></label>
-        <label>Schedule<select aria-label="Task schedule" value={schedule} onChange={event => setSchedule(event.target.value as typeof schedule)}><option value="manual">Manual</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select></label>
+        <label>{t("Start (UTC)")}<input aria-label="Task start date" type="date" value={start} onChange={event => setStart(event.target.value)} /></label>
+        <label>{t("End (UTC)")}<input aria-label="Task end date" type="date" value={end} onChange={event => setEnd(event.target.value)} /></label>
+        <label>{t("Schedule")}<select aria-label="Task schedule" value={schedule} onChange={event => setSchedule(event.target.value as typeof schedule)}><option value="manual">Manual</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select></label>
       </FilterBar>
 
       {definition.dataset === "market_bars" && <FilterBar>
-        <label>Recipe<select aria-label="Recipe" value={recipeId} onChange={event => setRecipeId(event.target.value)}>
+        <label>{t("Recipe")}<select aria-label="Recipe" value={recipeId} onChange={event => setRecipeId(event.target.value)}>
           {recipes.map(item => <option key={`${item.recipe_id}@${item.recipe_version}`} value={item.recipe_id}>{item.recipe_id}</option>)}
           {!recipes.length && <option value={recipeId}>{recipeId}</option>}
         </select></label>
-        <label>Recipe version<input aria-label="Recipe version" value={recipeVersion} onChange={event => setRecipeVersion(event.target.value)} /></label>
-        <label>Price basis<select aria-label="Price basis" value={priceBasis} onChange={event => setPriceBasis(event.target.value)}>
+        <label>{t("Recipe version")}<input aria-label="Recipe version" value={recipeVersion} onChange={event => setRecipeVersion(event.target.value)} /></label>
+        <label>{t("Price basis")}<select aria-label="Price basis" value={priceBasis} onChange={event => setPriceBasis(event.target.value)}>
           {(recipe?.price_bases.length ? recipe.price_bases : selectedProvider?.price_bases ?? ["raw"]).map(value =>
             <option key={value} value={value}>{value}</option>)}
         </select></label>
@@ -292,7 +292,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
         <button className="primary-button" onClick={() => void review()} disabled={mutation.state === "validating" || locked}>
           {mutation.state === "validating" ? "Validating…" : "Validate and preview"}
         </button>
-        <button className="secondary-button" onClick={() => { mutation.reset(); onMessage(""); }}>Clear</button>
+        <button className="secondary-button" onClick={() => { mutation.reset(); onMessage(""); }}>{t("Clear")}</button>
         {locked && <span className="inline-warning" role="status"><Lock size={14} /> Write requests need a valid API key. Open Session access and try again.</span>}
         {protectedWrite && !locked && <span className="inline-warning" role="status"><ShieldAlert size={14} /> Capacity protection blocks this task.</span>}
       </div>
@@ -309,11 +309,11 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label><label>Dataset<select value={taskDatasetFilter} onChange={event => setTaskDatasetFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.dataset_id))).map(dataset => <option key={dataset} value={dataset}>{dataset}</option>)}</select></label><label>Kind<select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.run_kind))).map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label></FilterBar>
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => (!taskFilter || task.status === taskFilter) && (!taskDatasetFilter || task.dataset_id === taskDatasetFilter) && (!taskKindFilter || task.run_kind === taskKindFilter))} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
-    {selectedRegistryTask && <DetailDrawer title="Maintenance task details" onClose={() => setSelectedRegistryTask(null)}>
-      <dl className="detail-list"><div><dt>Task ID</dt><dd><CopyId value={selectedRegistryTask.task_id} /></dd></div><div><dt>Dataset</dt><dd>{selectedRegistryTask.dataset_id}</dd></div><div><dt>Kind</dt><dd>{selectedRegistryTask.run_kind}</dd></div><div><dt>Status</dt><dd><StatusBadge tone={tone(selectedRegistryTask.status)}>{selectedRegistryTask.status}</StatusBadge></dd></div><div><dt>Schedule</dt><dd>{selectedRegistryTask.schedule ?? "—"}</dd></div><div><dt>Next run</dt><dd><TimeDisplay value={selectedRegistryTask.next_run_at} /></dd></div><div><dt>Recent run</dt><dd>{selectedRegistryTask.recent_run_id ? <CopyId value={selectedRegistryTask.recent_run_id} /> : "—"}</dd></div><div><dt>Recent error</dt><dd>{selectedRegistryTask.recent_error ?? "—"}</dd></div></dl>
+    {selectedRegistryTask && <DetailDrawer title={t("Maintenance task details")} onClose={() => setSelectedRegistryTask(null)}>
+      <dl className="detail-list"><div><dt>Task ID</dt><dd><CopyId value={selectedRegistryTask.task_id} /></dd></div><div><dt>Dataset</dt><dd>{selectedRegistryTask.dataset_id}</dd></div><div><dt>Kind</dt><dd>{selectedRegistryTask.run_kind}</dd></div><div><dt>Status</dt><dd><StatusBadge tone={tone(selectedRegistryTask.status)}>{selectedRegistryTask.status}</StatusBadge></dd></div><div><dt>{t("Schedule")}</dt><dd>{selectedRegistryTask.schedule ?? "—"}</dd></div><div><dt>Next run</dt><dd><TimeDisplay value={selectedRegistryTask.next_run_at} /></dd></div><div><dt>Recent run</dt><dd>{selectedRegistryTask.recent_run_id ? <CopyId value={selectedRegistryTask.recent_run_id} /> : "—"}</dd></div><div><dt>Recent error</dt><dd>{selectedRegistryTask.recent_error ?? "—"}</dd></div></dl>
     </DetailDrawer>}
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
-      <PanelHeading eyebrow="Live activity" title="Submitted tasks"
+      <PanelHeading eyebrow="Live activity" title={t("Submitted tasks")}
         action={<TrackBadge state={tracker.state} />} />
       <DataTable data={submissions} columns={submissionColumns} empty="No maintenance task submitted in this session." />
       {tracker.runs.length > 0 && <ul className="track-list" aria-label="Tracked runs">
