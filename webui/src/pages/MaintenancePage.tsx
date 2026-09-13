@@ -4,10 +4,10 @@ import {
   Activity, AlertTriangle, CalendarClock, CheckCircle2, Database, FileCheck2, Hammer,
   Layers, Lock, PlayCircle, RefreshCw, ShieldAlert, Sigma, Waves, XCircle,
 } from "lucide-react";
-import { DataTable, DetailDrawer, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
+import { CopyId, DataTable, DetailDrawer, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { deleteTemplate, loadTemplates, saveTemplate, type TaskTemplate } from "../lib/templates";
 import { useMaintenanceMutation, useQuery, useRunTracker, runScopeOptions, type WriteState } from "../hooks";
-import type { MaintenanceTaskRequest, QueuedEnvelope, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
+import type { MaintenanceTaskRequest, QueuedEnvelope, Run, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
 import type { Services } from "../services";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -78,6 +78,14 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     onChanged();
   });
   const tracker = useRunTracker(services, tracked);
+  const maintenanceRuns = useQuery(() => services.runs.list({ run_scope: "maintenance" }, null, 50), [services, apiKey, submissions.length]);
+  const maintenanceColumns = useMemo<ColumnDef<Run>[]>(() => [
+    { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
+    { accessorKey: "dataset_id", header: "Dataset" },
+    { accessorKey: "run_kind", header: "Kind" },
+    { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
+    { accessorKey: "created_at", header: "Created", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+  ], []);
 
   // The platform publishes which dataset each run kind can target; the console
   // disables the combinations it cannot serve instead of letting the operator
@@ -284,6 +292,10 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     {mutation.preview && <PreviewPanel preview={mutation.preview} state={mutation.state} warnings={mutation.warnings}
       onConfirm={() => void mutation.submit()} onEdit={mutation.edit} submitting={mutation.state === "queued"} />}
 
+    <section className="panel" aria-label="Maintenance task list">
+      <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceRuns.reload()}>Refresh</button>} />
+      {maintenanceRuns.status === "loading" ? <LoadingSkeleton rows={3} /> : <DataTable data={maintenanceRuns.data?.items ?? []} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
+    </section>
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
       <PanelHeading eyebrow="Live activity" title="Submitted tasks"
         action={<TrackBadge state={tracker.state} />} />
