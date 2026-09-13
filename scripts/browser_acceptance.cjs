@@ -267,7 +267,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       assert.equal(denied.status, 401);
       assert.equal(denied.body.errors[0].code, "unauthorized");
       const acknowledgeDialog = page.getByRole("dialog", { name: "Acknowledge dead letter?" });
-      await acknowledgeDialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
+      await acknowledgeDialog.getByRole("button", { name: "Cancel", exact: true }).click();
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.getByRole("dialog", { name: "Acknowledge dead letter?" }).getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.locator(".notice").filter({ hasText: `Acknowledged ${deadLetterId}` }).waitFor();
