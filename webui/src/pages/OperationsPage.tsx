@@ -117,7 +117,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
   const recentReceipts = receipts.data?.receipts ?? [];
 
   const auditColumns = useMemo<ColumnDef<OperationAuditEntry>[]>(() => [
-    { accessorKey: "at", header: "Time", cell: info => <span className="mono">{String(info.getValue())}<small>{utc(String(info.getValue()))}</small></span> },
+    { accessorKey: "at", header: "Time", cell: info => <span className="mono">{utc(String(info.getValue()))}</span> },
     { accessorKey: "action", header: "Action" },
     { accessorKey: "actor", header: "Actor", cell: info => <span className="mono" title="Non-reversible actor fingerprint; never a credential.">{String(info.getValue() ?? "—")}</span> },
     { accessorKey: "task_id", header: "Task", cell: info => <span className="mono">{String(info.getValue() ?? "—")}</span> },
@@ -136,7 +136,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
 
   const eventColumns = useMemo<ColumnDef<CapacityEvent>[]>(() => [
     { accessorKey: "event", header: "Event", cell: info => <StatusBadge tone={eventTone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
-    { accessorKey: "created_at", header: "Recorded", cell: info => <span className="mono">{String(info.getValue() ?? "—")}<small>{utc(info.getValue() as string | null)}</small></span> },
+    { accessorKey: "created_at", header: "Recorded", cell: info => <span className="mono">{utc(info.getValue() as string | null)}</span> },
     { accessorKey: "free_ratio", header: "Free ratio", cell: info => percent(info.getValue() as number | null) },
     { accessorKey: "status", header: "Status", cell: info => String(info.getValue() ?? "—") },
     { id: "thresholds", header: "Thresholds", cell: ({ row }) => `warning ${percent(row.original.warning_free_ratio)} · critical ${percent(row.original.critical_free_ratio)}` },
