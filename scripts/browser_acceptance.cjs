@@ -263,7 +263,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
       // The isolated page fetch shim supplies the valid key; exercise the
       // invalid path with a direct request so the confirmation dialog remains open.
-      const denied = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({}) }); return { status: response.status, body: await response.json() }; });
+      const denied = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-02T00:00:00Z"}) }); return { status: response.status, body: await response.json() }; });
       assert.equal(denied.status, 401);
       assert.equal(denied.body.errors[0].code, "unauthorized");
       const acknowledgeDialog = page.getByRole("dialog", { name: "Acknowledge dead letter?" });
