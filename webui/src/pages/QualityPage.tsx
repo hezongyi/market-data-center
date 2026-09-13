@@ -387,7 +387,7 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
     { id: "observed", header: "Observed", cell: ({ row }) => utcPosition(observedOf(row.original)) },
     { accessorKey: "run_id", header: "Run", cell: info => {
       const runId = info.getValue() as string | undefined;
-      return runId ? <span className="mono">{runId}</span> : <span className="filter-note">not recorded</span>;
+      return runId ? <CopyId value={runId} /> : <span className="filter-note">not recorded</span>;
     } },
     { id: "state", header: "State", cell: ({ row }) => {
       const state = stateOf(row.original);

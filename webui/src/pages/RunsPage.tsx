@@ -206,7 +206,7 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <div><dt>Rows</dt><dd>{run.row_count ?? "—"}</dd></div>
       <div><dt>Extent</dt><dd className="mono"><TimeDisplay value={run.min_ts ?? run.min_date} /> → <TimeDisplay value={run.max_ts ?? run.max_date} /></dd></div>
       <div><dt>Manifest</dt><dd>{run.manifest_status}</dd></div>
-      <div><dt>Output hash</dt><dd className="mono">{run.output_hash?.slice(0, 16) ?? "—"}</dd></div>
+      <div><dt>Output hash</dt><dd>{run.output_hash ? <CopyId value={run.output_hash} /> : "—"}</dd></div>
       <div><dt>Findings</dt><dd>{run.finding_count}</dd></div>
       <div><dt>Attempts</dt><dd>{run.attempt_count ?? 0} · retries {run.retry_count ?? 0}</dd></div>
       <div><dt>Created</dt><dd>{utc(run.created_at)}</dd></div>
