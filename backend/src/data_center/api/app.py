@@ -192,6 +192,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return {"data": {"username": username}, "meta": {"schema_version": "v1"}, "errors": []}
 
+    @app.post(f"{config.api_prefix}/auth/initialize")
+    def auth_initialize(payload: dict, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        """Set the first operator password exactly once.
+
+        A configured API key is required to bootstrap a password.  Loopback
+        development instances may bootstrap without one; non-loopback
+        deployments are already required to configure an API key by Settings.
+        """
+        if config.auth_password_hash:
+            raise HTTPException(status_code=409, detail="authentication is already initialized")
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
+            raise HTTPException(status_code=401, detail="invalid api key")
+        username = str(payload.get("username") or config.auth_username).strip()
+        password = str(payload.get("password") or "")
+        if username != config.auth_username or len(password) < 12:
+            raise HTTPException(status_code=422, detail="username or password does not meet requirements")
+        config.auth_password_hash = _password_hash(password)
+        return api_envelope({"initialized": True, "username": username})
+
     @app.post(f"{config.api_prefix}/auth/logout")
     def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
         if session: _sessions.pop(session, None)
@@ -206,7 +225,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/auth/change-password")
     def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session")):
-        require_api_key(config, None, session)
+        if not session or session not in _sessions or _sessions[session][1] <= time.time():
+            raise HTTPException(status_code=401, detail="not authenticated")
         current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
         if not _password_ok(current, config.auth_password_hash) or len(replacement) < 12:
             raise HTTPException(status_code=422, detail="invalid password change")

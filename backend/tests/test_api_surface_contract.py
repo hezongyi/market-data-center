@@ -51,6 +51,7 @@ class RoutePolicy:
 # decision stays visible instead of implied.
 MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/auth/login"): RoutePolicy(False, False, {"username": "admin", "password": "bad"}, expect_status=401),
+    ("POST", "/api/v1/auth/initialize"): RoutePolicy(False, False, {"username": "admin", "password": "short"}, expect_status=422),
     ("POST", "/api/v1/auth/logout"): RoutePolicy(False, False, expect_status=200),
     ("POST", "/api/v1/auth/change-password"): RoutePolicy(True, False, {"current_password": "bad", "new_password": "bad"}, expect_status=401),
     ("POST", "/api/v1/maintenance/plans"): RoutePolicy(

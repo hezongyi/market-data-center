@@ -633,6 +633,8 @@ export function createDataCenterClient(apiKey: string) {
       login: (username: string, password: string) => request<{ username: string }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
       logout: () => request<{ logged_out: boolean }>("/auth/logout", { method: "POST" }),
       me: () => request<{ username: string; expires_at: number }>("/auth/me"),
+      initialize: (username: string, password: string) => request<{ initialized: boolean; username: string }>("/auth/initialize", { method: "POST", body: JSON.stringify({ username, password }) }),
+      changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
     },
     // Readiness intentionally accepts HTTP 503: the API returns structured degraded state
     // so the console can keep reads visible while protecting writes when necessary.
