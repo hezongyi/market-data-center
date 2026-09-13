@@ -4,9 +4,10 @@
 
 1. [当前状态](current-state.md)：生产 deployment、数据 ownership、consumer 迁移矩阵和未完成事项。
 2. [Operations runbook](operations-runbook.md)：部署、健康检查、维护、容量和回滚操作。
-3. [现行 specs](specs/)：按日期和状态查看设计规范；`superseded` 文档仅作历史背景。
-4. [API/WebUI contract](api-and-webui-contract.md)、[dataset contract](dataset-contract.md)、[ingest contract](ingest-contract.md)：接口和数据不变量。
-5. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
+3. [WebUI 使用手册](webui-user-guide.md)：控制台各工作区的用途、操作步骤、状态语义与故障排查（面向使用者）。
+4. [现行 specs](specs/)：按日期和状态查看设计规范；`superseded` 文档仅作历史背景。
+5. [API/WebUI contract](api-and-webui-contract.md)、[dataset contract](dataset-contract.md)、[ingest contract](ingest-contract.md)：接口和数据不变量。
+6. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
 
 ## 状态规则
 
