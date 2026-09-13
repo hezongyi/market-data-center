@@ -60,7 +60,15 @@ from data_center.storage.query import (
 
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
-_sessions: dict[str, str] = {}
+_sessions: dict[str, tuple[str, float]] = {}
+
+def _password_ok(password: str, encoded: str | None) -> bool:
+    if not encoded: return False
+    try:
+        salt, expected = encoded.split("$", 1)
+        actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError): return False
 
 
 def current_request_id():
@@ -70,7 +78,9 @@ def current_request_id():
 def require_api_key(config: Settings, provided: str | None, session: str | None = None) -> None:
     """Apply the service-wide write-authentication policy."""
     session = session or _session_id.get()
-    if config.api_key and not hmac.compare_digest(provided or "", config.api_key) and session not in _sessions:
+    valid_session = bool(session and session in _sessions and _sessions[session][1] > time.time())
+    if session and not valid_session: _sessions.pop(session, None)
+    if config.api_key and not hmac.compare_digest(provided or "", config.api_key) and not valid_session:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -172,11 +182,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(f"{config.api_prefix}/auth/login")
     def auth_login(payload: dict, response: Response):
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
-        expected = config.auth_password or config.api_key
-        if username != config.auth_username or not expected or not hmac.compare_digest(password, expected):
+        if username != config.auth_username or not _password_ok(password, config.auth_password_hash):
             raise HTTPException(status_code=401, detail="invalid credentials")
-        token = secrets.token_urlsafe(32); _sessions[token] = username
-        response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=False, max_age=86400)
+        token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds)
+        response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return {"data": {"username": username}, "meta": {"schema_version": "v1"}, "errors": []}
 
     @app.post(f"{config.api_prefix}/auth/logout")
