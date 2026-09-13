@@ -57,7 +57,7 @@ This file applies to the whole repository. Read the referenced release and opera
 - Claim before working, one owner per issue, and release the claim when you stop. Use `python scripts/agent_claim.py list --claimable`, `claim`, `progress`, `release`, and `annotate` instead of hand-rolling the API calls.
 - Report issues with evidence: a `file:line` reference or a reproducible command with its output, plus the baseline (version, commit, deployment id). Never present "not found" as "does not exist".
 - An issue reported by an agent is declared as such (label `agent-reported` plus the invisible `agent-report` metadata block). The GitHub author is the credential owner, not the agent.
-- **Agent-authored pull requests require a human maintainer's approval before merge.** A green `verify` run is necessary but not sufficient.
+- PRs use a two-level merge gate defined in `docs/agent-collaboration.md`. Small, scoped PRs may merge after the required automated gates and review pass. Spec-completion PRs and any change touching authentication, data migration, core contracts, or production behavior require a risk summary and the maintainer's explicit verbal approval before merge. Record that approval in the PR conversation. Production release always requires a separate approval.
 
 ## Release Operations
 
