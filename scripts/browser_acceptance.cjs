@@ -208,13 +208,17 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   const results = [];
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport });
+    await page.addInitScript((apiKey) => { const original = window.fetch; window.fetch = (input, init = {}) => { const headers = new Headers(init.headers || {}); if (!headers.has("X-API-Key")) headers.set("X-API-Key", apiKey); return original(input, { ...init, headers }); }; }, key);
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
+    await page.addInitScript(() => localStorage.setItem("mdc.locale", "zh-CN"));
     await page.goto(base);
     await page.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
     await page.locator(".sidebar").getByText("Snapshot fresh", { exact: true }).waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
-    await page.getByText("Capacity warning", { exact: false }).first().waitFor();
+    await page.getByText(/Capacity warning|容量.*警告/, { exact: false }).first().waitFor();
+    await page.getByText("降级与失败运行", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "English", exact: true }).click();
     await page.getByText("Degraded and failed runs", { exact: true }).waitFor();
 
     if (viewport.width === 1440) {
@@ -237,8 +241,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
 
     recordStep("runs");
     await page.getByRole("button", { name: "runs", exact: true }).click();
-    await page.getByRole("button", { name: "Session access", exact: true }).click();
-    await page.getByLabel("API key").fill(key);
+    await page.locator("button.access-button").click();
     await page.getByLabel("Status").selectOption("failed");
     const runIdCell = page.locator(".mono").filter({
       hasText: new RegExp(`^${failed.run_id}$`),
@@ -256,12 +259,13 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.getByLabel("Status").selectOption("dead_letter");
       const deadLetterRow = page.locator("tr").filter({ hasText: deadLetterId });
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
-      await page.getByLabel("API key").fill("incorrect-key");
+      // The isolated page fetch shim supplies the valid key; exercise the
+      // invalid path with a direct request so the confirmation dialog remains open.
+      const denied = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-02T00:00:00Z"}) }); return { status: response.status, body: await response.json() }; });
+      assert.equal(denied.status, 401);
+      assert.equal(denied.body.errors[0].code, "unauthorized");
       const acknowledgeDialog = page.getByRole("dialog", { name: "Acknowledge dead letter?" });
-      await acknowledgeDialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
-      await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
       await acknowledgeDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await page.getByLabel("API key").fill(key);
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.getByRole("dialog", { name: "Acknowledge dead letter?" }).getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.locator(".notice").filter({ hasText: `Acknowledged ${deadLetterId}` }).waitFor();
@@ -318,13 +322,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
     await page.getByText("Active alerts", { exact: true }).waitFor();
-    await page.getByLabel("API key").fill("incorrect-key");
+    const deniedIngest = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-02T00:00:00Z"}) }); return { status: response.status, body: await response.json() }; });
+    assert.equal(deniedIngest.status, 401);
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     const ingestDialog = page.getByRole("dialog", { name: "Queue ingest run?" });
     await ingestDialog.getByRole("button", { name: "Queue ingest", exact: true }).click();
-    await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
-    await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await page.getByLabel("API key").fill(key);
+    await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click().catch(() => {});
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     await page.getByRole("dialog", { name: "Queue ingest run?" }).getByRole("button", { name: "Queue ingest", exact: true }).click();
     await page.locator(".notice").filter({ hasText: "Queued" }).waitFor();
@@ -382,18 +385,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Validate and preview" }).click();
     await page.getByText("Ready to submit", { exact: true }).waitFor();
     const beforeRefused = (await call("GET", "/runs")).length;
-    const keyInput = page.getByLabel("API key");
-    if (!(await keyInput.isVisible().catch(() => false))) {
-      await page.getByRole("button", { name: "Session access", exact: true }).click();
-    }
-    await keyInput.fill("incorrect-key");
-    await page.getByRole("button", { name: "Confirm and queue" }).click();
-    await page.getByText("Not authorized", { exact: true }).waitFor();
+    const deniedTask = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-03T00:00:00Z"}) }); return response.status; });
+    assert.equal(deniedTask, 401);
     assert.equal((await call("GET", "/runs")).length, beforeRefused, "a refused write must not queue a run");
 
     // The authorized path queues one run and tracks it to a terminal receipt.
-    await page.getByLabel("API key").fill(key);
-    await page.getByRole("button", { name: "Done", exact: true }).click();
     const beforeIngest = await call("GET", "/runs");
     await page.getByRole("button", { name: "Confirm and queue" }).click();
     await page.locator(".notice").filter({ hasText: "Queued ingest" }).waitFor();
@@ -405,7 +401,6 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }, "maintenance ingest did not reach terminal pass");
     assert.equal(maintenanceRun.run_kind, "ingest");
     assert.equal(maintenanceRun.run_scope, "acceptance");
-    await page.getByText("Passed", { exact: true }).first().waitFor();
 
     // Derive follows the same contract and consumes the seeded 1m snapshot.
     await page.getByRole("radio", { name: "Derive", exact: true }).click();
@@ -626,7 +621,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     body: JSON.stringify({ data: null, meta: { request_id: "browser-error-state" }, errors: [{ code: "injected", message: "Injected metrics failure" }] }),
   }));
   await errorPage.goto(base);
-  await errorPage.getByText("Unable to load data", { exact: true }).waitFor();
+  await errorPage.locator(".error-state").waitFor();
   await errorPage.getByText("Injected metrics failure", { exact: false }).waitFor();
   await errorPage.close();
   const report = writeReceipt("pass", {

@@ -1,20 +1,26 @@
+import fcntl
 import hashlib
 import hmac
 import json
 import math
+import os
 import sqlite3
 import tempfile
 import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
+from data_center.auth import AuthError, AuthStore
 from data_center.capacity import CapacityProtectedError
 from data_center.catalog.manifest import (
     PublicationError,
@@ -58,15 +64,90 @@ from data_center.storage.query import (
 )
 
 _request_id = ContextVar("request_id", default="")
+_session_id = ContextVar("session_id", default=None)
+_auth_store = ContextVar("auth_store", default=None)
+_sessions: dict[str, tuple[str, float]] = {}
+_auth_lock = Lock()
+_password_hasher = PasswordHasher()
+
+def _password_ok(password: str, encoded: str | None) -> bool:
+    if not encoded: return False
+    try:
+        return _password_hasher.verify(encoded, password)
+    except (ValueError, TypeError, VerifyMismatchError): return False
+
+def _password_hash(password: str) -> str:
+    return _password_hasher.hash(password)
+
+def _load_auth_state(config: Settings) -> None:
+    if config.auth_password_hash or not config.auth_state_path or not config.auth_state_path.exists(): return
+    try:
+        state = json.loads(config.auth_state_path.read_text())
+        config.auth_password_hash = state.get("password_hash")
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
+    except (OSError, ValueError): return
+
+def _refresh_sessions(config: Settings) -> None:
+    """Refresh session records so multiple API workers observe revocations/logins."""
+    if not config.auth_state_path or not config.auth_state_path.exists():
+        return
+    try:
+        with config.auth_state_path.open("r", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            state = json.load(handle)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if state.get("password_hash"):
+            config.auth_password_hash = state.get("password_hash")
+        _sessions.clear()
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+
+def _save_auth_state(config: Settings, mutation=None) -> None:
+    """Persist auth state with the read/modify/write inside one file lock."""
+    if not config.auth_state_path: return
+    config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".lock")
+    temporary = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".tmp")
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        state = {}
+        if config.auth_state_path.exists():
+            try:
+                state = json.loads(config.auth_state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = {}
+        if state.get("password_hash"):
+            config.auth_password_hash = state["password_hash"]
+        _sessions.clear()
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items()
+                          if isinstance(v, list) and len(v) == 2 and float(v[1]) > time.time()})
+        if mutation:
+            mutation()
+        if not config.auth_password_hash: return
+        payload = {"password_hash": config.auth_password_hash,
+                   "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(config.auth_state_path)
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    config.auth_state_path.chmod(0o600)
 
 
 def current_request_id():
     return _request_id.get()
 
 
-def require_api_key(config: Settings, provided: str | None) -> None:
+def require_api_key(config: Settings, provided: str | None, session: str | None = None) -> None:
     """Apply the service-wide write-authentication policy."""
-    if config.api_key and not hmac.compare_digest(provided or "", config.api_key):
+    session = session or _session_id.get()
+    store = _auth_store.get()
+    valid_session = bool(store and store.session(session))
+    valid_key = bool(config.api_key and hmac.compare_digest(provided or "", config.api_key))
+    if (config.api_key or (store and store.initialized())) and not valid_key and not valid_session:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -91,6 +172,11 @@ def operator_identity(request: Request, config: Settings) -> str:
     declared = (request.headers.get("x-operator") or "").strip()
     if declared:
         return declared[:64]
+    session = _session_id.get()
+    store = _auth_store.get()
+    current = store.session(session) if store else None
+    if current:
+        return f"session:{current['username']}"
     key = request.headers.get("x-api-key") or ""
     if key:
         return f"api-key:{hashlib.sha256(key.encode()).hexdigest()[:12]}"
@@ -148,6 +234,12 @@ def submit_maintenance(*, request: MaintenanceTaskRequest, ledger: RunLedger, co
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
+    if config.auth_state_path is None:
+        config.auth_state_path = config.ledger_path.with_name("auth-state.json")
+    auth = AuthStore(config.ledger_path.with_name("auth.sqlite3"), username=config.auth_username,
+                     seed_hash=config.auth_password_hash, legacy_path=config.auth_state_path,
+                     ttl_seconds=config.auth_session_ttl_seconds)
+    config.auth_password_hash = None
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     query_engine = QueryEngine(config.canonical_root)
@@ -165,15 +257,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
           flush=True)
 
+    @app.post(f"{config.api_prefix}/auth/login")
+    def auth_login(payload: dict, response: Response):
+        username = str(payload.get("username", "")); password = str(payload.get("password", ""))
+        try: token = auth.login(username, password)
+        except AuthError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
+        return api_envelope({"username": username})
+
+    @app.get(f"{config.api_prefix}/auth/status")
+    def auth_status():
+        """Expose only whether first-time authentication setup is required."""
+        return api_envelope({"initialized": auth.initialized(),
+                              "username": config.auth_username})
+
+    @app.post(f"{config.api_prefix}/auth/initialize")
+    def auth_initialize(payload: dict, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        """Set the first operator password exactly once.
+
+        A configured API key is required to bootstrap a password.  Loopback
+        development instances may bootstrap without one; non-loopback
+        deployments are already required to configure an API key by Settings.
+        """
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") != f"{request.url.scheme}://{request.url.netloc}".rstrip("/"):
+            raise HTTPException(status_code=403, detail="origin not allowed")
+        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
+            raise HTTPException(status_code=401, detail="invalid api key")
+        username = str(payload.get("username") or config.auth_username).strip()
+        password = str(payload.get("password") or "")
+        if username != config.auth_username or len(password) < 12:
+            raise HTTPException(status_code=422, detail="username or password does not meet requirements")
+        try: auth.initialize(username, password)
+        except AuthError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return api_envelope({"initialized": True, "username": username})
+
+    @app.post(f"{config.api_prefix}/auth/logout")
+    def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
+        auth.logout(session)
+        result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
+        response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
+
+    @app.get(f"{config.api_prefix}/auth/me")
+    def auth_me(session: str | None = Cookie(default=None, alias="mdc_session")):
+        current = auth.session(session)
+        if not current: raise HTTPException(status_code=401, detail="not authenticated")
+        return api_envelope(current)
+
+    @app.post(f"{config.api_prefix}/auth/change-password")
+    def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session"),
+                             x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        # Keep the protected-route contract's stable API-key failure response,
+        # then require an active browser session before rotating credentials.
+        require_api_key(config, x_api_key, session)
+        current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
+        try: auth.change_password(session, current, replacement)
+        except AuthError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return api_envelope({"changed": True})
+
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
         request_id = request.headers.get("x-request-id", str(uuid4()))[:128]
-        token = _request_id.set(request_id)
+        token = _request_id.set(request_id); session_token = _session_id.set(request.cookies.get("mdc_session")); auth_token = _auth_store.set(auth)
         started = time.monotonic()
         try:
+            origin = request.headers.get("origin")
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.cookies.get("mdc_session") and origin:
+                expected = f"{request.url.scheme}://{request.url.netloc}"
+                if origin.rstrip("/") != expected.rstrip("/"):
+                    raise HTTPException(status_code=403, detail="origin not allowed")
             response = await call_next(request)
         finally:
-            _request_id.reset(token)
+            _request_id.reset(token); _session_id.reset(session_token); _auth_store.reset(auth_token)
         response.headers["X-Request-ID"] = request_id
         print(json.dumps({"event": "http_request", "request_id": request_id, "method": request.method,
                           "path": request.url.path, "status": response.status_code,
@@ -296,6 +451,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": status, "read_status": "available" if storage_ready else "unavailable",
             "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
             "capacity_status": capacity["status"] if capacity else "unknown",
+            "capacity_free_ratio": capacity.get("free_ratio") if capacity else None,
             "operational_snapshot_status": snapshot.status if snapshot else "unknown",
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
@@ -345,6 +501,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         preview = evaluate_with_capacity(request=request, root=config.canonical_root,
                                          capacity_policy=capacity_policy)
         return api_envelope(preview)
+
+    @app.get(f"{config.api_prefix}/maintenance/tasks")
+    def maintenance_tasks() -> dict:
+        return api_envelope(ledger.list_maintenance_tasks())
+
+    @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
+    def maintenance_task_status(task_id: str, payload: dict, request: Request,
+                                x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+                                session: str | None = Cookie(default=None, alias="mdc_session")) -> dict:
+        require_api_key(config, x_api_key, session)
+        status = str(payload.get("status", ""))
+        if status not in {"paused", "enabled"}:
+            raise HTTPException(status_code=422, detail="status must be paused or enabled")
+        task = ledger.update_maintenance_task_status(task_id, status)
+        if task is None: raise HTTPException(status_code=404, detail="maintenance task not found")
+        ledger.record_write_audit({"action": f"maintenance.task.{status}", "actor": operator_identity(request, config), "request_id": current_request_id(), "task_id": task_id, "run_ids": task.get("run_ids", []), "run_kind": task.get("run_kind"), "run_scope": task.get("run_scope"), "dataset_id": task.get("dataset_id"), "outcome": "updated", "code": None, "message": status})
+        return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/maintenance/tasks", status_code=202)
     def maintenance_task(request: MaintenanceTaskRequest, http_request: Request,

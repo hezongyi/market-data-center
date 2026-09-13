@@ -1,3 +1,4 @@
+import { TimeDisplay, usePreferences } from "../preferences";
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -49,13 +50,13 @@ const KindChip = ({ dataset }: { dataset: CatalogDataset }) => {
 const Unavailable = ({ label = "Not published by the API" }: { label?: string }) =>
   <span className="catalog-chip unavailable"><CircleSlash size={11} />{label}</span>;
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 
 const dayStart = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : undefined;
 const dayEnd = (value: string) => value ? new Date(`${value}T23:59:59.999Z`).toISOString() : undefined;
 
 export function CatalogPage({ apiKey, datasets, loading, onExplore, services, onMaintenance }: CatalogPageProps) {
+  const { t } = usePreferences();
   // The page prefers the services handed down by the shell and only builds its
   // own domain services when it is mounted standalone.
   const fallbackServices = useMemo(() => createServices(apiKey), [apiKey]);
@@ -115,7 +116,7 @@ export function CatalogPage({ apiKey, datasets, loading, onExplore, services, on
             <Sigma size={11} />{recipe.recipe_id}@{recipe.recipe_version}</span>)}</span>
         : <Unavailable label="No registered recipe produces this dataset" />;
     } },
-    { id: "actions", header: "Actions", enableSorting: false, cell: ({ row }) => {
+    { id: "actions", header: t("Actions"), enableSorting: false, cell: ({ row }) => {
       const kinds = writeKindsFor(row.original.dataset_id);
       return <div className="row-actions">
         <button className="table-action" onClick={event => { event.stopPropagation(); onExplore(row.original); }}>Open Explorer</button>
@@ -147,7 +148,7 @@ export function CatalogPage({ apiKey, datasets, loading, onExplore, services, on
 
       {capabilities.status === "loading" && <LoadingSkeleton rows={2} />}
       {capabilities.status === "error" && (capabilities.permission === "unauthorized"
-        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>Not authorized</b>
+        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("Not authorized")}</b>
           <p>{capabilities.error} Dataset rows fall back to the legacy registry, which cannot describe kind, quality or lineage.</p></div></div>
         : <ErrorState message={`${capabilities.error ?? "Unable to load capabilities"}. Dataset rows fall back to the legacy registry, which cannot describe kind, quality or lineage.`} onRetry={capabilities.reload} />)}
 
@@ -295,6 +296,7 @@ function DatasetDetail({ dataset, recipes, runKinds, services, onExplore, onMain
 }
 
 function CoverageProbe({ dataset, services }: { dataset: CatalogDataset; services: Services }) {
+  const { t } = usePreferences();
   const economic = dataset.dataset_id === "economic_observations";
   const [provider, setProvider] = useState(economic ? "fred" : "fixture");
   const [symbol, setSymbol] = useState(economic ? "" : "UI_TEST");
@@ -327,7 +329,7 @@ function CoverageProbe({ dataset, services }: { dataset: CatalogDataset; service
     <div className="probe-form">
       <label>Provider<input aria-label="Catalog provider" value={provider} onChange={event => setProvider(event.target.value)} /></label>
       {economic
-        ? <label>Series ID<input aria-label="Catalog series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
+        ? <label>{t("Series ID")}<input aria-label="Catalog series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
         : <>
           <label>Symbol<input aria-label="Catalog symbol" value={symbol} onChange={event => setSymbol(event.target.value)} /></label>
           <label>Timeframe<input aria-label="Catalog timeframe" value={timeframe} onChange={event => setTimeframe(event.target.value)} /></label>
@@ -342,26 +344,26 @@ function CoverageProbe({ dataset, services }: { dataset: CatalogDataset; service
     </button>
     {!economic && !(start && end) && <p className="filter-note"><AlertTriangle size={12} /> Set both coverage dates to let the API return ready intervals and gap counts instead of a physical summary.</p>}
     {probe.status === "error" && (probe.permission === "unauthorized"
-      ? <div className="locked-state" role="status"><Lock size={16} /><div><b>Not authorized</b><p>{probe.error}</p></div></div>
+      ? <div className="locked-state" role="status"><Lock size={16} /><div><b>{t("Not authorized")}</b><p>{probe.error}</p></div></div>
       : <ErrorState message={probe.error ?? "Unable to load coverage"} onRetry={probe.reload} />)}
     {probe.data && (economic
       ? <dl className="detail-list compact">
-        <div><dt>Rows</dt><dd>{(probe.data as EconomicCoverage).row_count.toLocaleString()}</dd></div>
-        <div><dt>First observation</dt><dd className="mono">{(probe.data as EconomicCoverage).min_date ?? "—"}</dd></div>
-        <div><dt>Last observation</dt><dd className="mono">{(probe.data as EconomicCoverage).max_date ?? "—"}</dd></div>
+        <div><dt>{t("Rows")}</dt><dd>{(probe.data as EconomicCoverage).row_count.toLocaleString()}</dd></div>
+        <div><dt>{t("First observation")}</dt><dd>{(probe.data as EconomicCoverage).min_date ? utc((probe.data as EconomicCoverage).min_date) : "—"}</dd></div>
+        <div><dt>{t("Last observation")}</dt><dd>{(probe.data as EconomicCoverage).max_date ? utc((probe.data as EconomicCoverage).max_date) : "—"}</dd></div>
       </dl>
       : <dl className="detail-list compact">
-        <div><dt>Coverage scope</dt><dd>{report?.coverage_scope ?? <Unavailable label="Scope not published" />}</dd></div>
-        <div><dt>Readiness</dt><dd>{report?.readiness_status
+        <div><dt>{t("Coverage scope")}</dt><dd>{report?.coverage_scope ?? <Unavailable label="Scope not published" />}</dd></div>
+        <div><dt>{t("Readiness")}</dt><dd>{report?.readiness_status
           ? <StatusBadge tone={summaryOnly ? "warn" : report.readiness_status === "ready" ? "good" : "bad"}>
             {summaryOnly ? "unknown (summary only)" : report.readiness_status}</StatusBadge>
           : <Unavailable label="Readiness not published" />}</dd></div>
-        <div><dt>Rows</dt><dd>{report?.row_count?.toLocaleString() ?? "—"}</dd></div>
-        <div><dt>Gap count</dt><dd>{report?.gap_count == null ? <Unavailable label="Not evaluated" /> : report.gap_count}</dd></div>
-        <div><dt>Ready intervals</dt><dd>{report?.ready_intervals?.length ?? 0}</dd></div>
-        <div><dt>First / last bar</dt><dd className="mono">{report?.min_ts ? `${utc(report.min_ts)} → ${utc(report.max_ts)}` : "—"}</dd></div>
+        <div><dt>{t("Rows")}</dt><dd>{report?.row_count?.toLocaleString() ?? "—"}</dd></div>
+        <div><dt>{t("Gap count")}</dt><dd>{report?.gap_count == null ? <Unavailable label="Not evaluated" /> : report.gap_count}</dd></div>
+        <div><dt>{t("Ready intervals")}</dt><dd>{report?.ready_intervals?.length ?? 0}</dd></div>
+        <div><dt>First / last bar</dt><dd className="mono">{report?.min_ts ? <>{utc(report.min_ts)} → {utc(report.max_ts)}</> : "—"}</dd></div>
         {(report?.ready_intervals?.length ?? 0) > 0 && <div><dt>Ready interval list</dt><dd className="mono">
-          {report?.ready_intervals?.map(interval => `${utc(interval.start)} → ${utc(interval.end)} (${interval.semantics})`).join(" · ")}
+          {report?.ready_intervals?.map((interval, index) => <span key={index}>{utc(interval.start)} → {utc(interval.end)} ({interval.semantics}) </span>)}
         </dd></div>}
       </dl>)}
     {summaryOnly && <p className="filter-note"><AlertTriangle size={12} /> Summary-only coverage: the API returned coverage_scope=summary with readiness unknown, so no per-interval readiness is claimed here.</p>}

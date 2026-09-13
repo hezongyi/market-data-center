@@ -1,7 +1,8 @@
+import { TimeDisplay, usePreferences } from "../preferences";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, ChevronLeft, ChevronRight, CircleSlash, Hammer, Lock, Search } from "lucide-react";
-import { DataTable, EmptyState, ErrorState, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
+import { CopyId, DataTable, EmptyState, ErrorState, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { useQuery } from "../hooks";
 import type {
   ApiMeta, Bar, BarsQuery, CoverageReport, EconomicCoverage, EconomicObservation, EconomicQuery,
@@ -49,7 +50,7 @@ type CoverageView = {
 };
 
 const barColumns: ColumnDef<Bar>[] = [
-  { accessorKey: "bar_ts", header: "Timestamp", cell: info => <span className="mono">{String(info.getValue())}</span> },
+  { accessorKey: "bar_ts", header: "Timestamp", cell: info => <TimeDisplay value={String(info.getValue())} /> },
   { accessorKey: "open", header: "Open" },
   { accessorKey: "high", header: "High" },
   { accessorKey: "low", header: "Low" },
@@ -59,13 +60,12 @@ const barColumns: ColumnDef<Bar>[] = [
 const economicColumns: ColumnDef<EconomicObservation>[] = [
   { accessorKey: "observation_date", header: "Observation" },
   { accessorKey: "value", header: "Value", cell: info => String(info.getValue() ?? "—") },
-  { accessorKey: "release_ts", header: "Release", cell: info => String(info.getValue() ?? "—") },
+  { accessorKey: "release_ts", header: "Release", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
   { accessorKey: "frequency", header: "Frequency", cell: info => String(info.getValue() ?? "—") },
   { accessorKey: "units", header: "Units", cell: info => String(info.getValue() ?? "—") },
 ];
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 const dayStart = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : undefined;
 const dayEnd = (value: string) => value ? new Date(`${value}T23:59:59.999Z`).toISOString() : undefined;
 
@@ -75,6 +75,7 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
   services?: Services;
   onMaintenance?: (draft?: MaintenanceTaskRequest) => void;
 }) {
+  const { t } = usePreferences();
   const fallbackServices = useMemo(() => createServices(apiKey), [apiKey]);
   const svc = services ?? fallbackServices;
 
@@ -287,21 +288,21 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
 
   return <div className="explorer-page">
     <section className="panel" aria-label="Query">
-      <PanelHeading eyebrow="Published data" title="Data explorer"
+      <PanelHeading eyebrow={t("Published data")} title={t("Data explorer")}
         action={<StatusBadge tone={capabilities.status === "error" ? "warn" : "neutral"}>
           {mode === "market" ? "Derived market_bars" : mode === "bars" ? "Raw provider_bars" : "Economic observations"}
         </StatusBadge>} />
       <div className="segmented" role="group" aria-label="Explorer dataset">
-        <button className={mode === "bars" ? "active" : ""} onClick={() => reset("bars")}>Provider bars</button>
-        <button className={mode === "market" ? "active" : ""} onClick={() => reset("market")}>Market bars</button>
-        <button className={mode === "economic" ? "active" : ""} onClick={() => reset("economic")}>Economic</button>
+        <button className={mode === "bars" ? "active" : ""} onClick={() => reset("bars")}>{t("Provider bars")}</button>
+        <button className={mode === "market" ? "active" : ""} onClick={() => reset("market")}>{t("Market bars")}</button>
+        <button className={mode === "economic" ? "active" : ""} onClick={() => reset("economic")}>{t("Economic")}</button>
       </div>
 
       <form className="explorer-toolbar" onSubmit={event => load(event)}>
         {mode === "economic" ? <>
-          <label>Series ID<input aria-label="Series ID" value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
-          <label>Query mode<select aria-label="Query mode" value={economicMode} onChange={event => setEconomicMode(event.target.value as EconomicQueryMode)}><option value="current">Current</option><option value="pit">Point in time</option></select></label>
-          {economicMode === "pit" && <label>As-of timestamp<input aria-label="As-of timestamp" value={asof} onChange={event => setAsof(event.target.value)} /></label>}
+          <label>{t("Series ID")}<input aria-label={t("Series ID")} value={seriesId} onChange={event => setSeriesId(event.target.value)} /></label>
+          <label>{t("Query mode")}<select aria-label={t("Query mode")} value={economicMode} onChange={event => setEconomicMode(event.target.value as EconomicQueryMode)}><option value="current">{t("Current")}</option><option value="pit">{t("Point in time")}</option></select></label>
+          {economicMode === "pit" && <label>{t("As-of timestamp")}<input aria-label={t("As-of timestamp")} value={asof} onChange={event => setAsof(event.target.value)} /></label>}
         </> : <>
           <label>Provider<input aria-label="Provider" value={provider} onChange={event => setProvider(event.target.value)} /></label>
           <label>Symbol<input aria-label="Symbol" value={symbol} onChange={event => setSymbol(event.target.value)} /></label>
@@ -319,7 +320,7 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
                     setPriceBasis(nextRecipe.price_bases[0] ?? providerCapability?.price_bases[0] ?? "");
                   }
                 }}>
-                  {!recipeId && <option value="">Select a published recipe</option>}
+                  {!recipeId && <option value="">{t("Select a published recipe")}</option>}
                   {recipes.map(recipe => <option key={`${recipe.recipe_id}@${recipe.recipe_version}`} value={recipe.recipe_id}>{recipe.recipe_id}</option>)}
                 </select></label>
                 : <label>Recipe<input aria-label="Recipe" value={recipeId} onChange={event => setRecipeId(event.target.value)} placeholder="utc-24x7-1m-to-1d-ohlcv" /></label>}
@@ -353,22 +354,22 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
         : result && view ? <CoverageStrip view={view} />
           : loading ? <LoadingSkeleton rows={2} />
             : page.status === "error" ? (page.permission === "unauthorized"
-              ? <div className="locked-state" role="status"><Lock size={18} /><div><b>Not authorized</b><p>{page.error}</p></div></div>
+              ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("Not authorized")}</b><p>{page.error}</p></div></div>
               : <ErrorState message={page.error ?? "Unable to load data"} onRetry={page.reload} />)
               : <EmptyState title={mode === "bars" ? "Choose an instrument" : mode === "market" ? "Choose a derived selector" : "Choose an economic series"}
                 detail="Only immutable published snapshots are queried." />}
     </section>
 
-    {result && <section className="panel" aria-label="Query result">
+    {result && <section className="panel" aria-label={t("Query result")}>
       <PanelHeading eyebrow="Snapshot"
         title={result.mode === "bars" ? "Provider bars" : result.mode === "market" ? "Market bars" : "Economic observations"}
         action={<div className="meta-badges">
-          <StatusBadge tone="neutral">{String(result.meta.snapshot_id ?? "no snapshot")}</StatusBadge>
+          {result.meta.snapshot_id ? <CopyId value={String(result.meta.snapshot_id)} /> : "no snapshot"}
           <StatusBadge tone="neutral">{(result.meta.schema_versions ?? []).join(", ") || "schema unknown"}</StatusBadge>
           <StatusBadge tone="neutral">{result.meta.count ?? rows.length} row(s) in page</StatusBadge>
         </div>} />
 
-      {result.warnings.length > 0 && <ul className="issue-list" aria-label="Query warnings">
+      {result.warnings.length > 0 && <ul className="issue-list" aria-label={t("Query warnings")}>
         {result.warnings.map(warning => <li className="issue warning" key={warning}>
           <AlertTriangle size={14} /><b>query warning</b>
           <span>{warning === "unbounded_query" ? "Unbounded query: keep cursor paging or narrow the window." : warning}</span>
@@ -381,15 +382,15 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
         : <DataTable data={result.bars} columns={barColumns} empty="No bars in this page." />}
 
       <div className="pagination">
-        <button aria-label="Previous page" onClick={previous} disabled={!history.length}><ChevronLeft size={15} /> Previous</button>
+        <button aria-label={t("Previous page")} onClick={previous} disabled={!history.length}><ChevronLeft size={15} /> Previous</button>
         <span>Page {history.length + 1} · {rows.length} rows</span>
-        <button aria-label="Next page" onClick={next} disabled={!result.meta.next_cursor}>Next <ChevronRight size={15} /></button>
+        <button aria-label={t("Next page")} onClick={next} disabled={!result.meta.next_cursor}>Next <ChevronRight size={15} /></button>
       </div>
       <p className="filter-note">Cursor paging is bound to this selector and page size; changing a filter restarts at page 1.</p>
     </section>}
 
-    {result && view && <section className="panel" aria-label="Coverage">
-      <PanelHeading eyebrow="Coverage" title="Ready intervals and gaps"
+    {result && view && <section className="panel" aria-label={t("Coverage")}>
+      <PanelHeading eyebrow="Coverage" title={t("Ready intervals and gaps")}
         action={<StatusBadge tone={view.summaryOnly ? "warn" : view.readiness === "ready" ? "good" : view.readiness ? "bad" : "neutral"}>
           {view.summaryOnly ? "Readiness unknown (summary only)" : view.readiness ?? "Readiness not published"}
         </StatusBadge>} />
@@ -397,29 +398,29 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
       {result.mode === "economic" && <p className="filter-note"><AlertTriangle size={12} /> The economic coverage endpoint publishes physical coverage only: no readiness status, ready intervals or gap count exist for this selector.</p>}
 
       <dl className="detail-list">
-        <div><dt>Coverage scope</dt><dd>{view.scope ?? <Unavailable label="Scope not published" />}</dd></div>
-        <div><dt>Readiness status</dt><dd>{view.summaryOnly
+        <div><dt>{t("Coverage scope")}</dt><dd>{view.scope ?? <Unavailable label="Scope not published" />}</dd></div>
+        <div><dt>{t("Readiness status")}</dt><dd>{view.summaryOnly
           ? `unknown · summary-only response`
           : view.readiness ?? <Unavailable label="Readiness not published" />}</dd></div>
-        <div><dt>Gap count</dt><dd>{view.gapCount == null
+        <div><dt>{t("Gap count")}</dt><dd>{view.gapCount == null
           ? <Unavailable label="Not evaluated by this response" /> : view.gapCount}</dd></div>
-        <div><dt>Ready intervals</dt><dd>{view.readyIntervals.length}</dd></div>
-        <div><dt>Rows in selector</dt><dd>{view.rowCount == null ? "—" : view.rowCount.toLocaleString()}</dd></div>
+        <div><dt>{t("Ready intervals")}</dt><dd>{view.readyIntervals.length}</dd></div>
+        <div><dt>{t("Rows in selector")}</dt><dd>{view.rowCount == null ? "—" : view.rowCount.toLocaleString()}</dd></div>
         <div><dt>{view.kind === "economic" ? "Observation window" : "Observed window (UTC)"}</dt><dd className="mono">
           {view.kind === "economic"
-            ? `${view.minTs ?? "—"} → ${view.maxTs ?? "—"}`
-            : view.minTs ? `${utc(view.minTs)} → ${utc(view.maxTs)}` : "—"}</dd></div>
+            ? view.minTs ? <>{utc(view.minTs)} → {utc(view.maxTs)}</> : "—"
+            : view.minTs ? <>{utc(view.minTs)} → {utc(view.maxTs)}</> : "—"}</dd></div>
         {view.kind === "market" && <>
           <div><dt>Recipe</dt><dd className="mono">{view.recipeId ? `${view.recipeId}@${view.recipeVersion}` : "—"}</dd></div>
           <div><dt>Recipe status</dt><dd>{view.recipeStatus ?? <Unavailable label="Not published" />}</dd></div>
           <div><dt>Price basis</dt><dd>{view.priceBasis ?? "—"}</dd></div>
-          <div><dt>Input snapshots</dt><dd className="mono">{view.inputSnapshotIds.length ? view.inputSnapshotIds.join(", ") : "none published"}</dd></div>
+          <div><dt>{t("Input snapshots")}</dt><dd className="mono">{view.inputSnapshotIds.length ? view.inputSnapshotIds.map(id => <CopyId key={id} value={id} />) : "none published"}</dd></div>
         </>}
         {view.qualityStatus && <div><dt>Quality status</dt><dd>{view.qualityStatus}</dd></div>}
-        {view.latestCompleteBoundary && <div><dt>Latest complete boundary</dt><dd className="mono">{utc(view.latestCompleteBoundary)}</dd></div>}
+        {view.latestCompleteBoundary && <div><dt>{t("Latest complete boundary")}</dt><dd className="mono">{utc(view.latestCompleteBoundary)}</dd></div>}
       </dl>
 
-      {view.readyIntervals.length > 0 && <ul className="coverage-intervals" aria-label="Ready intervals">
+      {view.readyIntervals.length > 0 && <ul className="coverage-intervals" aria-label={t("Ready intervals")}>
         {view.readyIntervals.map((interval, index) => <li key={`${interval.start}-${index}`}>
           <StatusBadge tone="good">ready</StatusBadge>
           <span className="mono">{utc(interval.start)} → {utc(interval.end)}</span>

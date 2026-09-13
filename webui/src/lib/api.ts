@@ -161,6 +161,7 @@ export type ReadyState = {
   read_status: string;
   write_status: string;
   capacity_status: string;
+  capacity_free_ratio?: number | null;
   operational_snapshot_status: string;
   worker_heartbeat_age_seconds: number | null;
   deployment_id: string;
@@ -309,7 +310,7 @@ export type EconomicCoverage = {
   max_date: string | null;
 };
 
-export type RequestOptions = { allowStatuses?: readonly number[] };
+export type RequestOptions = { allowStatuses?: readonly number[]; skipApiKey?: boolean };
 
 // -- v0.4 maintenance workbench contracts --------------------------------
 
@@ -331,6 +332,7 @@ export type MaintenanceTaskRequest = {
   start: string;
   end: string;
   task_id?: string | null;
+  schedule?: "manual";
 };
 
 export type MaintenanceTask = {
@@ -449,6 +451,7 @@ export type TaskPreview = {
   write_status: WriteStatus;
   generated_at: string;
 };
+export type MaintenanceTaskRecord = { task_id: string; run_kind: RunKind; dataset_id: string; status: string; run_ids?: string[]; submitted_at?: string; updated_at?: string; schedule?: "manual" | null; recent_run_id?: string | null; recent_run_at?: string | null; recent_error?: string | null };
 
 export type QueuedEnvelope = {
   status: "queued" | string;
@@ -607,8 +610,8 @@ export function createDataCenterClient(apiKey: string) {
   const request = async <T,>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<ApiResult<T>> => {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
-    if (apiKey) headers.set("X-API-Key", apiKey);
-    const response = await fetch(`/api/v1${path}`, { ...init, headers });
+    if (apiKey && !options.skipApiKey) headers.set("X-API-Key", apiKey);
+    const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: "include" });
     let payload: Envelope<T>;
     try {
       payload = await response.json() as Envelope<T>;
@@ -629,6 +632,14 @@ export function createDataCenterClient(apiKey: string) {
   };
 
   return {
+    auth: {
+      login: (username: string, password: string) => request<{ username: string }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }, { skipApiKey: true }),
+      logout: () => request<{ logged_out: boolean }>("/auth/logout", { method: "POST" }, { skipApiKey: true }),
+      me: () => request<{ username: string; expires_at: number }>("/auth/me", {}, { skipApiKey: true }),
+      status: () => request<{ initialized: boolean; username: string }>("/auth/status", {}, { skipApiKey: true }),
+      initialize: (username: string, password: string) => request<{ initialized: boolean; username: string }>("/auth/initialize", { method: "POST", body: JSON.stringify({ username, password }) }),
+      changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }, { skipApiKey: true }),
+    },
     // Readiness intentionally accepts HTTP 503: the API returns structured degraded state
     // so the console can keep reads visible while protecting writes when necessary.
     ready: () => request<ReadyState>("/health/ready", {}, { allowStatuses: [503] }),
@@ -671,6 +682,8 @@ export function createDataCenterClient(apiKey: string) {
     submitMaintenance: (task: MaintenanceTaskRequest) => request<QueuedEnvelope>("/maintenance/tasks", {
       method: "POST", body: JSON.stringify(task),
     }),
+    maintenanceTasks: () => request<MaintenanceTaskRecord[]>("/maintenance/tasks"),
+    updateMaintenanceTask: (taskId: string, status: "paused" | "enabled") => request<MaintenanceTaskRecord>(`/maintenance/tasks/${encodeURIComponent(taskId)}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     capabilities: () => request<Capabilities>("/capabilities"),
     findingsPage: (query: Record<string, string | number | null | undefined> = {}, cursor?: string | null) =>
       request<Finding[]>(`/quality/findings${queryString({ ...query, cursor })}`),

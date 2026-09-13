@@ -1,3 +1,4 @@
+import { TimeDisplay, usePreferences } from "../preferences";
 /**
  * Quality feedback loop (v0.4 Phase 3).
  *
@@ -17,7 +18,7 @@ import {
   Eye, FileSearch, Hammer, History, Info, Layers, Lock, RefreshCw, RotateCcw, ShieldAlert, Waves, XCircle,
 } from "lucide-react";
 import {
-  ConfirmDialog, DataTable, DetailDrawer, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge,
+  ConfirmDialog, CopyId, DataTable, DetailDrawer, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge,
 } from "../components/ui";
 import { messageOf, permissionOf, useMaintenanceMutation, useQuery, type PermissionState } from "../hooks";
 import type {
@@ -39,8 +40,7 @@ type QualityPageProps = {
 
 // -- formatting ------------------------------------------------------------
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 
 const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 
@@ -319,6 +319,7 @@ const noticesOf = (data: Paged<Finding> | null): string[] => {
 };
 
 export function QualityPage({ findings: initialFindings, services, onMessage, onChanged, onMaintenance }: QualityPageProps) {
+  const { t } = usePreferences();
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [cursor, setCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([]);
@@ -377,19 +378,19 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
   };
 
   const columns = useMemo<ColumnDef<Finding>[]>(() => [
-    { accessorKey: "severity", header: "Severity", cell: ({ row }) => {
+    { accessorKey: "severity", header: t("Severity"), cell: ({ row }) => {
       const severity = row.original.severity;
       const Icon = severityIcon(severity);
       return <StatusBadge tone={severityTone(severity)}><Icon size={12} />{severity}</StatusBadge>;
     } },
-    { accessorKey: "code", header: "Code", cell: info => <span className="mono">{String(info.getValue())}</span> },
-    { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
-    { id: "observed", header: "Observed (UTC)", cell: ({ row }) => utcPosition(observedOf(row.original)) },
-    { accessorKey: "run_id", header: "Run", cell: info => {
+    { accessorKey: "code", header: t("Code"), cell: info => <span className="mono">{String(info.getValue())}</span> },
+    { accessorKey: "dataset_id", header: t("Dataset"), cell: info => String(info.getValue() ?? "—") },
+    { id: "observed", header: t("Observed"), cell: ({ row }) => utcPosition(observedOf(row.original)) },
+    { accessorKey: "run_id", header: t("Run"), cell: info => {
       const runId = info.getValue() as string | undefined;
-      return runId ? <span className="mono">{runId}</span> : <span className="filter-note">not recorded</span>;
+      return runId ? <CopyId value={runId} /> : <span className="filter-note">not recorded</span>;
     } },
-    { id: "state", header: "State", cell: ({ row }) => {
+    { id: "state", header: t("State"), cell: ({ row }) => {
       const state = stateOf(row.original);
       const meta = stateMetaOf(state);
       const Icon = meta.icon;
@@ -397,43 +398,43 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
     } },
     { accessorKey: "occurrence_count", header: "Occurrences", cell: ({ row }) => {
       const count = row.original.occurrence_count ?? 1;
-      return <span title={`first ${utc(row.original.first_observed_at)} · last ${utc(row.original.last_observed_at)}`}>{count}</span>;
+      return <span title={row.original.first_observed_at || row.original.last_observed_at ? `${t("Observed")} · ${t("Time details")}` : undefined}>{count}</span>;
     } },
   ], []);
 
   return <>
-    <section className="panel quality-page" aria-label="Quality findings">
-      <PanelHeading eyebrow="Quality feedback" title="Quality findings"
+    <section className="panel quality-page" aria-label={t("Quality findings")}>
+      <PanelHeading eyebrow={t("Quality feedback")} title={t("Quality findings")}
         action={<div className="header-actions">
           {stateCounts && <span className="filter-note" aria-label="Handling state counts">
             {findingStates.map(state => `${stateCounts[state] ?? 0} ${state}`).join(" · ")}
           </span>}
           <StatusBadge tone="neutral">{page ? `${page.count} on this page` : "—"}</StatusBadge>
-          <button className="link-button" onClick={query.reload}>Refresh →</button>
+          <button className="link-button" onClick={query.reload}>{t("Refresh")} →</button>
         </div>} />
 
       <FilterBar>
-        <label>Severity<select aria-label="Severity" value={filters.severity}
+        <label>{t("Severity")}<select aria-label={t("Severity")} value={filters.severity}
           onChange={event => setFilter("severity", event.target.value)}>
           <option value="all">all</option>
           {severities.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding code<select aria-label="Finding code" value={filters.code}
+        <label>{t("Finding code")}<select aria-label={t("Finding code")} value={filters.code}
           onChange={event => setFilter("code", event.target.value)}>
           <option value="all">all</option>
           {codes.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Quality dataset<select aria-label="Quality dataset" value={filters.dataset}
+        <label>{t("Quality dataset")}<select aria-label={t("Quality dataset")} value={filters.dataset}
           onChange={event => setFilter("dataset", event.target.value)}>
           <option value="all">all</option>
           {datasets.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding state<select aria-label="Finding state" value={filters.state}
+        <label>{t("Finding state")}<select aria-label={t("Finding state")} value={filters.state}
           onChange={event => setFilter("state", event.target.value)}>
           <option value="all">all</option>
           {findingStates.map(value => <option key={value} value={value}>{value}</option>)}
         </select></label>
-        <label>Finding run<input aria-label="Finding run" value={filters.run} placeholder="run id"
+        <label>{t("Finding run")}<input aria-label={t("Finding run")} value={filters.run} placeholder={t("run id")}
           onChange={event => setFilter("run", event.target.value)} /></label>
         <label>Finding from date<input aria-label="Finding from date" type="date" value={filters.from}
           onChange={event => setFilter("from", event.target.value)} /></label>
@@ -449,7 +450,7 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
 
       {query.status === "loading" && <LoadingSkeleton rows={5} />}
       {query.status === "error" && (query.permission === "unauthorized"
-        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>A valid API key is required</b>
+        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("A valid API key is required")}</b>
           <p>{query.error} Open Session access with a valid API key, then reload this workspace.</p></div></div>
         : <div>
           <ErrorState message={query.error ?? "Unable to load quality findings"} onRetry={query.reload} />
@@ -462,11 +463,11 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
         <DataTable data={items} columns={columns} empty="No quality findings."
           onRowClick={row => setSelected(row)} />
         <div className="pager">
-          <button className="secondary-button" aria-label="Previous page" onClick={previousPage} disabled={!cursorStack.length}>
+          <button className="secondary-button" aria-label={t("Previous page")} onClick={previousPage} disabled={!cursorStack.length}>
             <ChevronLeft size={14} /> Previous
           </button>
           <span>{`Page ${pageIndex + 1}${page ? ` · ${page.count} finding(s)` : ""}`}</span>
-          <button className="secondary-button" aria-label="Next page" onClick={nextPage} disabled={!page?.has_more}>
+          <button className="secondary-button" aria-label={t("Next page")} onClick={nextPage} disabled={!page?.has_more}>
             Next <ChevronRight size={14} />
           </button>
           <span className="filter-note">Cursor paging is bound to these filters; changing a filter restarts at page 1.</span>
@@ -504,6 +505,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
   onMaintenance?: () => void;
   onPatch: (patch: Partial<Finding>) => void;
 }) {
+  const { t } = usePreferences();
   const [actionError, setActionError] = useState("");
   const [actionPermission, setActionPermission] = useState<PermissionState>("authorized");
   const [busyState, setBusyState] = useState<FindingState | null>(null);
@@ -568,7 +570,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
     </ul>}
 
     <dl className="detail-list">
-      <div><dt>Finding id</dt><dd className="mono">{finding.finding_id ?? "—"}</dd></div>
+      <div><dt>Finding id</dt><dd>{finding.finding_id ? <CopyId value={finding.finding_id} /> : "—"}</dd></div>
       <div><dt>Severity</dt><dd>{finding.severity}</dd></div>
       <div><dt>Code</dt><dd className="mono">{finding.code}</dd></div>
       <div><dt>Dataset</dt><dd>{finding.dataset_id ?? "—"}</dd></div>
@@ -577,28 +579,28 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
       <div><dt>Bar timestamp (UTC)</dt><dd>{utcPosition(finding.bar_ts)}</dd></div>
       <div><dt>Observation date (UTC)</dt><dd>{utcPosition(finding.observation_date)}</dd></div>
       <div><dt>Occurrences</dt><dd>{finding.occurrence_count ?? 1}</dd></div>
-      <div><dt>First observed (UTC)</dt><dd>{utc(finding.first_observed_at)}</dd></div>
-      <div><dt>Last observed (UTC)</dt><dd>{utc(finding.last_observed_at)}</dd></div>
-      <div><dt>Handling state</dt><dd>{state}{finding.state_updated_at ? ` · updated ${utc(finding.state_updated_at)}` : ""}</dd></div>
-      {finding.resolved_by_run_id && <div><dt>Resolved by run</dt><dd className="mono">{finding.resolved_by_run_id}</dd></div>}
+      <div><dt>{t("First observed")}</dt><dd>{utc(finding.first_observed_at)}</dd></div>
+      <div><dt>{t("Last observed")}</dt><dd>{utc(finding.last_observed_at)}</dd></div>
+      <div><dt>{t("Handling state")}</dt><dd>{state}{finding.state_updated_at ? <> · updated {utc(finding.state_updated_at)}</> : ""}</dd></div>
+      {finding.resolved_by_run_id && <div><dt>{t("Resolved by run")}</dt><dd><CopyId value={finding.resolved_by_run_id} /></dd></div>}
     </dl>
 
     {coverage && <>
       <h3 className="detail-heading"><Database size={14} /> Recorded coverage{coverage.layer ? ` · ${coverage.layer}` : ""}</h3>
       <dl className="detail-list">
-        <div><dt>Readiness</dt><dd><StatusBadge tone={coverage.view.readiness_status === "ready" ? "good" : "warn"}>
+        <div><dt>{t("Readiness")}</dt><dd><StatusBadge tone={coverage.view.readiness_status === "ready" ? "good" : "warn"}>
           {coverage.view.readiness_status ?? "unknown"}</StatusBadge></dd></div>
-        <div><dt>Gap count</dt><dd>{coverage.view.gap_count ?? "—"}</dd></div>
-        <div><dt>Missing timestamps</dt><dd>{coverage.view.missing_timestamp_count ?? "—"}</dd></div>
-        <div><dt>Expected timestamps</dt><dd>{coverage.view.expected_timestamp_count ?? "—"}</dd></div>
-        <div><dt>Rows recorded</dt><dd>{coverage.view.row_count ?? "—"}</dd></div>
-        <div><dt>Latest complete boundary</dt><dd className="mono">{coverage.view.latest_complete_boundary ?? "—"}</dd></div>
+        <div><dt>{t("Gap count")}</dt><dd>{coverage.view.gap_count ?? "—"}</dd></div>
+        <div><dt>{t("Missing timestamps")}</dt><dd>{coverage.view.missing_timestamp_count ?? "—"}</dd></div>
+        <div><dt>{t("Expected timestamps")}</dt><dd>{coverage.view.expected_timestamp_count ?? "—"}</dd></div>
+        <div><dt>{t("Rows recorded")}</dt><dd>{coverage.view.row_count ?? "—"}</dd></div>
+        <div><dt>{t("Latest complete boundary")}</dt><dd>{coverage.view.latest_complete_boundary ? <TimeDisplay value={coverage.view.latest_complete_boundary} /> : "—"}</dd></div>
       </dl>
       <p className="filter-note">Ready intervals ({(coverage.view.ready_intervals ?? []).length})</p>
       {(coverage.view.ready_intervals ?? []).length > 0
-        ? <ul className="issue-list" aria-label="Ready intervals">
+        ? <ul className="issue-list" aria-label={t("Ready intervals")}>
           {(coverage.view.ready_intervals ?? []).slice(0, 8).map(interval => <li key={`${interval.start}-${interval.end}`} className="issue info">
-            <Layers size={13} /><span className="mono">{interval.start} → {interval.end}</span>
+            <Layers size={13} /><span className="mono"><TimeDisplay value={interval.start} /> → <TimeDisplay value={interval.end} /></span>
             <code>{interval.semantics ?? "half-open"}</code>
           </li>)}
           {(coverage.view.ready_intervals ?? []).length > 8 && <li className="issue info">
@@ -609,21 +611,21 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
 
     <h3 className="detail-heading"><History size={14} /> Run linkage</h3>
     <dl className="detail-list">
-      <div><dt>Reporting run</dt><dd className="mono">{finding.run_id ?? "not recorded"}</dd></div>
-      <div><dt>Last observing run</dt><dd className="mono">{finding.last_run_id ?? "not recorded"}</dd></div>
+      <div><dt>{t("Reporting run")}</dt><dd>{finding.run_id ? <CopyId value={finding.run_id} /> : "not recorded"}</dd></div>
+      <div><dt>{t("Last observing run")}</dt><dd>{finding.last_run_id ? <CopyId value={finding.last_run_id} /> : "not recorded"}</dd></div>
     </dl>
     <div className="form-actions">
-      <button className="secondary-button" aria-label="Open run" disabled={!finding.run_id}
+      <button className="secondary-button" aria-label={t("Open run")} disabled={!finding.run_id}
         onClick={() => openRun(finding.run_id ?? null)}><FileSearch size={14} /> Open run</button>
       {finding.last_run_id && finding.last_run_id !== finding.run_id && <button className="secondary-button"
-        onClick={() => openRun(finding.last_run_id ?? null)}>Open last observing run</button>}
+        onClick={() => openRun(finding.last_run_id ?? null)}>{t("Open last observing run")}</button>}
     </div>
     {!finding.run_id && <p className="filter-note">This finding records no reporting run, so no run detail can be opened.</p>}
 
     {activeRunId && <div className="quality-run">
       {runQuery.status === "loading" && <LoadingSkeleton rows={3} />}
       {runQuery.status === "error" && (runQuery.permission === "unauthorized"
-        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>A valid API key is required</b>
+        ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("A valid API key is required")}</b>
           <p>{runQuery.error} Run detail stays locked until an authorized key is supplied.</p></div></div>
         : <ErrorState message={runQuery.error ?? "Unable to load the run detail"} onRetry={runQuery.reload} />)}
       {runQuery.data && <>
@@ -633,15 +635,15 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
           {runQuery.data.terminal && <span className="stage-chip"><CheckCircle2 size={12} /> terminal receipt</span>}
         </div>
         <dl className="detail-list">
-          <div><dt>Run id</dt><dd className="mono">{runQuery.data.run_id}</dd></div>
+          <div><dt>Run id</dt><dd><CopyId value={runQuery.data.run_id} /></dd></div>
           <div><dt>Stage</dt><dd>{runQuery.data.stage}</dd></div>
           <div><dt>Outcome</dt><dd>{runQuery.data.outcome}</dd></div>
           <div><dt>Manifest status</dt><dd>{runQuery.data.manifest_status}</dd></div>
-          <div><dt>Windows</dt><dd>{runQuery.data.window_count}</dd></div>
+          <div><dt>{t("Windows")}</dt><dd>{runQuery.data.window_count}</dd></div>
           <div><dt>Findings</dt><dd>{runQuery.data.finding_count}</dd></div>
-          <div><dt>Run kind</dt><dd>{runQuery.data.run_kind ?? "ingest"}</dd></div>
-          <div><dt>Run scope</dt><dd>{runQuery.data.run_scope ?? "—"}</dd></div>
-          <div><dt>Created (UTC)</dt><dd>{utc(runQuery.data.created_at)}</dd></div>
+          <div><dt>{t("Run kind")}</dt><dd>{runQuery.data.run_kind ?? "ingest"}</dd></div>
+          <div><dt>{t("Run scope")}</dt><dd>{runQuery.data.run_scope ?? "—"}</dd></div>
+          <div><dt>Created</dt><dd>{utc(runQuery.data.created_at)}</dd></div>
           <div><dt>Terminal</dt><dd>{runQuery.data.terminal ? "yes — receipts are immutable" : "no — still in flight"}</dd></div>
         </dl>
         {runQuery.data.degraded_reasons.length > 0 && <ul className="issue-list" aria-label="Degraded reasons">
@@ -672,7 +674,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
     </div>
     {busyState && <p className="filter-note" role="status">Recording {busyState}…</p>}
     {actionError && (actionPermission === "unauthorized"
-      ? <div className="locked-state" role="status"><Lock size={18} /><div><b>A valid API key is required</b>
+      ? <div className="locked-state" role="status"><Lock size={18} /><div><b>{t("A valid API key is required")}</b>
         <p>{actionError} Finding state changes are authorized writes; open Session access and try again.</p></div></div>
       : <div className="error-state" role="alert"><AlertTriangle size={18} />
         <div><b>{actionPermission === "protected" ? "Write protected" : "Request rejected"}</b><p>{actionError}</p></div></div>)}
@@ -697,6 +699,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
   onMaintenance?: () => void;
   onApplyState: (state: FindingState, body: { dataset_id?: string; resolved_by_run_id?: string }) => Promise<boolean>;
 }) {
+  const { t } = usePreferences();
   const [linked, setLinked] = useState<string | null>(null);
   const [confirmEnvelope, setConfirmEnvelope] = useState<QueuedEnvelope | null>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -744,7 +747,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
           <span>{assessment.missing.join(", ")}. Nothing is inferred to fill the gap.</span></li>}
       </ul>
       <div className="form-actions">
-        <button className="primary-button" aria-label="Create repair task" disabled><Hammer size={14} /> Create repair task</button>
+        <button className="primary-button" aria-label={t("Create repair task")} disabled><Hammer size={14} /> Create repair task</button>
         <button className="secondary-button" onClick={handOff}>Open maintenance workspace</button>
       </div>
     </>}
@@ -754,7 +757,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
         <RefreshCw size={12} className="spin" /> Waiting for the reporting run detail before bounding a repair task…
       </p>
       <div className="form-actions">
-        <button className="primary-button" aria-label="Create repair task" disabled><Hammer size={14} /> Create repair task</button>
+        <button className="primary-button" aria-label={t("Create repair task")} disabled><Hammer size={14} /> Create repair task</button>
       </div>
     </>}
 
@@ -762,23 +765,23 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
 
     {assessment.status === "available" && <>
       <dl className="detail-list compact">
-        <div><dt>Run kind</dt><dd>{assessment.runKind}</dd></div>
-        <div><dt>Run scope</dt><dd>{assessment.task.run_scope}</dd></div>
+        <div><dt>{t("Run kind")}</dt><dd>{assessment.runKind}</dd></div>
+        <div><dt>{t("Run scope")}</dt><dd>{assessment.task.run_scope}</dd></div>
         <div><dt>Dataset</dt><dd>{assessment.task.dataset_id}</dd></div>
-        <div><dt>Window (UTC, half-open)</dt><dd className="mono">{assessment.task.start} → {assessment.task.end}</dd></div>
+        <div><dt>{t("Window (UTC, half-open)")}</dt><dd className="mono"><TimeDisplay value={assessment.task.start} /> → <TimeDisplay value={assessment.task.end} /></dd></div>
       </dl>
       <ul className="issue-list" aria-label="Repair task notes">
         <li className="issue info"><Info size={14} /><b>window</b><span>{assessment.windowNote}.</span></li>
         {assessment.notes.map(note => <li key={note} className="issue info"><Info size={14} /><b>note</b><span>{note}</span></li>)}
       </ul>
       <div className="form-actions">
-        <button className="primary-button" aria-label="Create repair task" disabled={mutation.state === "validating"}
+        <button className="primary-button" aria-label={t("Create repair task")} disabled={mutation.state === "validating"}
           onClick={() => void startPreview()}><Hammer size={14} /> Create repair task</button>
-        <button className="secondary-button" onClick={() => { mutation.reset(); onMessage(""); }}>Clear</button>
+        <button className="secondary-button" onClick={() => { mutation.reset(); onMessage(""); }}>{t("Clear")}</button>
         {mutation.state === "validating" && <span className="filter-note" role="status"><RefreshCw size={12} className="spin" /> Validating the task…</span>}
       </div>
       {mutation.permission === "unauthorized" && <div className="locked-state" role="status"><Lock size={18} /><div>
-        <b>A valid API key is required</b><p>{mutation.error ?? "Repair tasks are authorized writes."} Open Session access with a valid API key and try again.</p></div></div>}
+        <b>{t("A valid API key is required")}</b><p>{mutation.error ?? "Repair tasks are authorized writes."} Open Session access with a valid API key and try again.</p></div></div>}
       {mutation.error && mutation.permission !== "unauthorized" && <div className="error-state" role="alert"><AlertTriangle size={18} />
         <div><b>{mutation.permission === "protected" ? "Write protected" : "Request rejected"}</b><p>{mutation.error}</p></div></div>}
     </>}
@@ -789,7 +792,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
     {envelope && <div className="quality-queued">
       <ul className="issue-list" aria-label="Queued repair task">
         <li className="issue info"><CheckCircle2 size={14} /><b>queued</b>
-          <span>Task {envelope.task_id} queued {envelope.window_count} window(s) as <span className="mono">{queuedRunIds.join(", ") || "—"}</span>.</span></li>
+          <span>Task <CopyId value={envelope.task_id} /> queued {envelope.window_count} window(s) as {queuedRunIds.length ? queuedRunIds.map(id => <CopyId key={id} value={id} />) : "—"}.</span></li>
       </ul>
       {linkableRunId && (linked
         ? <p className="filter-note"><CheckCircle2 size={12} /> Run <span className="mono">{linked}</span> is recorded as resolving this finding.</p>
@@ -802,7 +805,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
     </div>}
 
     {confirmEnvelope && <ConfirmDialog title="Record this run as resolving the finding?"
-      detail={`${confirmEnvelope.run_ids[0] ?? confirmEnvelope.run_id ?? "the queued run"} will be linked to ${finding.finding_id ?? "this finding"} and the finding marked resolved. The state change is additive; the run receipt is not modified.`}
+      detail="The selected run will be linked to this finding and the finding marked resolved. The state change is additive; the run receipt is not modified."
       confirmLabel="Mark resolved by run" onConfirm={() => void linkRun()} onCancel={() => setConfirmEnvelope(null)} />}
   </>;
 }
@@ -814,6 +817,7 @@ function RepairPreview({ preview, warnings, submitting, onConfirm, onEdit }: {
   onConfirm: () => void;
   onEdit: () => void;
 }) {
+  const { t } = usePreferences();
   const errors: ValidationIssue[] = preview.validation.errors;
   const capacity = preview.capacity;
   return <section className="panel preview-panel quality-repair" aria-label="Repair task preview">
@@ -839,9 +843,9 @@ function RepairPreview({ preview, warnings, submitting, onConfirm, onEdit }: {
     {preview.coverage && <dl className="detail-list compact">
       <div><dt>Coverage readiness</dt><dd><StatusBadge tone={preview.coverage.readiness_status === "ready" ? "good" : "warn"}>
         {preview.coverage.readiness_status ?? "unknown"}</StatusBadge></dd></div>
-      <div><dt>Gap count</dt><dd>{preview.coverage.gap_count ?? "—"}</dd></div>
-      <div><dt>Ready intervals</dt><dd>{preview.coverage.ready_interval_count ?? 0}</dd></div>
-      <div><dt>Latest complete boundary</dt><dd className="mono">{preview.coverage.latest_complete_boundary ?? "—"}</dd></div>
+      <div><dt>{t("Gap count")}</dt><dd>{preview.coverage.gap_count ?? "—"}</dd></div>
+      <div><dt>{t("Ready intervals")}</dt><dd>{preview.coverage.ready_interval_count ?? 0}</dd></div>
+        <div><dt>{t("Latest complete boundary")}</dt><dd>{preview.coverage.latest_complete_boundary ? <TimeDisplay value={preview.coverage.latest_complete_boundary} /> : "—"}</dd></div>
     </dl>}
 
     {errors.length > 0 && <ul className="issue-list" aria-label="Validation errors">

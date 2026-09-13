@@ -18,6 +18,7 @@ class RunLedger:
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
+            conn.execute("create table if not exists maintenance_tasks (task_id text primary key, payload text not null, status text not null, updated_at text not null)")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -76,6 +77,36 @@ class RunLedger:
             payload["dead_letter_state"] = {"state": state[0], "acknowledged_at": state[1],
                                             "resolved_by_run_id": state[2], "resolved_at": state[3]}
         return payload
+
+    def upsert_maintenance_task(self, task_id: str, payload: dict, status: str = "queued") -> None:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("insert into maintenance_tasks(task_id,payload,status,updated_at) values (?,?,?,?) on conflict(task_id) do update set payload=excluded.payload,status=excluded.status,updated_at=excluded.updated_at", (task_id, json.dumps(payload), status, datetime.now(timezone.utc).isoformat()))
+
+    def list_maintenance_tasks(self) -> list[dict]:
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute("select task_id,payload,status,updated_at from maintenance_tasks order by updated_at desc").fetchall()
+        runs = {item["run_id"]: item for item in self.list()}
+        result = []
+        for row in rows:
+            item = {**json.loads(row[1]), "task_id": row[0], "status": row[2], "updated_at": row[3]}
+            item.setdefault("schedule", "manual")
+            if row[2] != "paused":
+                related = [runs[rid] for rid in item.get("run_ids", []) if rid in runs]
+                states = {str(run.get("status", "queued")) for run in related}
+                item["status"] = "failed" if "failed" in states else "running" if "running" in states else "succeeded" if related and states <= {"pass", "succeeded"} else "queued"
+                item["recent_error"] = next((run.get("error") or run.get("message") for run in reversed(related) if run.get("status") == "failed"), None)
+                item["recent_run_id"] = related[-1].get("run_id") if related else None
+                item["recent_run_at"] = related[-1].get("created_at") if related else None
+            result.append(item)
+        return result
+
+    def update_maintenance_task_status(self, task_id: str, status: str) -> dict | None:
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("select payload from maintenance_tasks where task_id=?", (task_id,)).fetchone()
+            if row is None: return None
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("update maintenance_tasks set status=?, updated_at=? where task_id=?", (status, now, task_id))
+            return {**json.loads(row[0]), "task_id": task_id, "status": status, "updated_at": now}
 
     def findings(self) -> builtins.list[dict]:
         with sqlite3.connect(self.path) as conn:
@@ -288,7 +319,10 @@ class RunLedger:
 
         with sqlite3.connect(self.path) as conn:
             conn.execute("begin immediate")
-            row = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid limit 1", (time.time(),)).fetchone()
+            candidates = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid", (time.time(),)).fetchall()
+            paused = {item[0] for item in conn.execute("select task_id from maintenance_tasks where status='paused'").fetchall()}
+            row = next((candidate for candidate in candidates
+                        if not any(json.loads(candidate[2]).get("job_id", "").startswith(task_id) for task_id in paused)), None)
             if row is None:
                 return None
             conn.execute("update jobs set status = 'running' where job_id = ?", (row[0],))
