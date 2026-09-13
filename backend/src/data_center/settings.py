@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     maintenance_symbols: str | None = None
     capacity_warning_free_ratio: float = 0.15
     capacity_critical_free_ratio: float = 0.10
+    # Isolated acceptance only: pin the measured free ratio so capacity states are
+    # reproducible regardless of how full the host filesystem happens to be.
+    capacity_fixed_free_ratio: float | None = None
 
     @model_validator(mode="after")
     def validate_network_boundary(self):
@@ -47,8 +50,19 @@ class Settings(BaseSettings):
         return self
 
     def capacity_policy(self):
-        from data_center.capacity import CapacityPolicy
+        from data_center.capacity import CapacityPolicy, FixedCapacityPolicy
 
+        if self.capacity_fixed_free_ratio is not None:
+            # Acceptance harnesses need a deterministic capacity state: free-ratio
+            # thresholds cannot express "warning" on a completely free filesystem.
+            # A real deployment must never fake its own capacity measurement.
+            if self.deployment_manifest:
+                raise ValueError("capacity_fixed_free_ratio is not allowed with a deployment manifest")
+            return FixedCapacityPolicy.for_free_ratio(
+                self.capacity_fixed_free_ratio,
+                warning_free_ratio=self.capacity_warning_free_ratio,
+                critical_free_ratio=self.capacity_critical_free_ratio,
+            )
         return CapacityPolicy(
             warning_free_ratio=self.capacity_warning_free_ratio,
             critical_free_ratio=self.capacity_critical_free_ratio,

@@ -77,8 +77,13 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     DATACENTER_LEDGER_PATH: path.join(temp, "canonical/audit/data_center.sqlite"),
     DATACENTER_EVIDENCE_ROOT: path.join(temp, "evidence"),
     DATACENTER_WEBUI_DIST: path.join(repo, "webui/dist"),
-    DATACENTER_CAPACITY_WARNING_FREE_RATIO: "0.99",
-    DATACENTER_CAPACITY_CRITICAL_FREE_RATIO: "0.005",
+    // Pin the measured free ratio so the warning state is reproducible on any host.
+    // A 0.99 warning threshold only classified as "warning" when the filesystem
+    // backing the temporary root happened to be more than 1% full, so on a
+    // completely free tmpfs the capacity UI check could never pass.
+    DATACENTER_CAPACITY_FIXED_FREE_RATIO: "0.03",
+    DATACENTER_CAPACITY_WARNING_FREE_RATIO: "0.05",
+    DATACENTER_CAPACITY_CRITICAL_FREE_RATIO: "0.02",
   };
   const deadLetterId = execFileSync(python, ["-c", [
     "import sys",
