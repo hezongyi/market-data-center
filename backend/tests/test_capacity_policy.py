@@ -119,3 +119,22 @@ def test_fixed_policy_decouples_gates_from_host_filesystem():
     # A completely free filesystem is exactly the case that used to break the drill.
     full = FixedCapacityPolicy.for_free_ratio(1.0, warning_free_ratio=0.99, critical_free_ratio=0.01)
     assert full.inspect(Path("/nonexistent")).status == "ok"
+
+
+def test_settings_can_pin_the_measured_free_ratio_for_isolated_acceptance():
+    """Capacity states must be reproducible regardless of the host filesystem."""
+    settings = Settings(capacity_warning_free_ratio=0.05, capacity_critical_free_ratio=0.02,
+                        capacity_fixed_free_ratio=0.03)
+    policy = settings.capacity_policy()
+    snapshot = policy.inspect(Path("/nonexistent"))
+    assert snapshot.status == "warning"
+    with pytest.raises(CapacityProtectedError, match="over 31 days"):
+        policy.require_backfill_capacity(Path("/nonexistent"), requested_days=32)
+
+
+def test_settings_refuse_a_fixed_free_ratio_for_a_deployment():
+    """A real deployment must never fake its own capacity measurement."""
+    settings = Settings(capacity_fixed_free_ratio=0.03,
+                        deployment_manifest=Path("/tmp/releases/current/deployment.json"))
+    with pytest.raises(ValueError, match="not allowed with a deployment manifest"):
+        settings.capacity_policy()
