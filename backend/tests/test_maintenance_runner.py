@@ -201,3 +201,125 @@ def test_maintenance_continues_tail_after_gap_window_failure(monkeypatch, tmp_pa
     assert target["recovery_window_count"] == 1
     assert [item["reason"] for item in target["runs"]] == ["gap_repair", "tail"]
     assert submitted_windows[1]["start"] == "2026-09-12T03:09:00+00:00"
+
+
+def _gap_coverage(start, end):
+    return CoverageResult(
+        dataset_id="provider_bars", selector=(("symbol", "BTCUSD"),), row_count=59,
+        min_ts=start, max_ts=end - timedelta(minutes=31), gap_count=1,
+        readiness_status="degraded", missing_timestamps=(start + timedelta(minutes=12),),
+        timeframe=timedelta(minutes=1),
+    )
+
+
+class _SilentSession:
+    def __init__(self):
+        self.headers = {}
+        self.trust_env = True
+
+    def close(self):
+        pass
+
+
+def _gap_harness(monkeypatch, module, start, end):
+    gap = {"start": "2026-09-12T02:21:00+00:00", "end": "2026-09-12T02:22:00+00:00",
+           "reason": "gap_repair", "ordinal": 0, "semantics": "half-open"}
+    monkeypatch.setattr(module, "coverage_from_catalog", lambda **_: _gap_coverage(start, end))
+    monkeypatch.setattr(module, "build_ingest_plan", lambda **_: {"windows": [gap]})
+    monkeypatch.setattr(module.requests, "Session", _SilentSession)
+
+
+def test_provider_gap_window_receipt_is_degraded_not_failed(monkeypatch, tmp_path):
+    """A provider-verified gap is an expected condition, never a target failure."""
+    from data_center import maintenance_runner as module
+
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 12, 3, 39, tzinfo=timezone.utc)
+    _gap_harness(monkeypatch, module, start, end)
+    submitted = []
+
+    def submit(_session, _base_url, method, path, **kwargs):
+        if method == "GET" and path == "/runs":
+            return []
+        submitted.append(kwargs["json"])
+        return {"run_id": f"run-{len(submitted)}"}
+
+    monkeypatch.setattr(module, "_request", submit)
+    monkeypatch.setattr(module, "_wait_run", lambda _s, _b, _run_id, _deadline: {
+        "status": "failed", "error_type": "ProviderGapError", "quality_summary": None, "row_count": None,
+    })
+
+    report = run_maintenance(
+        base_url="http://127.0.0.1:1", root=tmp_path / "lake", evidence_root=tmp_path / "evidence",
+        provider="dukascopy", symbols=["BTCUSD"], start=start, end=end,
+    )
+
+    assert report["result"] == "pass"
+    assert report["details"]["failed_target_count"] == 0
+    assert report["details"]["degraded_target_count"] == 1
+    target = report["details"]["targets"][0]
+    assert target["status"] == "degraded"
+    assert target["failed_window_count"] == 0
+    assert target["degraded_window_count"] >= 1
+    assert all(item["status"] in {"degraded", "pass"} for item in target["runs"])
+
+
+def test_genuine_window_error_still_fails_the_target(monkeypatch, tmp_path):
+    """Integrity failures must stay loud: only provider gaps are degraded."""
+    from data_center import maintenance_runner as module
+
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 12, 3, 39, tzinfo=timezone.utc)
+    _gap_harness(monkeypatch, module, start, end)
+    submitted = []
+
+    def submit(_session, _base_url, method, path, **kwargs):
+        if method == "GET" and path == "/runs":
+            return []
+        submitted.append(kwargs["json"])
+        return {"run_id": f"run-{len(submitted)}"}
+
+    monkeypatch.setattr(module, "_request", submit)
+    monkeypatch.setattr(module, "_wait_run", lambda _s, _b, _run_id, _deadline: {
+        "status": "failed", "error_type": "ProviderPriceBasisError", "quality_summary": None, "row_count": None,
+    })
+
+    report = run_maintenance(
+        base_url="http://127.0.0.1:1", root=tmp_path / "lake", evidence_root=tmp_path / "evidence",
+        provider="dukascopy", symbols=["BTCUSD"], start=start, end=end,
+    )
+
+    assert report["result"] == "failed"
+    assert report["details"]["failed_target_count"] == 1
+    target = report["details"]["targets"][0]
+    assert target["status"] == "failed"
+    assert target["failed_window_count"] >= 1
+
+
+def test_provider_gap_exception_during_submission_is_degraded(monkeypatch, tmp_path):
+    from data_center import maintenance_runner as module
+    from data_center.domain.errors import ProviderGapError
+
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 12, 3, 39, tzinfo=timezone.utc)
+    _gap_harness(monkeypatch, module, start, end)
+
+    def submit(_session, _base_url, method, path, **_kwargs):
+        if method == "GET" and path == "/runs":
+            return []
+        raise ProviderGapError("provider returned no bars for window 0")
+
+    monkeypatch.setattr(module, "_request", submit)
+
+    report = run_maintenance(
+        base_url="http://127.0.0.1:1", root=tmp_path / "lake", evidence_root=tmp_path / "evidence",
+        provider="dukascopy", symbols=["BTCUSD"], start=start, end=end,
+    )
+
+    assert report["result"] == "pass"
+    target = report["details"]["targets"][0]
+    assert target["status"] == "degraded"
+    assert target["failed_window_count"] == 0
+    # Gap isolation may schedule a recovery window, which is degraded as well.
+    assert target["runs"] and all(item["status"] == "degraded" for item in target["runs"])
+    assert {item["error_type"] for item in target["runs"]} == {"ProviderGapError"}

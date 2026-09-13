@@ -1,9 +1,16 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from data_center.api.app import create_app
-from data_center.capacity import CapacityPolicy, CapacitySnapshot
+from data_center.capacity import (
+    CapacityPolicy,
+    CapacityProtectedError,
+    CapacitySnapshot,
+    FixedCapacityPolicy,
+)
 from data_center.domain.models import IngestJob
 from data_center.ingest.worker import LocalWorker
 from data_center.observability import AlertSink, check_alerts
@@ -16,16 +23,6 @@ def snapshot(status: str, ratio: float) -> CapacitySnapshot:
     return CapacitySnapshot(100, int((1 - ratio) * 100), int(ratio * 100), ratio, status, 0.15, 0.10)
 
 
-class FixedPolicy(CapacityPolicy):
-    def __init__(self, state: CapacitySnapshot):
-        object.__setattr__(self, "warning_free_ratio", state.warning_free_ratio)
-        object.__setattr__(self, "critical_free_ratio", state.critical_free_ratio)
-        object.__setattr__(self, "state", state)
-
-    def inspect(self, path):
-        return self.state
-
-
 def test_capacity_threshold_boundaries():
     policy = CapacityPolicy(0.15, 0.10)
     assert policy.classify(0.15) == "ok"
@@ -34,14 +31,12 @@ def test_capacity_threshold_boundaries():
 
 
 def test_settings_reject_invalid_capacity_thresholds():
-    import pytest
-
     with pytest.raises(ValueError, match="critical < warning"):
         Settings(capacity_warning_free_ratio=0.10, capacity_critical_free_ratio=0.10)
 
 
 def test_critical_capacity_rejects_api_ingest_but_keeps_reads(monkeypatch, tmp_path):
-    policy = FixedPolicy(snapshot("critical", 0.09))
+    policy = FixedCapacityPolicy(snapshot("critical", 0.09))
     monkeypatch.setattr(Settings, "capacity_policy", lambda self: policy)
     settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "lake/audit/ledger.sqlite",
                         evidence_root=tmp_path / "evidence")
@@ -68,7 +63,7 @@ def test_critical_capacity_rejects_api_ingest_but_keeps_reads(monkeypatch, tmp_p
 def test_critical_capacity_worker_leaves_job_queued(tmp_path):
     root = tmp_path / "lake"
     ledger = RunLedger(root / "audit/ledger.sqlite")
-    worker = LocalWorker(root, ledger, capacity_policy=FixedPolicy(snapshot("critical", 0.09)))
+    worker = LocalWorker(root, ledger, capacity_policy=FixedCapacityPolicy(snapshot("critical", 0.09)))
     run_id = worker.submit(IngestJob(job_id="queued", symbol="TEST",
                                      start=datetime(2026, 1, 1, tzinfo=timezone.utc),
                                      end=datetime(2026, 1, 2, tzinfo=timezone.utc)))
@@ -79,14 +74,14 @@ def test_critical_capacity_worker_leaves_job_queued(tmp_path):
 def test_capacity_alert_is_idempotent_across_monitor_runs(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     sink = AlertSink(tmp_path / "alerts")
-    policy = FixedPolicy(snapshot("warning", 0.12))
+    policy = FixedCapacityPolicy(snapshot("warning", 0.12))
     first = check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=policy)
     second = check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=policy)
     capacity_events = [event for event in sink.events() if event["event"] == "capacity_warning"]
     assert len(capacity_events) == 1
     assert len(first) == 2 and second == []
 
-    ok_policy = FixedPolicy(snapshot("ok", 0.20))
+    ok_policy = FixedCapacityPolicy(snapshot("ok", 0.20))
     check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=ok_policy)
     third = check_alerts(ledger, sink, canonical_root=tmp_path, capacity_policy=policy)
     capacity_events = [event for event in sink.events() if event["event"] == "capacity_warning"]
@@ -97,11 +92,30 @@ def test_capacity_alert_is_idempotent_across_monitor_runs(tmp_path):
 def test_warning_capacity_blocks_large_unattended_backfill_before_network(tmp_path):
     from datetime import date
 
-    policy = FixedPolicy(snapshot("warning", 0.12))
-    with __import__("pytest").raises(RuntimeError, match="over 31 days"):
+    policy = FixedCapacityPolicy(snapshot("warning", 0.12))
+    with pytest.raises(RuntimeError, match="over 31 days"):
         backfill(
             "http://127.0.0.1:1", "fixture", "TEST", "test",
             date(2026, 1, 1), date(2026, 3, 1), tmp_path / "receipt.json",
             canonical_root=tmp_path, capacity_policy=policy,
         )
     assert not (tmp_path / "receipt.json").exists()
+
+
+def test_fixed_policy_decouples_gates_from_host_filesystem():
+    """Gate assertions must not depend on how full the host filesystem is."""
+    warning = FixedCapacityPolicy.for_free_ratio(0.5, warning_free_ratio=0.99, critical_free_ratio=0.01)
+    assert warning.inspect(Path("/nonexistent")).status == "warning"
+    with pytest.raises(CapacityProtectedError, match="over 31 days"):
+        warning.require_backfill_capacity(Path("/nonexistent"), requested_days=32)
+    # ingest stays allowed while only warning
+    warning.require_ingest_capacity(Path("/nonexistent"))
+
+    critical = FixedCapacityPolicy.for_free_ratio(0.5, warning_free_ratio=0.999, critical_free_ratio=0.99)
+    assert critical.inspect(Path("/nonexistent")).status == "critical"
+    with pytest.raises(CapacityProtectedError, match="new ingest is disabled"):
+        critical.require_ingest_capacity(Path("/nonexistent"))
+
+    # A completely free filesystem is exactly the case that used to break the drill.
+    full = FixedCapacityPolicy.for_free_ratio(1.0, warning_free_ratio=0.99, critical_free_ratio=0.01)
+    assert full.inspect(Path("/nonexistent")).status == "ok"

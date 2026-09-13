@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from urllib.parse import quote
 
+from data_center.domain.errors import ProviderGapError
 from data_center.domain.models import IngestJob, ProviderBar
 
 
@@ -26,7 +27,7 @@ class YFinanceConnector:
             if frame is None or frame.empty:
                 frame = self._chart_frame(session, job)
         if frame is None or frame.empty:
-            raise ValueError("yfinance returned no bars for the requested date range")
+            raise ProviderGapError("yfinance returned no bars for the requested date range")
         if frame.columns.nlevels > 1:
             frame.columns = frame.columns.get_level_values(0)
         frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
