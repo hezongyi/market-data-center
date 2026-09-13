@@ -1,5 +1,4 @@
 import { CopyId } from "../components/ui";
-import { TimeDisplay } from "../preferences";
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -8,6 +7,7 @@ import {
 } from "lucide-react";
 import { ConfirmDialog, DataTable, DetailDrawer, EmptyState, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { messageOf, permissionOf, useQuery } from "../hooks";
+import { TimeDisplay } from "../preferences";
 import type { RunDetail, RunFilters } from "../lib/api";
 import type { Services } from "../services";
 
@@ -199,12 +199,12 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <div><dt>Run kind</dt><dd>{run.run_kind ?? "ingest"}</dd></div>
       <div><dt>Run scope</dt><dd>{run.run_scope ?? "—"}</dd></div>
       <div><dt>Selector</dt><dd className="mono">{Object.entries(run.selector).map(([key, value]) => `${key}=${value}`).join(" ") || "—"}</dd></div>
-      <div><dt>Time range</dt><dd className="mono">{run.time_range ? `${run.time_range.start} → ${run.time_range.end} (${run.time_range.semantics})` : "—"}</dd></div>
+      <div><dt>Time range</dt><dd className="mono">{run.time_range ? <><TimeDisplay value={run.time_range.start} /> → <TimeDisplay value={run.time_range.end} /> ({run.time_range.semantics})</> : "—"}</dd></div>
       <div><dt>Windows</dt><dd>{run.window_count}</dd></div>
       <div><dt>Input snapshot</dt><dd className="mono">{run.input_snapshot_id ?? "—"}</dd></div>
       <div><dt>Schema version</dt><dd className="mono">{run.schema_version ?? "—"}</dd></div>
       <div><dt>Rows</dt><dd>{run.row_count ?? "—"}</dd></div>
-      <div><dt>Extent (UTC)</dt><dd className="mono">{run.min_ts ?? run.min_date ?? "—"} → {run.max_ts ?? run.max_date ?? "—"}</dd></div>
+      <div><dt>Extent</dt><dd className="mono"><TimeDisplay value={run.min_ts ?? run.min_date} /> → <TimeDisplay value={run.max_ts ?? run.max_date} /></dd></div>
       <div><dt>Manifest</dt><dd>{run.manifest_status}</dd></div>
       <div><dt>Output hash</dt><dd className="mono">{run.output_hash?.slice(0, 16) ?? "—"}</dd></div>
       <div><dt>Findings</dt><dd>{run.finding_count}</dd></div>
