@@ -207,7 +207,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
             </div>
             <dl className="detail-list">
               <div><dt>Oldest queued (UTC)</dt><dd>{queue.data.oldest_queued_available_at
-                ? <span className="mono">{queue.data.oldest_queued_available_at}<small>{utc(queue.data.oldest_queued_available_at)}</small></span>
+                ? <span className="mono">{utc(queue.data.oldest_queued_available_at)}</span>
                 : "No queued job waiting"}</dd></div>
               <div><dt>Job states</dt><dd className="mono">{Object.entries(queue.data.by_status ?? {}).map(([status, count]) => `${status}=${count}`).join(" ") || "—"}</dd></div>
             </dl>
@@ -234,7 +234,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
               <div><dt>Heartbeat status</dt><dd><StatusBadge tone={heartbeatTone(worker.data.heartbeat_status)}>
                 {heartbeatIcon(worker.data.heartbeat_status)}{worker.data.heartbeat_status}</StatusBadge></dd></div>
               <div><dt>Freshness limit</dt><dd>{worker.data.heartbeat_limit_seconds} s</dd></div>
-              <div><dt>Observed</dt><dd className="mono">{worker.data.observed_at}<small>{utc(worker.data.observed_at)}</small></dd></div>
+              <div><dt>Observed</dt><dd className="mono">{utc(worker.data.observed_at)}</dd></div>
             </dl>
             <h3 className="detail-heading"><HeartPulse size={14} /> In-flight jobs ({worker.data.running_count})</h3>
             {runningJobs.length
@@ -313,7 +313,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
                 {receipt ? <>
                   <StatusBadge tone={resultTone(receipt.result)}>{receipt.result}</StatusBadge>
                   <span className="filter-note">completed (UTC)</span>
-                  <span className="mono">{receipt.completed_at}<small>{utc(receipt.completed_at)}</small></span>
+                  <span className="mono">{utc(receipt.completed_at)}</span>
                   <span>deployment {receipt.deployment_id ? <CopyId value={receipt.deployment_id} /> : "—"}</span>
                   <span className="filter-note">{receipt.reference}</span>
                   <span className="filter-note">{fieldsText(receipt.fields)}</span>
@@ -327,7 +327,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
               {recentReceipts.map(receipt => <li key={`${receipt.action}-${receipt.reference}`}>
                 <b>{receipt.action}</b>
                 <StatusBadge tone={resultTone(receipt.result)}>{receipt.result}</StatusBadge>
-                <span className="mono">{receipt.completed_at}<small>{utc(receipt.completed_at)}</small></span>
+                <span className="mono">{utc(receipt.completed_at)}</span>
                 <span className="filter-note">{receipt.reference}</span>
               </li>)}
             </ul>
