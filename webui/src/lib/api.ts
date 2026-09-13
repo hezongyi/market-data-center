@@ -332,7 +332,7 @@ export type MaintenanceTaskRequest = {
   start: string;
   end: string;
   task_id?: string | null;
-  schedule?: "manual" | "hourly" | "daily";
+  schedule?: "manual";
 };
 
 export type MaintenanceTask = {
@@ -451,7 +451,7 @@ export type TaskPreview = {
   write_status: WriteStatus;
   generated_at: string;
 };
-export type MaintenanceTaskRecord = { task_id: string; run_kind: RunKind; dataset_id: string; status: string; run_ids?: string[]; submitted_at?: string; updated_at?: string; schedule?: string | null; next_run_at?: string | null; recent_run_id?: string | null; recent_run_at?: string | null; recent_error?: string | null };
+export type MaintenanceTaskRecord = { task_id: string; run_kind: RunKind; dataset_id: string; status: string; run_ids?: string[]; submitted_at?: string; updated_at?: string; schedule?: "manual" | null; recent_run_id?: string | null; recent_run_at?: string | null; recent_error?: string | null };
 
 export type QueuedEnvelope = {
   status: "queued" | string;

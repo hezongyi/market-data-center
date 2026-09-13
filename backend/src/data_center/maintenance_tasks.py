@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
@@ -80,7 +80,7 @@ class MaintenanceTaskRequest(BaseModel):
     start: datetime
     end: datetime
     task_id: str | None = None
-    schedule: Literal["manual", "hourly", "daily"] = "manual"
+    schedule: Literal["manual"] = "manual"
 
 
 class MaintenanceTaskError(ValueError):
@@ -173,8 +173,7 @@ def _task_document(request: MaintenanceTaskRequest, dataset_id: str, *, asset_cl
         "start": _iso(request.start),
         "end": _iso(request.end),
         "time_range": {"start": _iso(request.start), "end": _iso(request.end), "semantics": WINDOW_SEMANTICS},
-        "schedule": request.schedule,
-        "next_run_at": (datetime.now(timezone.utc) + (timedelta(hours=1) if request.schedule == "hourly" else timedelta(days=1))).isoformat() if request.schedule != "manual" else None,
+        "schedule": "manual",
     }
 
 

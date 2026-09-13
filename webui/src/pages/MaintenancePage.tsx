@@ -57,7 +57,6 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const [priceBasis, setPriceBasis] = useState("raw");
   const [start, setStart] = useState("2026-01-01");
   const [end, setEnd] = useState("2026-01-05");
-  const [schedule, setSchedule] = useState<"manual" | "hourly" | "daily">("manual");
   const [tracked, setTracked] = useState<string[]>([]);
   const [submissions, setSubmissions] = useState<QueuedEnvelope[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>(() => loadTemplates());
@@ -91,7 +90,6 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     { accessorKey: "run_kind", header: t("Kind") },
     { accessorKey: "status", header: t("Status"), cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
     { accessorKey: "recent_run_id", header: t("Recent run"), cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
-    { accessorKey: "next_run_at", header: t("Next run"), cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
     { accessorKey: "recent_error", header: t("Recent error"), cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "updated_at", header: t("Updated"), cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
     { accessorKey: "task_id", header: t("Actions"), cell: info => { const id = String(info.getValue()); const row = info.row.original; return <><button className="link-button" onClick={() => setSelectedRegistryTask(row)}>{t("Details")}</button><button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button></>; } },
@@ -133,7 +131,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     price_basis: definition.dataset === "market_bars" ? priceBasis : null,
     start: isoFromInput(start),
     end: isoFromInput(end),
-    schedule,
+    schedule: "manual",
   };
 
   const unavailableKind = runKindMatrix.length > 0 && !kindAvailable(runKind);
@@ -270,7 +268,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
         </select></label>
         <label>{t("Start (UTC)")}<input aria-label="Task start date" type="date" value={start} onChange={event => setStart(event.target.value)} /></label>
         <label>{t("End (UTC)")}<input aria-label="Task end date" type="date" value={end} onChange={event => setEnd(event.target.value)} /></label>
-        <label>{t("Schedule")}<select aria-label="Task schedule" value={schedule} onChange={event => setSchedule(event.target.value as typeof schedule)}><option value="manual">Manual</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select></label>
+        <span className="field-hint">{t("Manual submission in v0.5")}</span>
       </FilterBar>
 
       {definition.dataset === "market_bars" && <FilterBar>
@@ -310,7 +308,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => (!taskFilter || task.status === taskFilter) && (!taskDatasetFilter || task.dataset_id === taskDatasetFilter) && (!taskKindFilter || task.run_kind === taskKindFilter))} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
     {selectedRegistryTask && <DetailDrawer title={t("Maintenance task details")} onClose={() => setSelectedRegistryTask(null)}>
-      <dl className="detail-list"><div><dt>Task ID</dt><dd><CopyId value={selectedRegistryTask.task_id} /></dd></div><div><dt>Dataset</dt><dd>{selectedRegistryTask.dataset_id}</dd></div><div><dt>Kind</dt><dd>{selectedRegistryTask.run_kind}</dd></div><div><dt>Status</dt><dd><StatusBadge tone={tone(selectedRegistryTask.status)}>{selectedRegistryTask.status}</StatusBadge></dd></div><div><dt>{t("Schedule")}</dt><dd>{selectedRegistryTask.schedule ?? "—"}</dd></div><div><dt>Next run</dt><dd><TimeDisplay value={selectedRegistryTask.next_run_at} /></dd></div><div><dt>Recent run</dt><dd>{selectedRegistryTask.recent_run_id ? <CopyId value={selectedRegistryTask.recent_run_id} /> : "—"}</dd></div><div><dt>Recent error</dt><dd>{selectedRegistryTask.recent_error ?? "—"}</dd></div></dl>
+      <dl className="detail-list"><div><dt>Task ID</dt><dd><CopyId value={selectedRegistryTask.task_id} /></dd></div><div><dt>Dataset</dt><dd>{selectedRegistryTask.dataset_id}</dd></div><div><dt>Kind</dt><dd>{selectedRegistryTask.run_kind}</dd></div><div><dt>Status</dt><dd><StatusBadge tone={tone(selectedRegistryTask.status)}>{selectedRegistryTask.status}</StatusBadge></dd></div><div><dt>{t("Schedule")}</dt><dd>{t("Manual")}</dd></div><div><dt>Recent run</dt><dd>{selectedRegistryTask.recent_run_id ? <CopyId value={selectedRegistryTask.recent_run_id} /> : "—"}</dd></div><div><dt>Recent error</dt><dd>{selectedRegistryTask.recent_error ?? "—"}</dd></div></dl>
     </DetailDrawer>}
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
       <PanelHeading eyebrow="Live activity" title={t("Submitted tasks")}
