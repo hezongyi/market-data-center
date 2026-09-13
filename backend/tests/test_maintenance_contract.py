@@ -105,6 +105,23 @@ def test_derive_plan_requires_a_registered_recipe_and_input_snapshot(tmp_path) -
     assert "input_snapshot_empty" in {error["code"] for error in empty["validation"]["errors"]}
 
 
+def test_maintenance_plan_rejects_run_kind_dataset_mismatch(tmp_path) -> None:
+    http = client(tmp_path)
+    invalid = [
+        ingest_request(run_kind="derive", dataset_id="provider_bars"),
+        ingest_request(run_kind="ingest", dataset_id="market_bars",
+                       recipe_id="utc-24x7-1m-to-1d-ohlcv", recipe_version="1"),
+        ingest_request(run_kind="derive", dataset_id="economic_observations", series_id="GDP"),
+    ]
+    for payload in invalid:
+        preview = http.post("/api/v1/maintenance/plans", json=payload)
+        assert preview.status_code == 200
+        errors = preview.json()["data"]["validation"]["errors"]
+        assert any(error["code"] == "unsupported_run_kind" for error in errors)
+        assert preview.json()["data"]["submittable"] is False
+        assert http.post("/api/v1/maintenance/tasks", json=payload).status_code == 422
+
+
 # -- submission ----------------------------------------------------------
 
 
