@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
 from data_center.api.app import create_app
-from data_center.settings import Settings
 from data_center.runs.ledger import RunLedger
+from data_center.settings import Settings
 
 
 def test_auth_initialize_login_me_change_password(tmp_path):
