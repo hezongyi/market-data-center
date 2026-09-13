@@ -1,3 +1,4 @@
+import { TimeDisplay } from "../preferences";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity, AlertTriangle, CalendarClock, CheckCircle2, Database, FileCheck2, Hammer,
@@ -31,7 +32,7 @@ const tone = (state: WriteState | string) =>
     : ["failed", "dead_letter", "protected", "unauthorized"].includes(state) ? "bad" as const
       : state === "degraded" || state === "queued" || state === "running" ? "warn" as const : "neutral" as const;
 
-const utc = (value?: string | null) => value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 
 const isoFromInput = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : "";
 
@@ -185,7 +186,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     { accessorKey: "run_kind", header: "Kind" },
     { accessorKey: "dataset_id", header: "Dataset" },
     { accessorKey: "window_count", header: "Windows" },
-    { accessorKey: "submitted_at", header: "Submitted (UTC)", cell: info => utc(String(info.getValue())) },
+    { accessorKey: "submitted_at", header: "Submitted", cell: info => utc(String(info.getValue())) },
   ];
 
   return <>
@@ -391,7 +392,7 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
       <div><dt>Runs</dt><dd className="mono">{envelope.run_ids.join(", ")}</dd></div>
       <div><dt>Windows</dt><dd>{envelope.window_count}</dd></div>
       <div><dt>Plan</dt><dd className="mono">{envelope.plan_id ?? "—"}</dd></div>
-      <div><dt>Submitted (UTC)</dt><dd>{utc(envelope.submitted_at)}</dd></div>
+      <div><dt>Submitted</dt><dd>{utc(envelope.submitted_at)}</dd></div>
       <div><dt>Input snapshot</dt><dd className="mono">{envelope.input_snapshot_id ?? "—"}</dd></div>
       <div><dt>Audit id</dt><dd>{envelope.audit_id ?? "—"}</dd></div>
     </dl>

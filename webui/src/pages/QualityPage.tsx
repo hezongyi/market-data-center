@@ -1,3 +1,4 @@
+import { TimeDisplay } from "../preferences";
 /**
  * Quality feedback loop (v0.4 Phase 3).
  *
@@ -39,8 +40,7 @@ type QualityPageProps = {
 
 // -- formatting ------------------------------------------------------------
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 
 const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 
@@ -384,7 +384,7 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
     } },
     { accessorKey: "code", header: "Code", cell: info => <span className="mono">{String(info.getValue())}</span> },
     { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
-    { id: "observed", header: "Observed (UTC)", cell: ({ row }) => utcPosition(observedOf(row.original)) },
+    { id: "observed", header: "Observed", cell: ({ row }) => utcPosition(observedOf(row.original)) },
     { accessorKey: "run_id", header: "Run", cell: info => {
       const runId = info.getValue() as string | undefined;
       return runId ? <span className="mono">{runId}</span> : <span className="filter-note">not recorded</span>;
@@ -397,7 +397,7 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
     } },
     { accessorKey: "occurrence_count", header: "Occurrences", cell: ({ row }) => {
       const count = row.original.occurrence_count ?? 1;
-      return <span title={`first ${utc(row.original.first_observed_at)} · last ${utc(row.original.last_observed_at)}`}>{count}</span>;
+      return <span title={`first ${row.original.first_observed_at} · last ${row.original.last_observed_at}`}>{count}</span>;
     } },
   ], []);
 
@@ -577,9 +577,9 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
       <div><dt>Bar timestamp (UTC)</dt><dd>{utcPosition(finding.bar_ts)}</dd></div>
       <div><dt>Observation date (UTC)</dt><dd>{utcPosition(finding.observation_date)}</dd></div>
       <div><dt>Occurrences</dt><dd>{finding.occurrence_count ?? 1}</dd></div>
-      <div><dt>First observed (UTC)</dt><dd>{utc(finding.first_observed_at)}</dd></div>
-      <div><dt>Last observed (UTC)</dt><dd>{utc(finding.last_observed_at)}</dd></div>
-      <div><dt>Handling state</dt><dd>{state}{finding.state_updated_at ? ` · updated ${utc(finding.state_updated_at)}` : ""}</dd></div>
+      <div><dt>First observed</dt><dd>{utc(finding.first_observed_at)}</dd></div>
+      <div><dt>Last observed</dt><dd>{utc(finding.last_observed_at)}</dd></div>
+      <div><dt>Handling state</dt><dd>{state}{finding.state_updated_at ? <> · updated {utc(finding.state_updated_at)}</> : ""}</dd></div>
       {finding.resolved_by_run_id && <div><dt>Resolved by run</dt><dd className="mono">{finding.resolved_by_run_id}</dd></div>}
     </dl>
 
@@ -641,7 +641,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
           <div><dt>Findings</dt><dd>{runQuery.data.finding_count}</dd></div>
           <div><dt>Run kind</dt><dd>{runQuery.data.run_kind ?? "ingest"}</dd></div>
           <div><dt>Run scope</dt><dd>{runQuery.data.run_scope ?? "—"}</dd></div>
-          <div><dt>Created (UTC)</dt><dd>{utc(runQuery.data.created_at)}</dd></div>
+          <div><dt>Created</dt><dd>{utc(runQuery.data.created_at)}</dd></div>
           <div><dt>Terminal</dt><dd>{runQuery.data.terminal ? "yes — receipts are immutable" : "no — still in flight"}</dd></div>
         </dl>
         {runQuery.data.degraded_reasons.length > 0 && <ul className="issue-list" aria-label="Degraded reasons">

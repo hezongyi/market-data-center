@@ -1,9 +1,10 @@
+import { CopyId } from "../components/ui";
 import type { Dataset, Finding, Metrics, ReadyState, Run } from "../lib/api";
 import { DataTable, EmptyState, LoadingSkeleton, MetricCard, PanelHeading, StatusBadge } from "../components/ui";
 import type { ColumnDef } from "@tanstack/react-table";
 
 const runColumns: ColumnDef<Run>[] = [
-  { accessorKey: "run_id", header: "Run ID", cell: info => <span className="mono">{String(info.getValue())}</span> },
+  { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
   { accessorKey: "dataset_id", header: "Dataset" },
   { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
   { accessorKey: "row_count", header: "Rows", cell: info => String(info.getValue() ?? "—") },

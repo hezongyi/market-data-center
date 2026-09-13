@@ -1,3 +1,4 @@
+import { TimeDisplay } from "../preferences";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, ChevronLeft, ChevronRight, CircleSlash, Hammer, Lock, Search } from "lucide-react";
@@ -64,8 +65,7 @@ const economicColumns: ColumnDef<EconomicObservation>[] = [
   { accessorKey: "units", header: "Units", cell: info => String(info.getValue() ?? "—") },
 ];
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 const dayStart = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : undefined;
 const dayEnd = (value: string) => value ? new Date(`${value}T23:59:59.999Z`).toISOString() : undefined;
 
@@ -408,7 +408,7 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
         <div><dt>{view.kind === "economic" ? "Observation window" : "Observed window (UTC)"}</dt><dd className="mono">
           {view.kind === "economic"
             ? `${view.minTs ?? "—"} → ${view.maxTs ?? "—"}`
-            : view.minTs ? `${utc(view.minTs)} → ${utc(view.maxTs)}` : "—"}</dd></div>
+            : view.minTs ? <>{utc(view.minTs)} → {utc(view.maxTs)}</> : "—"}</dd></div>
         {view.kind === "market" && <>
           <div><dt>Recipe</dt><dd className="mono">{view.recipeId ? `${view.recipeId}@${view.recipeVersion}` : "—"}</dd></div>
           <div><dt>Recipe status</dt><dd>{view.recipeStatus ?? <Unavailable label="Not published" />}</dd></div>

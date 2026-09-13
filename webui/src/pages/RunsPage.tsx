@@ -1,3 +1,5 @@
+import { CopyId } from "../components/ui";
+import { TimeDisplay } from "../preferences";
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -18,7 +20,7 @@ const tone = (value: string) =>
     : ["failed", "dead_letter"].includes(value) ? "bad" as const
       : ["degraded", "queued", "running"].includes(value) ? "warn" as const : "neutral" as const;
 
-const utc = (value?: string | null) => value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 const dayToIso = (value: string, endOfDay = false) =>
   value ? new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}Z`).toISOString() : undefined;
 
@@ -94,7 +96,7 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
   };
 
   const columns = useMemo<ColumnDef<RunDetail>[]>(() => [
-    { accessorKey: "run_id", header: "Run ID", cell: info => <span className="mono">{String(info.getValue())}</span> },
+    { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
     { accessorKey: "dataset_id", header: "Dataset" },
     { accessorKey: "run_kind", header: "Kind", cell: info => String(info.getValue() ?? "ingest") },
     { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
@@ -109,7 +111,7 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
       ? <span className="stage-chip"><FileText size={11} />published</span>
       : <span className="filter-note">{row.original.manifest_status.replace(/_/g, " ")}</span> },
     { accessorKey: "finding_count", header: "Findings", cell: info => String(info.getValue() ?? 0) },
-    { accessorKey: "created_at", header: "Created (UTC)", cell: info => utc(String(info.getValue() ?? "")) },
+    { accessorKey: "created_at", header: "Created", cell: info => utc(String(info.getValue() ?? "")) },
     { id: "actions", header: "Actions", enableSorting: false, cell: ({ row }) => <div className="row-actions">
       {["failed", "dead_letter"].includes(row.original.status) && <button onClick={event => { event.stopPropagation(); setPending({ action: "retry", run: row.original }); }}>Retry</button>}
       {row.original.status === "dead_letter" && row.original.dead_letter_state?.state !== "acknowledged" && <button onClick={event => { event.stopPropagation(); setPending({ action: "acknowledge", run: row.original }); }}>Acknowledge</button>}
@@ -207,8 +209,8 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <div><dt>Output hash</dt><dd className="mono">{run.output_hash?.slice(0, 16) ?? "—"}</dd></div>
       <div><dt>Findings</dt><dd>{run.finding_count}</dd></div>
       <div><dt>Attempts</dt><dd>{run.attempt_count ?? 0} · retries {run.retry_count ?? 0}</dd></div>
-      <div><dt>Created (UTC)</dt><dd>{utc(run.created_at)}</dd></div>
-      <div><dt>Finished (UTC)</dt><dd>{utc(run.finished_at)}</dd></div>
+      <div><dt>Created</dt><dd>{utc(run.created_at)}</dd></div>
+      <div><dt>Finished</dt><dd>{utc(run.finished_at)}</dd></div>
       {run.error && <div><dt>Error</dt><dd>{run.error}</dd></div>}
       {run.dead_letter_state && <div><dt>Dead letter</dt><dd>{run.dead_letter_state.state ?? "—"}</dd></div>}
     </dl>

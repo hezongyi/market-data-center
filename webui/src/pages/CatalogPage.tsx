@@ -1,3 +1,4 @@
+import { TimeDisplay } from "../preferences";
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -49,8 +50,7 @@ const KindChip = ({ dataset }: { dataset: CatalogDataset }) => {
 const Unavailable = ({ label = "Not published by the API" }: { label?: string }) =>
   <span className="catalog-chip unavailable"><CircleSlash size={11} />{label}</span>;
 
-const utc = (value?: string | null) =>
-  value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 
 const dayStart = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : undefined;
 const dayEnd = (value: string) => value ? new Date(`${value}T23:59:59.999Z`).toISOString() : undefined;
@@ -359,9 +359,9 @@ function CoverageProbe({ dataset, services }: { dataset: CatalogDataset; service
         <div><dt>Rows</dt><dd>{report?.row_count?.toLocaleString() ?? "—"}</dd></div>
         <div><dt>Gap count</dt><dd>{report?.gap_count == null ? <Unavailable label="Not evaluated" /> : report.gap_count}</dd></div>
         <div><dt>Ready intervals</dt><dd>{report?.ready_intervals?.length ?? 0}</dd></div>
-        <div><dt>First / last bar</dt><dd className="mono">{report?.min_ts ? `${utc(report.min_ts)} → ${utc(report.max_ts)}` : "—"}</dd></div>
+        <div><dt>First / last bar</dt><dd className="mono">{report?.min_ts ? <>{utc(report.min_ts)} → {utc(report.max_ts)}</> : "—"}</dd></div>
         {(report?.ready_intervals?.length ?? 0) > 0 && <div><dt>Ready interval list</dt><dd className="mono">
-          {report?.ready_intervals?.map(interval => `${utc(interval.start)} → ${utc(interval.end)} (${interval.semantics})`).join(" · ")}
+          {report?.ready_intervals?.map((interval, index) => <span key={index}>{utc(interval.start)} → {utc(interval.end)} ({interval.semantics}) </span>)}
         </dd></div>}
       </dl>)}
     {summaryOnly && <p className="filter-note"><AlertTriangle size={12} /> Summary-only coverage: the API returned coverage_scope=summary with readiness unknown, so no per-interval readiness is claimed here.</p>}

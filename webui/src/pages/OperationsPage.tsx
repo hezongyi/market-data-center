@@ -1,3 +1,4 @@
+import { TimeDisplay } from "../preferences";
 import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -19,7 +20,7 @@ type Tone = "good" | "warn" | "bad" | "neutral";
 
 const bytes = (value?: number | null) => value == null ? "—" : `${(value / 1024 ** 3).toFixed(1)} GiB`;
 const percent = (value?: number | null) => value == null ? "—" : `${(value * 100).toFixed(1)}%`;
-const utc = (value?: string | null) => value ? new Date(value).toLocaleString("en-GB", { timeZone: "UTC", hour12: false }) : "—";
+const utc = (value?: string | null) => <TimeDisplay value={value} />;
 const selectorText = (selector: Record<string, string> | null | undefined) =>
   Object.entries(selector ?? {}).map(([key, value]) => `${key}=${value}`).join(" ") || "—";
 const fieldsText = (fields: Record<string, unknown> | null | undefined) => {
@@ -116,7 +117,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
   const recentReceipts = receipts.data?.receipts ?? [];
 
   const auditColumns = useMemo<ColumnDef<OperationAuditEntry>[]>(() => [
-    { accessorKey: "at", header: "Time (UTC)", cell: info => <span className="mono">{String(info.getValue())}<small>{utc(String(info.getValue()))}</small></span> },
+    { accessorKey: "at", header: "Time", cell: info => <span className="mono">{String(info.getValue())}<small>{utc(String(info.getValue()))}</small></span> },
     { accessorKey: "action", header: "Action" },
     { accessorKey: "actor", header: "Actor", cell: info => <span className="mono" title="Non-reversible actor fingerprint; never a credential.">{String(info.getValue() ?? "—")}</span> },
     { accessorKey: "task_id", header: "Task", cell: info => <span className="mono">{String(info.getValue() ?? "—")}</span> },
@@ -135,7 +136,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
 
   const eventColumns = useMemo<ColumnDef<CapacityEvent>[]>(() => [
     { accessorKey: "event", header: "Event", cell: info => <StatusBadge tone={eventTone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
-    { accessorKey: "created_at", header: "Recorded (UTC)", cell: info => <span className="mono">{String(info.getValue() ?? "—")}<small>{utc(info.getValue() as string | null)}</small></span> },
+    { accessorKey: "created_at", header: "Recorded", cell: info => <span className="mono">{String(info.getValue() ?? "—")}<small>{utc(info.getValue() as string | null)}</small></span> },
     { accessorKey: "free_ratio", header: "Free ratio", cell: info => percent(info.getValue() as number | null) },
     { accessorKey: "status", header: "Status", cell: info => String(info.getValue() ?? "—") },
     { id: "thresholds", header: "Thresholds", cell: ({ row }) => `warning ${percent(row.original.warning_free_ratio)} · critical ${percent(row.original.critical_free_ratio)}` },
@@ -233,7 +234,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
               <div><dt>Heartbeat status</dt><dd><StatusBadge tone={heartbeatTone(worker.data.heartbeat_status)}>
                 {heartbeatIcon(worker.data.heartbeat_status)}{worker.data.heartbeat_status}</StatusBadge></dd></div>
               <div><dt>Freshness limit</dt><dd>{worker.data.heartbeat_limit_seconds} s</dd></div>
-              <div><dt>Observed (UTC)</dt><dd className="mono">{worker.data.observed_at}<small>{utc(worker.data.observed_at)}</small></dd></div>
+              <div><dt>Observed</dt><dd className="mono">{worker.data.observed_at}<small>{utc(worker.data.observed_at)}</small></dd></div>
             </dl>
             <h3 className="detail-heading"><HeartPulse size={14} /> In-flight jobs ({worker.data.running_count})</h3>
             {runningJobs.length
