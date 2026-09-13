@@ -62,6 +62,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const [templateName, setTemplateName] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [taskFilter, setTaskFilter] = useState("");
+  const [selectedRegistryTask, setSelectedRegistryTask] = useState<MaintenanceTaskRecord | null>(null);
 
   const [assetClass, setAssetClass] = useState("");
   const capabilities = useQuery(() => services.catalog.capabilities(), [services, apiKey]);
@@ -89,7 +90,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     { accessorKey: "next_run_at", header: "Next run", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
     { accessorKey: "recent_error", header: "Recent error", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "updated_at", header: "Updated", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
-    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button>; } },
+    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <><button className="link-button" onClick={() => setSelectedRegistryTask(row)}>Details</button><button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button></>; } },
   ], []);
 
   // The platform publishes which dataset each run kind can target; the console
@@ -302,6 +303,9 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label></FilterBar>
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => !taskFilter || task.status === taskFilter)} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
+    {selectedRegistryTask && <DetailDrawer title="Maintenance task details" onClose={() => setSelectedRegistryTask(null)}>
+      <dl className="detail-list"><div><dt>Task ID</dt><dd><CopyId value={selectedRegistryTask.task_id} /></dd></div><div><dt>Dataset</dt><dd>{selectedRegistryTask.dataset_id}</dd></div><div><dt>Kind</dt><dd>{selectedRegistryTask.run_kind}</dd></div><div><dt>Status</dt><dd><StatusBadge tone={tone(selectedRegistryTask.status)}>{selectedRegistryTask.status}</StatusBadge></dd></div><div><dt>Schedule</dt><dd>{selectedRegistryTask.schedule ?? "—"}</dd></div><div><dt>Next run</dt><dd><TimeDisplay value={selectedRegistryTask.next_run_at} /></dd></div><div><dt>Recent run</dt><dd>{selectedRegistryTask.recent_run_id ? <CopyId value={selectedRegistryTask.recent_run_id} /> : "—"}</dd></div><div><dt>Recent error</dt><dd>{selectedRegistryTask.recent_error ?? "—"}</dd></div></dl>
+    </DetailDrawer>}
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
       <PanelHeading eyebrow="Live activity" title="Submitted tasks"
         action={<TrackBadge state={tracker.state} />} />
