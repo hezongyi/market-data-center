@@ -565,6 +565,14 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByText("Capacity history", { exact: true }).waitFor();
     await page.getByText("Write audit trail", { exact: true }).waitFor();
     await page.getByText("Recorded transitions", { exact: false }).first().waitFor();
+    // The receipts panel renders the actions the API reports.  A name the
+    // platform never writes must not appear as a phantom gap, and a name it
+    // does write must not be hidden because the console kept its own list.
+    const receiptActions = await page.locator(".receipt-list li b").allTextContents();
+    assert.ok(receiptActions.includes("deployment_stage"),
+      `deployment_stage missing from the receipts panel: ${receiptActions.join(", ")}`);
+    assert.ok(!receiptActions.includes("release") && !receiptActions.includes("deployment"),
+      `a receipt action the platform never writes is rendered: ${receiptActions.join(", ")}`);
     const auditRow = page.locator("table tbody tr").filter({ hasText: "maintenance." }).first();
     await auditRow.waitFor();
     await page.getByText("non-reversible", { exact: false }).first().waitFor();
@@ -637,7 +645,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
-      "operations_write_audit", "maintenance_run_kind_matrix"],
+      "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
