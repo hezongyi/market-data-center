@@ -17,12 +17,12 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.3.2`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
-| 最新发布标签 | `v0.3.2` → `a8f6e3d616e92f78a50ce9ec0800d0eb324836b9`（annotated、不可变） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.2) + `release-receipt.json` |
-| 生产 deployment source commit | `a8f6e3d616e92f78a50ce9ec0800d0eb324836b9`（= `v0.3.2`），是 protected `main` 的祖先 | active deployment manifest |
+| 源码版本 | `0.4.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
+| 最新发布标签 | `v0.3.3` → `f6f69366d01da54c9f8b2ac3e69ad42fca7374c7`（annotated、不可变）；`v0.4.0` 见发布 PR 与 `docs/releases/v0.4.0.md` | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.3) + `release-receipt.json` |
+| 生产 deployment source commit | `f6f69366d01da54c9f8b2ac3e69ad42fca7374c7`（= `v0.3.3`，deployment `f6f69366d01d-021478b1`），是 protected `main` 的祖先；v0.4.0 激活见下节 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
-生产 deployment 现与 `v0.3.2` 发布基线一致。2026-09-13 的 activation 演练保留了完整回执：`v0.3.1` 的 stage/activate、注入候选 readiness 失败后的自动恢复（`recovered_deployment_id=b5d1bc95681b-610c867f`，canonical 与 ledger 哈希未变）、回滚到 `4016a992669d-b0be2ea0` 后再次前滚、`v0.3.1` 的 60 分钟 monitor soak（33 次运行、无重叠、身份稳定），以及 `v0.3.2` 的 stage/activate。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+生产 deployment 现与 `v0.3.3` 发布基线一致。2026-09-13 的 activation 演练保留了完整回执：`v0.3.1` 的 stage/activate、注入候选 readiness 失败后的自动恢复（`recovered_deployment_id=b5d1bc95681b-610c867f`，canonical 与 ledger 哈希未变）、回滚到 `4016a992669d-b0be2ea0` 后再次前滚、`v0.3.1` 的 60 分钟 monitor soak（33 次运行、无重叠、身份稳定），以及 `v0.3.2` 的 stage/activate。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
 
 monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（systemd 默认 `AccuracySec=1min` 的合并效应），即告警分辨率实际减半；这是配置事实，不是故障。
 
@@ -40,14 +40,14 @@ monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（s
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 分支 | `feat/webui-data-workbench-v0.4`，基线 `v0.3.3`（`f6f6936`） | git worktree |
+| 分支 | `main`（PR #75 合并 v0.4 工作台，PR #76 收口写接口审计与鉴权策略） | git worktree |
 | 维护任务 | `POST /maintenance/plans` 无副作用预览 + `POST /maintenance/tasks` 统一 queued envelope；`/derive/runs`、`/economic/ingest`、`/quality/checks` 复用同一 contract | `backend/tests/test_maintenance_contract.py` |
 | 只读校验运行 | `quality`/`parity` run 只记录 findings，不发布 canonical part、不产生 manifest | `test_quality_run_executes_as_a_verification_and_records_findings` |
 | Runs 读模型 | kind/scope/时间筛选 + opaque cursor 分页；`/runs/{id}/detail` 投影 stage、window、retry chain、degraded 原因，不改写 terminal receipt | `test_run_list_filters_and_cursor_pagination`、`test_run_detail_projects_stage_windows_and_retry_chain` |
 | findings 治理 | 稳定 `finding_id`、occurrence 计数、`open/acknowledged/resolved` 处理状态与运行结果分离 | `test_findings_support_structured_filters_and_state_transitions` |
 | 写保护 | capacity critical 与 warning 下 >31 天 backfill 返回 507 并进入写审计；鉴权失败 401 | `test_capacity_critical_protects_writes_and_is_audited` |
 | 浏览器验收 | 1440px 与 390px 覆盖 provider ingest、derive、parity、quality（degraded）、economic ingest（本地 provider fixture）、被拒写入与容量保护写入 | `acceptance-receipts/browser/receipt.json` |
-| 部署状态 | 仅代码与隔离验收；生产 deployment 未变更，未创建 v0.4 release tag | 无 deployment receipt |
+| 部署状态 | 已发布 `v0.4.0`；生产激活与真实环境走查单独记录 receipt | `docs/releases/v0.4.0.md` |
 
 ## 状态语义
 
