@@ -25,6 +25,7 @@ write_ci_receipt() {
 trap write_ci_receipt EXIT
 
 run_backend() {
+  "$task_python" scripts/docs_consistency_check.py
   (
     cd "$repo_dir/backend"
     "$task_python" -m ruff check src tests
