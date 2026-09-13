@@ -95,7 +95,7 @@ def _refresh_sessions(config: Settings) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
             state = json.load(handle)
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        if not config.auth_password_hash:
+        if state.get("password_hash"):
             config.auth_password_hash = state.get("password_hash")
         _sessions.clear()
         _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
@@ -249,6 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/auth/status")
     def auth_status():
         """Expose only whether first-time authentication setup is required."""
+        _refresh_sessions(config)
         return api_envelope({"initialized": bool(config.auth_password_hash),
                               "username": config.auth_username})
 
