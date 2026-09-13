@@ -2,10 +2,12 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import secrets
 import sqlite3
 import tempfile
 import time
+import fcntl
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -89,7 +91,12 @@ def _refresh_sessions(config: Settings) -> None:
     if not config.auth_state_path or not config.auth_state_path.exists():
         return
     try:
-        state = json.loads(config.auth_state_path.read_text())
+        with config.auth_state_path.open("r", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            state = json.load(handle)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if not config.auth_password_hash:
+            config.auth_password_hash = state.get("password_hash")
         _sessions.clear()
         _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
     except (OSError, ValueError, TypeError, KeyError):
@@ -101,7 +108,12 @@ def _save_auth_state(config: Settings) -> None:
     payload = {"password_hash": config.auth_password_hash,
                "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
     temporary = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        json.dump(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     temporary.chmod(0o600)
     temporary.replace(config.auth_state_path)
     config.auth_state_path.chmod(0o600)
