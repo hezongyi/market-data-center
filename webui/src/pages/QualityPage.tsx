@@ -765,7 +765,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
         <div><dt>Run kind</dt><dd>{assessment.runKind}</dd></div>
         <div><dt>Run scope</dt><dd>{assessment.task.run_scope}</dd></div>
         <div><dt>Dataset</dt><dd>{assessment.task.dataset_id}</dd></div>
-        <div><dt>Window (UTC, half-open)</dt><dd className="mono">{assessment.task.start} → {assessment.task.end}</dd></div>
+        <div><dt>Window (UTC, half-open)</dt><dd className="mono"><TimeDisplay value={assessment.task.start} /> → <TimeDisplay value={assessment.task.end} /></dd></div>
       </dl>
       <ul className="issue-list" aria-label="Repair task notes">
         <li className="issue info"><Info size={14} /><b>window</b><span>{assessment.windowNote}.</span></li>
