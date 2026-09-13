@@ -29,7 +29,7 @@ def main() -> None:
         "command": f"bash scripts/ci.sh {args.scope}",
         "started_at": args.started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),
-        "software_version": "0.2.0",
+        "software_version": "0.3.0",
         "result": args.result,
         "failure_stage": None if args.result == "pass" else args.scope,
         "error_category": None if args.result == "pass" else "CommandFailed",
