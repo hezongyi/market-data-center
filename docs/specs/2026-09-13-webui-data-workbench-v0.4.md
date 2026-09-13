@@ -1,7 +1,7 @@
 # WebUI 数据维护工作台 v0.4 规划
 
 日期：2026-09-13  
-状态：in_progress  
+状态：implemented / accepted；Phases 1-4 已实现并通过隔离 CI 与 1440px/390px 浏览器验收；生产 deployment 未变更，未创建 v0.4 release tag  
 基线版本：v0.3.3  
 相关文档：`docs/api-and-webui-contract.md`、`docs/specs/2026-09-11-webui-modernization.md`
 

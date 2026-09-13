@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity, AlertTriangle, CalendarClock, CheckCircle2, Database, FileCheck2, Hammer,
   Layers, Lock, PlayCircle, RefreshCw, ShieldAlert, Sigma, Waves, XCircle,
 } from "lucide-react";
 import { DataTable, DetailDrawer, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
+import { deleteTemplate, loadTemplates, saveTemplate, type TaskTemplate } from "../lib/templates";
 import { useMaintenanceMutation, useQuery, useRunTracker, runScopeOptions, type WriteState } from "../hooks";
 import type { MaintenanceTaskRequest, QueuedEnvelope, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
 import type { Services } from "../services";
@@ -34,11 +35,14 @@ const utc = (value?: string | null) => value ? new Date(value).toLocaleString("e
 
 const isoFromInput = (value: string) => value ? new Date(`${value}T00:00:00Z`).toISOString() : "";
 
-export function MaintenancePage({ apiKey, services, onMessage, onChanged }: {
+export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft }: {
   apiKey: string;
   services: Services;
   onMessage: (message: string) => void;
   onChanged: () => void;
+  // A draft handed over from the explorer or catalog: it only fills the form,
+  // the operator still validates it against the live platform before queueing.
+  draft?: MaintenanceTaskRequest | null;
 }) {
   const [runKind, setRunKind] = useState<RunKind>("ingest");
   const [runScope, setRunScope] = useState<string>("production");
@@ -53,6 +57,9 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged }: {
   const [end, setEnd] = useState("2026-01-05");
   const [tracked, setTracked] = useState<string[]>([]);
   const [submissions, setSubmissions] = useState<QueuedEnvelope[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>(() => loadTemplates());
+  const [templateName, setTemplateName] = useState("");
+  const [selectedTemplate, setSelectedTemplate] = useState("");
 
   const [assetClass, setAssetClass] = useState("");
   const capabilities = useQuery(() => services.catalog.capabilities(), [services, apiKey]);
@@ -98,9 +105,52 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged }: {
     end: isoFromInput(end),
   };
 
+  const draftKey = draft ? JSON.stringify(draft) : "";
+  useEffect(() => {
+    if (!draft) return;
+    setRunKind(draft.run_kind);
+    setRunScope(draft.run_scope);
+    setProvider(draft.provider);
+    if (draft.symbol) setSymbol(draft.symbol);
+    if (draft.asset_class) setAssetClass(draft.asset_class);
+    if (draft.timeframe) setTimeframe(draft.timeframe);
+    if (draft.series_id) setSeriesId(draft.series_id);
+    if (draft.recipe_id) setRecipeId(draft.recipe_id);
+    if (draft.recipe_version) setRecipeVersion(draft.recipe_version);
+    if (draft.price_basis) setPriceBasis(draft.price_basis);
+    setStart(draft.start.slice(0, 10));
+    setEnd(draft.end.slice(0, 10));
+    mutation.reset();
+    onMessage("Prefilled from the explorer; validate before queueing.");
+    // The draft identity is the only trigger: re-running on every render would
+    // discard operator edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
   const review = async () => {
     onMessage("");
     await mutation.validate(task);
+  };
+
+  const applyTemplate = (name: string) => {
+    setSelectedTemplate(name);
+    const template = templates.find(item => item.name === name);
+    if (!template) return;
+    const saved = template.task;
+    setRunKind(saved.run_kind);
+    setRunScope(saved.run_scope);
+    setProvider(saved.provider);
+    if (saved.symbol) setSymbol(saved.symbol);
+    if (saved.asset_class) setAssetClass(saved.asset_class);
+    if (saved.timeframe) setTimeframe(saved.timeframe);
+    if (saved.series_id) setSeriesId(saved.series_id);
+    if (saved.recipe_id) setRecipeId(saved.recipe_id);
+    if (saved.recipe_version) setRecipeVersion(saved.recipe_version);
+    if (saved.price_basis) setPriceBasis(saved.price_basis);
+    setStart(saved.start.slice(0, 10));
+    setEnd(saved.end.slice(0, 10));
+    mutation.reset();
+    onMessage(`Loaded template ${name}; validate it again before queueing.`);
   };
 
   const capabilitiesUnavailable = capabilities.status === "error";
@@ -122,6 +172,28 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged }: {
           {capabilitiesUnavailable ? "Capabilities unavailable"
             : capabilities.data?.write_status === "protected" ? "Writes protected" : "Writes available"}
         </StatusBadge>} />
+      <FilterBar>
+        <label>Task template<select aria-label="Task template" value={selectedTemplate}
+          onChange={event => applyTemplate(event.target.value)}>
+          <option value="">— none —</option>
+          {templates.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+        </select></label>
+        <label>Template name<input aria-label="Template name" value={templateName}
+          onChange={event => setTemplateName(event.target.value)} placeholder="nightly dukascopy 1m" /></label>
+        <button className="secondary-button" onClick={() => {
+          setTemplates(saveTemplate(templateName, task));
+          setSelectedTemplate(templateName.trim());
+          setTemplateName("");
+          onMessage("Template saved in this browser; it is re-validated on every use.");
+        }} disabled={!templateName.trim()}>Save template</button>
+        <button className="secondary-button" onClick={() => {
+          if (!selectedTemplate) return;
+          setTemplates(deleteTemplate(selectedTemplate));
+          setSelectedTemplate("");
+        }} disabled={!selectedTemplate}>Delete template</button>
+        <span className="filter-note">Templates hold parameters only, never credentials, and stay in this browser.</span>
+      </FilterBar>
+
       <div className="run-kind-grid" role="radiogroup" aria-label="Run kind">
         {runKinds.map(({ value, label, dataset, hint, icon: Icon }) => (
           <button key={value} role="radio" aria-checked={runKind === value} aria-label={label}

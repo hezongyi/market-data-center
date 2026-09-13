@@ -200,7 +200,11 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <div><dt>Time range</dt><dd className="mono">{run.time_range ? `${run.time_range.start} → ${run.time_range.end} (${run.time_range.semantics})` : "—"}</dd></div>
       <div><dt>Windows</dt><dd>{run.window_count}</dd></div>
       <div><dt>Input snapshot</dt><dd className="mono">{run.input_snapshot_id ?? "—"}</dd></div>
+      <div><dt>Schema version</dt><dd className="mono">{run.schema_version ?? "—"}</dd></div>
+      <div><dt>Rows</dt><dd>{run.row_count ?? "—"}</dd></div>
+      <div><dt>Extent (UTC)</dt><dd className="mono">{run.min_ts ?? run.min_date ?? "—"} → {run.max_ts ?? run.max_date ?? "—"}</dd></div>
       <div><dt>Manifest</dt><dd>{run.manifest_status}</dd></div>
+      <div><dt>Output hash</dt><dd className="mono">{run.output_hash?.slice(0, 16) ?? "—"}</dd></div>
       <div><dt>Findings</dt><dd>{run.finding_count}</dd></div>
       <div><dt>Attempts</dt><dd>{run.attempt_count ?? 0} · retries {run.retry_count ?? 0}</dd></div>
       <div><dt>Created (UTC)</dt><dd>{utc(run.created_at)}</dd></div>
@@ -208,6 +212,15 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       {run.error && <div><dt>Error</dt><dd>{run.error}</dd></div>}
       {run.dead_letter_state && <div><dt>Dead letter</dt><dd>{run.dead_letter_state.state ?? "—"}</dd></div>}
     </dl>
+
+    {(run.windows?.length ?? 0) > 0 && <>
+      <h3 className="detail-heading"><Layers size={14} /> Windows</h3>
+      <ol className="retry-chain">{run.windows?.map(window => <li key={window.ordinal}>
+        <span className="stage-chip">#{window.ordinal} {window.reason ?? "window"}</span>
+        <span className="mono">{window.start} → {window.end}</span>
+        <span className="filter-note">{window.row_count ?? 0} row(s)</span>
+      </li>)}</ol>
+    </>}
 
     <h3 className="detail-heading"><GitBranch size={14} /> Retry chain</h3>
     <ol className="retry-chain">{run.retry_chain.map(link => <li key={link.run_id}>

@@ -17,6 +17,10 @@ let api;
 let worker;
 let browser;
 let fredEndpoint;
+// The last completed step is recorded in the receipt so a failure names the
+// stage that broke instead of only the locator that timed out.
+let step = "start";
+const at = name => { step = name; };
 
 const commit = () => {
   try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(); }
@@ -208,8 +212,10 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(base);
     await page.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
+    await page.locator(".sidebar").getByText("Snapshot fresh", { exact: true }).waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
     await page.getByText("Capacity warning", { exact: false }).first().waitFor();
+    await page.getByText("Degraded and failed runs", { exact: true }).waitFor();
 
     if (viewport.width === 1440) {
       await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
@@ -218,6 +224,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.locator(".app-shell:not(.shell-collapsed)").waitFor();
     }
 
+    at("catalog");
     await page.getByRole("button", { name: "datasets", exact: true }).click();
     await page.getByText("provider_bars", { exact: true }).waitFor();
     await page.getByText("provider_bars", { exact: true }).click();
@@ -228,6 +235,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Economic", exact: true }).waitFor();
     await page.getByRole("button", { name: "datasets", exact: true }).click();
 
+    at("runs");
     await page.getByRole("button", { name: "runs", exact: true }).click();
     await page.getByRole("button", { name: "Session access", exact: true }).click();
     await page.getByLabel("API key").fill(key);
@@ -263,6 +271,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       assert.equal(acknowledged.dead_letter_state.state, "acknowledged");
     }
 
+    at("explorer");
     await page.getByRole("button", { name: "explorer", exact: true }).click();
     await page.getByRole("button", { name: "Provider bars", exact: true }).click();
     await page.getByLabel("Provider").fill("fixture");
@@ -290,6 +299,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Load observations", exact: true }).click();
     await page.getByText("PIT mode requires an as-of timestamp.", { exact: true }).waitFor();
 
+    at("quality");
     await page.getByRole("button", { name: "quality", exact: true }).click();
     await page.getByLabel("Finding code").waitFor();
     await page.getByLabel("Finding from date").waitFor();
@@ -304,6 +314,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.locator("table tbody tr").filter({ hasText: "coverage_degraded" }).first().waitFor();
     }
 
+    at("operations");
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
     await page.getByText("Active alerts", { exact: true }).waitFor();
@@ -326,9 +337,17 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }, "UI ingest did not reach terminal pass");
 
     // ---- v0.4 unified maintenance workbench -------------------------------
+    at("maintenance");
     await page.getByRole("button", { name: "maintenance", exact: true }).click();
     await page.getByRole("radio", { name: "Provider ingest", exact: true }).waitFor();
     await page.getByLabel("Run scope").selectOption("acceptance");
+
+    // A saved template only refills parameters; it is re-validated on use.
+    await page.getByLabel("Template name").fill("acceptance ingest");
+    await page.getByRole("button", { name: "Save template", exact: true }).click();
+    await page.getByLabel("Task template").selectOption("acceptance ingest");
+    await page.getByText("Loaded template acceptance ingest", { exact: false }).waitFor();
+    await page.getByRole("button", { name: "Delete template", exact: true }).click();
 
     // Capacity protection is visible in the preview, before any write.
     await page.getByRole("radio", { name: "Backfill", exact: true }).click();
@@ -467,6 +486,76 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     assert.equal((await call("GET", "/runs")).length, runsBeforeProtected,
       "a capacity-protected write must not queue a run");
 
+    // ---- v0.4 data asset workbench (Phase 2) ------------------------------
+    at("catalog_v04");
+    await page.getByRole("button", { name: "datasets", exact: true }).click();
+    await page.getByText("Data asset catalog", { exact: true }).waitFor();
+    await page.getByText("Raw → derived recipes", { exact: true }).waitFor();
+    await page.getByText("Provider capability", { exact: true }).waitFor();
+    await page.getByText("derived · recipe output", { exact: false }).first().waitFor();
+    await page.getByText("raw · provider feed", { exact: false }).first().waitFor();
+    await page.getByText("utc-24x7-1m-to-1h-ohlcv", { exact: false }).first().waitFor();
+
+    at("explorer_market");
+    await page.getByRole("button", { name: "explorer", exact: true }).click();
+    await page.getByRole("button", { name: "Market bars", exact: true }).click();
+    await page.getByLabel("Provider").fill("fixture");
+    await page.getByLabel("Symbol").fill("UI_TEST");
+    await page.getByLabel("Recipe", { exact: true }).selectOption("utc-24x7-1m-to-1h-ohlcv");
+    await page.getByLabel("Query start date").fill("2026-03-01");
+    await page.getByLabel("Query end date").fill("2026-03-02");
+    await page.getByRole("button", { name: "Load market bars", exact: true }).click();
+    await page.locator(".coverage-strip").waitFor();
+    await page.getByText("Readiness", { exact: false }).first().waitFor();
+    await page.getByText("ready", { exact: false }).first().waitFor();
+    // The derived query keeps the same cursor/snapshot semantics as the raw one.
+    const marketMeta = await call("GET", "/market-bars?provider=fixture&symbol=UI_TEST&timeframe=1h"
+      + "&price_basis=raw&recipe_id=utc-24x7-1m-to-1h-ohlcv&recipe_version=1&page_size=5");
+    assert.ok(marketMeta.length > 0, "the derived query returned no rows");
+    const marketPage = await envelope("GET", "/market-bars?provider=fixture&symbol=UI_TEST&timeframe=1h"
+      + "&price_basis=raw&recipe_id=utc-24x7-1m-to-1h-ohlcv&recipe_version=1&page_size=5");
+    assert.ok(marketPage.payload.meta.snapshot_id, "a derived query must publish its input snapshot");
+    assert.deepEqual(marketPage.payload.meta.schema_versions, ["market_bars.v1"]);
+
+    // Coverage hands the selector and window to the maintenance workspace.
+    await page.getByRole("button", { name: "Create task from coverage", exact: true }).click();
+    await page.getByRole("radio", { name: "Derive", exact: true }).waitFor();
+    await page.getByLabel("Task symbol").waitFor();
+    assert.equal(await page.getByLabel("Task symbol").inputValue(), "UI_TEST",
+      "the handoff must carry the selector into the maintenance form");
+    assert.equal(await page.getByLabel("Recipe", { exact: true }).inputValue(), "utc-24x7-1m-to-1h-ohlcv");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Ready to submit", { exact: true }).waitFor();
+
+    // ---- v0.4 quality feedback loop (Phase 3) -----------------------------
+    at("quality_v04");
+    await page.getByRole("button", { name: "quality", exact: true }).click();
+    await page.getByLabel("Finding state").waitFor();
+    await page.getByLabel("Finding code").selectOption("coverage_degraded");
+    const findingRow = page.locator("table tbody tr").first();
+    await findingRow.waitFor();
+    await findingRow.click();
+    await page.getByRole("button", { name: "Acknowledge finding", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Acknowledge finding", exact: true }).click();
+    await page.locator(".notice, [role=status]").filter({ hasText: "acknowledg" }).first().waitFor();
+    const acknowledged = await call("GET", "/quality/findings?state=acknowledged");
+    assert.ok(acknowledged.length > 0, "the finding handling state was not persisted");
+    assert.ok(acknowledged.every(item => item.run_id), "a finding must stay linked to its reporting run");
+    await page.getByRole("button", { name: "Close details", exact: true }).last().click();
+    await page.getByLabel("Finding state").selectOption("open");
+
+    // ---- v0.4 operations and audit (Phase 4) ------------------------------
+    at("operations_v04");
+    await page.getByRole("button", { name: "operations", exact: true }).click();
+    await page.getByText("Maintenance queue", { exact: true }).waitFor();
+    await page.getByText("Worker activity", { exact: true }).waitFor();
+    await page.getByText("Capacity history", { exact: true }).waitFor();
+    await page.getByText("Write audit trail", { exact: true }).waitFor();
+    await page.getByText("Recorded transitions", { exact: false }).first().waitFor();
+    const auditRow = page.locator("table tbody tr").filter({ hasText: "maintenance." }).first();
+    await auditRow.waitFor();
+    await page.getByText("non-reversible", { exact: false }).first().waitFor();
+
     // The write audit trail records actor, selector and outcome.
     const audit = await call("GET", "/operations/audit?limit=20");
     assert.ok(audit.some(entry => entry.outcome === "protected"), "capacity refusal must be audited");
@@ -531,7 +620,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_queued_ingest", "maintenance_derive_snapshot", "maintenance_market_coverage",
       "maintenance_parity_read_only", "maintenance_quality_degraded", "maintenance_economic_ingest",
       "maintenance_protected_write", "maintenance_write_audit", "run_detail_drawer",
-      "run_kind_scope_filters", "run_cursor_pager", "maintenance_provider_ingest"],
+      "run_kind_scope_filters", "run_cursor_pager", "maintenance_provider_ingest",
+      "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
+      "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
+      "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
+      "operations_write_audit"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

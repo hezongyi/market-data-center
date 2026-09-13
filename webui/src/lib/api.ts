@@ -26,6 +26,17 @@ export type Dataset = {
   partitioning: string[];
 };
 
+export type RunWindowReceipt = {
+  ordinal: number;
+  start: string;
+  end: string;
+  reason?: string;
+  semantics?: string;
+  row_count?: number;
+  min_ts?: string;
+  max_ts?: string;
+};
+
 export type RunAttemptError = {
   attempt: number;
   error_type: string;
@@ -52,6 +63,13 @@ export type Run = {
   window_count?: number;
   attempt_count?: number;
   attempt_errors?: RunAttemptError[];
+  windows?: RunWindowReceipt[];
+  schema_version?: string;
+  output_hash?: string;
+  min_ts?: string;
+  max_ts?: string;
+  min_date?: string;
+  max_date?: string;
   next_attempt_at?: string | null;
   manifest_status?: string;
   finding_count?: number;
@@ -248,6 +266,38 @@ export type MarketBarsCoverage = {
   readiness_status?: string;
   gap_count?: number | null;
   ready_intervals?: Array<{ start: string; end: string; semantics: string }>;
+};
+
+// A derived selector is only meaningful together with its recipe and price
+// basis, so the market query carries both explicitly instead of implying them.
+export type MarketBarsQuery = {
+  provider: string;
+  symbol: string;
+  timeframe: string;
+  price_basis: string;
+  recipe_id: string;
+  recipe_version: string;
+  start?: string;
+  end?: string;
+};
+
+// Detailed market coverage adds the governed coverage fields on top of the
+// physical summary.  A summary-only response leaves them absent on purpose, so
+// the console reports "not published" instead of inventing a readiness state.
+export type MarketBarsCoverageReport = MarketBarsCoverage & {
+  coverage_scope?: string;
+  expected_timestamp_count?: number;
+  duplicate_count?: number;
+  latest_complete_boundary?: string | null;
+  ready_interval_count?: number;
+  missing_timestamp_count?: number | null;
+  first_missing_ts?: string | null;
+  timeframe_seconds?: number;
+  calendar_unit?: string;
+  physical_coverage?: string;
+  session_coverage?: string;
+  quality_status?: string;
+  selector?: Record<string, string>;
 };
 
 export type EconomicCoverage = {
@@ -477,6 +527,50 @@ export type OperationAuditEntry = {
   message: string | null;
 };
 
+export type WorkerActivity = {
+  heartbeat_age_seconds: number | null;
+  heartbeat_status: "fresh" | "stale" | "unknown";
+  heartbeat_limit_seconds: number;
+  worker_heartbeat_age_seconds?: number | null;
+  running_jobs: Array<{ job_id: string; run_id: string; attempts: number }>;
+  running_count: number;
+  queue: QueueState;
+  observed_at: string;
+};
+
+export type CapacityEvent = {
+  event: string;
+  created_at: string | null;
+  status?: string;
+  free_ratio?: number | null;
+  warning_free_ratio?: number;
+  critical_free_ratio?: number;
+};
+
+export type CapacityHistory = {
+  live: CapacityMetrics & { fixed_measurement?: boolean };
+  events: CapacityEvent[];
+  event_count: number;
+  recorded_only: boolean;
+  note: string;
+};
+
+export type OperationsReceipt = {
+  action: string;
+  completed_at: string;
+  deployment_id: string | null;
+  reference: string;
+  result: string;
+  fields: Record<string, unknown>;
+};
+
+export type ReceiptHistory = {
+  available: boolean;
+  receipts: OperationsReceipt[];
+  latest: Record<string, OperationsReceipt | null>;
+  note: string | null;
+};
+
 export type QueueState = {
   queued: number;
   running: number;
@@ -552,6 +646,11 @@ export function createDataCenterClient(apiKey: string) {
       page_size: pageSize,
       cursor,
     })}`),
+    marketBarsPage: (query: MarketBarsQuery, cursor?: string | null, pageSize = 1000) => request<Bar[]>(`/market-bars${queryString({
+      ...query,
+      page_size: pageSize,
+      cursor,
+    })}`),
     coverage: (query: Omit<BarsQuery, "start" | "end">) => request<BarsCoverage>(`/provider-bars/coverage${queryString(query)}`),
     economicCoverage: (query: Pick<EconomicQuery, "provider" | "series_id">) => request<EconomicCoverage>(`/economic/coverage${queryString(query)}`),
     ingest: (job: IngestJob) => request<IngestReceipt>("/ingest/runs", { method: "POST", body: JSON.stringify(job) }),
@@ -575,7 +674,7 @@ export function createDataCenterClient(apiKey: string) {
     capabilities: () => request<Capabilities>("/capabilities"),
     findingsPage: (query: Record<string, string | number | null | undefined> = {}, cursor?: string | null) =>
       request<Finding[]>(`/quality/findings${queryString({ ...query, cursor })}`),
-    findingState: (findingId: string, body: { state: FindingState; note?: string; dataset_id?: string }) =>
+    findingState: (findingId: string, body: { state: FindingState; note?: string; dataset_id?: string; resolved_by_run_id?: string }) =>
       request<Record<string, unknown>>(`/quality/findings/${encodeURIComponent(findingId)}/state`, {
         method: "POST", body: JSON.stringify(body),
       }),
@@ -583,6 +682,8 @@ export function createDataCenterClient(apiKey: string) {
       request<MarketBarsCoverage>(`/market-bars/coverage${queryString(query)}`),
     queue: () => request<QueueState>("/operations/queue"),
     audit: (limit = 50) => request<OperationAuditEntry[]>(`/operations/audit${queryString({ limit })}`),
-    capacityHistory: () => request<Record<string, unknown>>("/operations/capacity-history"),
+    capacityHistory: (limit = 50) => request<CapacityHistory>(`/operations/capacity-history${queryString({ limit })}`),
+    worker: () => request<WorkerActivity>("/operations/worker"),
+    receipts: (limit = 5) => request<ReceiptHistory>(`/operations/receipts${queryString({ limit })}`),
   };
 }

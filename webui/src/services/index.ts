@@ -6,6 +6,7 @@
  */
 import {
   createDataCenterClient,
+  type CapacityHistory,
   type ApiMeta,
   type ApiResult,
   type BarsQuery,
@@ -16,6 +17,7 @@ import {
   type FindingState,
   type MaintenanceTaskRequest,
   type MarketBarsCoverage,
+  type MarketBarsQuery,
   type OperationAuditEntry,
   type PageInfo,
   type QueueState,
@@ -25,7 +27,9 @@ import {
   type TaskPreview,
 } from "../lib/api";
 
-export type Filters = RunFilters & { observed_from?: string; observed_to?: string; severity?: string; code?: string; state?: FindingState };
+// ``run_id`` is a findings-only filter: the findings endpoint accepts it while
+// the runs endpoint does not, so it is added next to the other quality filters.
+export type Filters = RunFilters & { observed_from?: string; observed_to?: string; severity?: string; code?: string; state?: FindingState; run_id?: string };
 
 export type Paged<T> = { items: T[]; meta: ApiMeta; page: PageInfo | null; warnings: string[] };
 
@@ -56,6 +60,10 @@ export function createServices(apiKey: string) {
     query: {
       bars: async (query: BarsQuery, cursor?: string | null, pageSize = 100) =>
         wrap(await client.barsPage(query, cursor, pageSize)),
+      // Derived rows page through the same cursor contract as raw bars; the
+      // recipe and price basis stay part of the selector.
+      marketBars: async (query: MarketBarsQuery, cursor?: string | null, pageSize = 100) =>
+        wrap(await client.marketBarsPage(query, cursor, pageSize)),
       economic: async (query: EconomicQuery, cursor?: string | null, pageSize = 100) =>
         wrap(await client.economicPage(query, cursor, pageSize)),
     },
@@ -80,13 +88,16 @@ export function createServices(apiKey: string) {
     quality: {
       findings: async (filters: Filters = {}, cursor?: string | null, pageSize = 100): Promise<Paged<Finding>> =>
         wrap(await client.findingsPage({ ...filters, page_size: pageSize }, cursor)),
-      setState: async (findingId: string, state: FindingState, body: { note?: string; dataset_id?: string } = {}) =>
+      setState: async (findingId: string, state: FindingState,
+        body: { note?: string; dataset_id?: string; resolved_by_run_id?: string } = {}) =>
         (await client.findingState(findingId, { state, ...body })).data,
     },
     operations: {
       queue: async (): Promise<QueueState> => (await client.queue()).data,
       audit: async (limit = 50): Promise<OperationAuditEntry[]> => (await client.audit(limit)).data,
-      capacityHistory: async () => (await client.capacityHistory()).data,
+      capacityHistory: async (limit = 50): Promise<CapacityHistory> => (await client.capacityHistory(limit)).data,
+      worker: async () => (await client.worker()).data,
+      receipts: async (limit = 5) => (await client.receipts(limit)).data,
       readiness: async () => (await client.ready()).data,
       metrics: async () => (await client.metrics()).data,
       ingest: async (job: Parameters<typeof client.ingest>[0]) => (await client.ingest(job)).data,

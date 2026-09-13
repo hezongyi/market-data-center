@@ -1,0 +1,53 @@
+/* Quality workspace (v0.4 Phase 3): finding drawer, repair preview, actions. */
+
+.quality-page .filter-bar label {
+  min-width: 0;
+}
+
+.quality-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.quality-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quality-run {
+  margin-top: 14px;
+  padding-top: 6px;
+  border-top: 1px solid #edf2f3;
+}
+
+.quality-queued {
+  margin-top: 14px;
+}
+
+/* The drawer is narrow, so the maintenance preview grid collapses to two
+   columns and never forces a horizontal scrollbar. */
+.quality-repair .preview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quality-repair .preview-card b {
+  font-size: 15px;
+}
+
+.quality-repair .preview-card small {
+  overflow-wrap: anywhere;
+}
+
+.quality-page .issue-list .issue span.mono {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  .quality-repair .preview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

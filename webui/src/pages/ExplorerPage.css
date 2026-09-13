@@ -1,0 +1,69 @@
+/* Explorer-specific layout on top of the shared panel, coverage-strip and
+   pager chrome. Kept single-column on narrow viewports. */
+.explorer-page .unavailable {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.explorer-page .coverage-intervals {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.explorer-page .coverage-intervals li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e3ebec;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.explorer-page .coverage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #edf2f3;
+}
+
+.explorer-page .coverage-actions .filter-note {
+  flex: 1;
+  min-width: 220px;
+}
+
+.explorer-page .selector-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 520px) {
+  .explorer-page .coverage-intervals li {
+    display: grid;
+    gap: 4px;
+  }
+
+  .explorer-page .coverage-actions {
+    align-items: stretch;
+  }
+
+  .explorer-page .coverage-actions .filter-note {
+    min-width: 0;
+  }
+}
