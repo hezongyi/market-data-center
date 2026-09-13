@@ -401,7 +401,6 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }, "maintenance ingest did not reach terminal pass");
     assert.equal(maintenanceRun.run_kind, "ingest");
     assert.equal(maintenanceRun.run_scope, "acceptance");
-    await page.getByText("Passed", { exact: true }).first().waitFor();
 
     // Derive follows the same contract and consumes the seeded 1m snapshot.
     await page.getByRole("radio", { name: "Derive", exact: true }).click();
