@@ -1,6 +1,6 @@
 # Market Data Center 当前状态
 
-更新时间：2026-09-12。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
+更新时间：2026-09-13。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
 
 ## 生产运行
 
@@ -12,6 +12,17 @@
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
 | Dukascopy derived | 5m/15m/30m/1h/4h/1d recipes；完整历史受 coverage 约束 | `dukascopy_derived_multiperiod_acceptance_v3` |
 | Dukascopy maintenance | macro-market-lab systemd service 调用 Data Center runner | `macro_market_lab_maintenance_ownership_cutover` |
+
+## 版本与发布基线
+
+| 项目 | 当前事实 | 证据 |
+| --- | --- | --- |
+| 源码版本 | `0.3.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
+| 最新发布标签 | `v0.2.0` → `54f002580a5c72cdd3da57ef12ffa14ea0f6c8c4`（annotated、不可变） | `docs/releases/v0.2.0.md` |
+| 生产 deployment source commit | `4016a992669d445214ae5e34ae8ac74308f0679a`，`software_version=0.2.0`，是 protected `main` 的祖先 | active deployment manifest |
+| 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
+
+生产 deployment 的 source commit（`4016a99`，#57）早于当前 protected `main`，即生产版本落后于 main 基线；升级必须走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
 
 ## Consumer / ownership 矩阵
 
