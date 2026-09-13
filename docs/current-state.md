@@ -18,7 +18,7 @@
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
 | 源码版本 | `0.3.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
-| 最新发布标签 | `v0.2.0` → `54f002580a5c72cdd3da57ef12ffa14ea0f6c8c4`（annotated、不可变） | `docs/releases/v0.2.0.md` |
+| 最新发布标签 | `v0.3.0` → `ec79720f65bdf6251d48fb3de0c7b4b2de9b6991`（annotated、不可变） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.0) + `release-receipt.json` |
 | 生产 deployment source commit | `4016a992669d445214ae5e34ae8ac74308f0679a`，`software_version=0.2.0`，是 protected `main` 的祖先 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
@@ -43,3 +43,4 @@
 1. yfinance macro-daily 数据域迁移。
 2. economic PIT/current consumer 全量切换。
 3. Dukascopy 历史 provider gap 不补造；高周期完整历史覆盖不作为已完成条件。
+4. `v0.3.0` 的 post-release rehearsal（clean-tag 安装、API/worker 启动、smoke、browser acceptance、回滚到 `v0.2.0`）尚未执行，回执落盘后需更新 `docs/release-checklist.md`。

@@ -20,6 +20,12 @@ PR #4 merged as protected-main commit `35c7ab71c52372d7cb94e5614f95b7271a4bc210`
 
 Final evidence PR #5 merged as protected-main commit `54f002580a5c72cdd3da57ef12ffa14ea0f6c8c4`; post-merge `Checks` run `34462588514` succeeded. Annotated tag `v0.2.0` points immutably to that commit, and `Release` run `34462830609` published the GitHub release with `release-receipt.json`. Clean-tag installation, unified CI, API/worker start, smoke, browser acceptance, and rollback to `v0.1.0` all passed. The retained operational receipt is `operations/post_release_rehearsal/post-release-rehearsal.json` under the release sustainability evidence root.
 
+## v0.3.0 protected-main evidence
+
+Release preparation PR #62 merged as protected-main commit `ec79720f65bdf6251d48fb3de0c7b4b2de9b6991`; post-merge `Checks` run `34729985896` passed the Python 3.10, 3.11, and 3.12 backend jobs, the Node 22 browser job, and aggregate `verify`. Local unified CI (`bash scripts/ci.sh all`) produced a passing `operational-receipt.v1` receipt at that commit: 174 tests, Ruff, dependency/compatibility/secret checks, Web build, isolated browser acceptance (29 checks at 1440/390), and service acceptance. `Dependency Refresh` run `34729925217` regenerated all three committed constraints byte-identically and passed the Python matrix plus service and browser acceptance. Annotated tag `v0.3.0` points immutably to that commit, and `Release` run `34730111851` published the GitHub release with `release-receipt.json`.
+
+Post-release rehearsal (clean-tag install, API/worker start, smoke, browser acceptance, and rollback to `v0.2.0`) has not yet been performed for `v0.3.0`. This section must be updated with its receipt location once it runs.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
