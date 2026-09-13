@@ -8,6 +8,16 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+WEB_PACKAGE = Path(__file__).resolve().parents[1] / "webui" / "package.json"
+
+
+def software_version() -> str:
+    """Read the release version from its single source instead of copying it."""
+    try:
+        return json.loads(WEB_PACKAGE.read_text())["version"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return "unknown"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -29,7 +39,7 @@ def main() -> None:
         "command": f"bash scripts/ci.sh {args.scope}",
         "started_at": args.started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),
-        "software_version": "0.3.3",
+        "software_version": software_version(),
         "result": args.result,
         "failure_stage": None if args.result == "pass" else args.scope,
         "error_category": None if args.result == "pass" else "CommandFailed",
