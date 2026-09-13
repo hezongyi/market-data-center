@@ -61,6 +61,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const [templates, setTemplates] = useState<TaskTemplate[]>(() => loadTemplates());
   const [templateName, setTemplateName] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [taskFilter, setTaskFilter] = useState("");
 
   const [assetClass, setAssetClass] = useState("");
   const capabilities = useQuery(() => services.catalog.capabilities(), [services, apiKey]);
@@ -294,7 +295,8 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
 
     <section className="panel" aria-label="Maintenance task list">
       <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceRuns.reload()}>Refresh</button>} />
-      {maintenanceRuns.status === "loading" ? <LoadingSkeleton rows={3} /> : <DataTable data={maintenanceRuns.data?.items ?? []} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
+      <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label></FilterBar>
+      {maintenanceRuns.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceRuns.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceRuns.data?.items ?? []).filter(run => !taskFilter || run.status === taskFilter)} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
       <PanelHeading eyebrow="Live activity" title="Submitted tasks"
