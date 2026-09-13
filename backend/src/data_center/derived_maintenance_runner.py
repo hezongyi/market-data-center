@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 from data_center.catalog.snapshot import Catalog
+from data_center.domain.errors import PROVIDER_GAP_ERROR_TYPES
 from data_center.evidence import operation_receipt, write_receipt
 from data_center.maintenance_runner import approved_targets
 from data_center.platform_registry import REGISTRY
@@ -244,7 +245,7 @@ def run_derived_maintenance(*, base_url: str, root: Path, evidence_root: Path,
                         # expected for sparse historical data.  Keep the
                         # item visible as degraded (never synthesize bars),
                         # while allowing independent symbols to complete.
-                        if receipt.get("error_type") == "ValueError":
+                        if receipt.get("error_type") in PROVIDER_GAP_ERROR_TYPES:
                             item["status"] = "degraded"
                             item["reason"] = "provider_gap_or_empty_session"
                         else:

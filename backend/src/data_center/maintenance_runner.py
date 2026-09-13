@@ -19,10 +19,15 @@ from pathlib import Path
 import requests
 
 from data_center.control_plane import plan_maintenance as plan_windows
+from data_center.domain.errors import ProviderGapError
 from data_center.evidence import operation_receipt, write_receipt
 from data_center.platform import build_ingest_plan, coverage_from_catalog
 from data_center.platform_registry import REGISTRY, maintenance_policy_for
 from data_center.settings import Settings
+
+# Run receipts carry the error type name, so the provider-gap classification is
+# matched by name against this value.
+PROVIDER_GAP_ERROR = ProviderGapError.__name__
 
 
 @dataclass(frozen=True)
@@ -345,6 +350,7 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                 result["suppressed_gap_count"] = 0
                 pending = [(window, None, 0) for window in windows]
                 window_failures = 0
+                degraded_windows = 0
                 while pending:
                     window, recovery_of, isolation_depth = pending.pop(0)
                     window_start = datetime.fromisoformat(window["start"])
@@ -359,7 +365,9 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                             "run_id": None, "reason": "recent_dead_letter_cooldown",
                             "error_type": "GapRetrySuppressed",
                         })
-                        window_failures += 1
+                        # A deferred retry is a policy decision, not a defect: the gap
+                        # stays visible and unresolved without failing the run.
+                        degraded_windows += 1
                         continue
                     payload = {
                         "job_id": f"{job.job_id}-w{ordinal:04d}", "dataset_id": "provider_bars",
@@ -380,10 +388,18 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                                       "window": {"start": window_start.isoformat(),
                                                  "end": window_end.isoformat(),
                                                  "semantics": "half-open"}}
+                        if receipt.get("status") != "pass" and receipt.get("error_type") == PROVIDER_GAP_ERROR:
+                            # The provider holds no data for this window.  That is the
+                            # documented provider-gap case and is never synthesized, so it
+                            # is reported as degraded instead of failing the target.
+                            run_result["status"] = "degraded"
                         result["runs"].append(run_result)
                         if receipt.get("status") == "pass":
                             continue
-                        window_failures += 1
+                        if run_result["status"] == "degraded":
+                            degraded_windows += 1
+                        else:
+                            window_failures += 1
                         isolated = _isolate_incomplete_window(
                             start=window_start, end=window_end, receipt=receipt,
                         ) if isolation_depth < 16 else None
@@ -410,9 +426,14 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                         }, submitted["run_id"], isolation_depth + 1)
                                        for segment_start, segment_end in segments)
                     except Exception as exc:  # noqa: BLE001 - continue independent windows
-                        window_failures += 1
+                        degraded = isinstance(exc, ProviderGapError)
+                        if degraded:
+                            degraded_windows += 1
+                        else:
+                            window_failures += 1
                         result["runs"].append({
-                            "reason": reason, "run_id": None, "status": "failed",
+                            "reason": reason, "run_id": None,
+                            "status": "degraded" if degraded else "failed",
                             "row_count": None, "coverage": None,
                             "error_type": type(exc).__name__, "recovery_of": recovery_of,
                             "window": {"start": window_start.isoformat(),
@@ -420,9 +441,12 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                         })
                 result["coverage_after"] = coverage_from_catalog(root=root, job=job).as_dict()
                 result["failed_window_count"] = window_failures
+                result["degraded_window_count"] = degraded_windows
                 if window_failures:
                     failures += 1
                     result.update(status="failed", error_type="MaintenanceWindowError")
+                elif degraded_windows:
+                    result["status"] = "degraded"
                 else:
                     result["status"] = "pass"
             except Exception as exc:  # noqa: BLE001 - one symbol must not hide the others
@@ -436,6 +460,8 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
         "provider": provider, "run_scope": run_scope, "timeframe": "1m",
         "requested_start": start.isoformat(), "requested_end": end.isoformat(),
         "target_count": len(targets), "failed_target_count": failures,
+        "degraded_target_count": sum(1 for item in results if item.get("status") == "degraded"),
+        "degraded_window_count": sum(item.get("degraded_window_count", 0) for item in results),
         "gap_retry_cooldown_minutes": policy.gap_retry_cooldown_minutes,
         "targets": results, "capacity_before": capacity_before,
         "capacity_after": settings.capacity_policy().inspect(root).as_dict(),
@@ -472,7 +498,9 @@ def main() -> None:
     )
     print(json.dumps({"result": report["result"], "receipt": report["receipt"],
                       "target_count": report["details"]["target_count"],
-                      "failed_target_count": report["details"]["failed_target_count"]}, sort_keys=True))
+                      "failed_target_count": report["details"]["failed_target_count"],
+                      "degraded_target_count": report["details"]["degraded_target_count"]},
+                     sort_keys=True))
     raise SystemExit(0 if report["result"] == "pass" else 1)
 
 

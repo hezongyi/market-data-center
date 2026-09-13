@@ -92,6 +92,12 @@ watermark; repeated attempts for the same terminal gap are governed by the
 provider policy cooldown, while the dead-letter and retry history remain
 immutable.
 
+Provider gaps, empty session windows, and cooldown-suppressed retries are
+reported as `degraded` in the target and window detail (`degraded_target_count`,
+`degraded_window_count`) and never as a target failure, so `result` stays `pass`
+and the scheduled unit does not report a permanent failure. Integrity failures
+stay plain `ValueError` and still fail the target.
+
 Maintenance windows are clipped by the registered instrument session before
 they are queued. Weekly open/close and daily break boundaries use the profile's
 IANA timezone, so DST changes do not require UTC constants. Registered holiday

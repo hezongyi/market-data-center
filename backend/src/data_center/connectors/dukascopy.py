@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 import dukascopy_python
 import pandas as pd
 
+from data_center.domain.errors import ProviderGapError
 from data_center.domain.models import IngestJob, ProviderBar
 
 
@@ -140,7 +141,7 @@ class DukascopyConnector:
     @classmethod
     def _normalized_frame(cls, frame) -> pd.DataFrame:
         if frame is None or frame.empty:
-            raise ValueError("Dukascopy returned no bars for the requested range")
+            raise ProviderGapError("Dukascopy returned no bars for the requested range")
         normalized = frame.copy()
         normalized.columns = [str(column).strip().lower() for column in normalized.columns]
         missing = [column for column in cls._REQUIRED_COLUMNS if column not in normalized.columns]
@@ -163,7 +164,7 @@ class DukascopyConnector:
         provider_symbol, canonical_symbol, quote_currency = self._provider_symbol(job.symbol)
         effective_end = self._effective_end(requested_end, job.timeframe)
         if effective_end <= start:
-            raise ValueError("Dukascopy requested range has no completed bars")
+            raise ProviderGapError("Dukascopy requested range has no completed bars")
         with self._http_policy():
             frame = self._fetch(
                 instrument=provider_symbol,
@@ -217,5 +218,5 @@ class DukascopyConnector:
                 )
             )
         if not rows:
-            raise ValueError("Dukascopy returned no completed bars for the requested range")
+            raise ProviderGapError("Dukascopy returned no completed bars for the requested range")
         return rows

@@ -7,6 +7,7 @@ from uuid import uuid4
 from data_center.catalog.manifest import build_manifest, manifest_path, write_manifest
 from data_center.connectors.registry import get_connector
 from data_center.control_plane import IngestWindow, evaluate_coverage, timeframe_delta
+from data_center.domain.errors import ProviderGapError
 from data_center.domain.models import IngestJob
 from data_center.domain.schema import SCHEMA_VERSION, validate_provider_bars
 from data_center.lineage import compact_source_hashes
@@ -76,7 +77,7 @@ def run_fixture_ingest(job: IngestJob, root: Path, ledger=None, run_id: str | No
             else:
                 window_rows = [row for row in fetched_rows if window.start <= row.bar_ts < window.end]
             if not window_rows:
-                raise ValueError(f"provider returned no bars for window {window.ordinal}")
+                raise ProviderGapError(f"provider returned no bars for window {window.ordinal}")
             timestamps = [row.bar_ts for row in window_rows]
             if timestamps != sorted(timestamps) or len(set(timestamps)) != len(timestamps):
                 raise ValueError(f"provider returned unsorted or duplicate timestamps for window {window.ordinal}")

@@ -72,3 +72,37 @@ class CapacityProtectedError(RuntimeError):
     def __init__(self, message: str, snapshot: CapacitySnapshot):
         super().__init__(message)
         self.snapshot = snapshot
+
+
+class FixedCapacityPolicy(CapacityPolicy):
+    """A capacity policy whose measurement is supplied instead of read from disk.
+
+    Gate semantics then depend only on the policy and the supplied snapshot, so
+    callers such as operations acceptance never inherit the host filesystem state.
+    A completely free filesystem can never classify as ``warning``, which made
+    disk-backed gate assertions environment-dependent.
+    """
+
+    def __init__(self, snapshot: CapacitySnapshot) -> None:
+        super().__init__(snapshot.warning_free_ratio, snapshot.critical_free_ratio)
+        object.__setattr__(self, "_fixed_snapshot", snapshot)
+
+    @classmethod
+    def for_free_ratio(cls, free_ratio: float, *, warning_free_ratio: float = 0.15,
+                       critical_free_ratio: float = 0.10, total_bytes: int = 1 << 30) -> FixedCapacityPolicy:
+        """Build a policy that always measures ``free_ratio``, for deterministic gate checks."""
+        probe = CapacityPolicy(warning_free_ratio=warning_free_ratio,
+                               critical_free_ratio=critical_free_ratio)
+        free_bytes = max(0, min(total_bytes, int(total_bytes * free_ratio)))
+        return cls(CapacitySnapshot(
+            total_bytes=total_bytes,
+            used_bytes=total_bytes - free_bytes,
+            free_bytes=free_bytes,
+            free_ratio=free_ratio,
+            status=probe.classify(free_ratio),
+            warning_free_ratio=warning_free_ratio,
+            critical_free_ratio=critical_free_ratio,
+        ))
+
+    def inspect(self, path: Path) -> CapacitySnapshot:
+        return self._fixed_snapshot

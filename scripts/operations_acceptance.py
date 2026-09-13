@@ -9,7 +9,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from data_center.capacity import CapacityPolicy, CapacityProtectedError
+from data_center.capacity import (
+    CapacityPolicy,
+    CapacityProtectedError,
+    FixedCapacityPolicy,
+)
 from data_center.domain.models import IngestJob
 from data_center.ingest.worker import LocalWorker
 from data_center.observability import AlertSink, check_alerts, run_metrics
@@ -59,8 +63,15 @@ def run_drill(output: Path | None = None) -> dict:
             raise RuntimeError("operational snapshot did not expose indexed backup and recovery evidence")
         sink = AlertSink(Path(directory) / "alerts")
         event_ids = check_alerts(ledger, sink, heartbeat_limit=0, metrics=metrics)
-        warning_policy = CapacityPolicy(warning_free_ratio=0.99, critical_free_ratio=0.01)
-        critical_policy = CapacityPolicy(warning_free_ratio=0.999, critical_free_ratio=0.99)
+        # Capacity gates are asserted against an explicitly supplied measurement.
+        # Reading the host filesystem made this drill environment-dependent: a
+        # completely free filesystem can never classify as "warning".
+        warning_policy = FixedCapacityPolicy.for_free_ratio(
+            0.5, warning_free_ratio=0.99, critical_free_ratio=0.01)
+        critical_policy = FixedCapacityPolicy.for_free_ratio(
+            0.5, warning_free_ratio=0.999, critical_free_ratio=0.99)
+        assert warning_policy.inspect(root).status == "warning"
+        assert critical_policy.inspect(root).status == "critical"
         warning_policy.require_ingest_capacity(root)
         try:
             warning_policy.require_backfill_capacity(root, requested_days=32)

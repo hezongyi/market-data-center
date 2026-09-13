@@ -59,7 +59,9 @@ def run_failure_matrix(evidence_root: Path, manifest_path: Path) -> dict:
     missing_ohlc = _frame("2026-09-01T00:00:00Z")
     missing_ohlc.loc[:, "open"] = float("nan")
     cases = {
-        "empty": (lambda **_kwargs: empty, _job(), "ValueError"),
+        # An empty provider response is the provider-gap case, which is now a
+        # dedicated type so it stays distinct from integrity failures.
+        "empty": (lambda **_kwargs: empty, _job(), "ProviderGapError"),
         "timeout": (_raise(requests.Timeout(
             "https://provider.example/private?token=credential-for-safety-test /private/runtime/path"
         )), _job(), "Timeout"),
