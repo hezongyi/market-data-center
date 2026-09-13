@@ -398,7 +398,7 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
     } },
     { accessorKey: "occurrence_count", header: "Occurrences", cell: ({ row }) => {
       const count = row.original.occurrence_count ?? 1;
-      return <span title={`first ${row.original.first_observed_at} · last ${row.original.last_observed_at}`}>{count}</span>;
+      return <span title={row.original.first_observed_at || row.original.last_observed_at ? `${t("Observed")} · ${t("Time details")}` : undefined}>{count}</span>;
     } },
   ], []);
 
