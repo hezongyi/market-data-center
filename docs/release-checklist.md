@@ -52,6 +52,8 @@ Release preparation PR #70 merged as protected-main commit `a8f6e3d616e92f78a50c
 
 Outcome verification for the maintenance fix: before the fix the scheduled 1m maintenance reported `result=failed` every approximately 16 minutes with `failed_target_count=1`; on 2026-09-13 at 03:11:52 it reported `result=pass`, `failed_target_count=0`, `degraded_target_count=1` and `degraded_window_count=17` (BTCUSD degraded, seven other targets passing), and the systemd unit finished with `Result=success`. Provider gaps remain visible as `degraded` and no bars are synthesized. The deployment also inherited the fixes for incomplete provider coverage and for the previously environment-dependent browser capacity gate.
 
+`failed` therefore still means something needs attention rather than a provider gap. Two consecutive runs under `v0.3.2` illustrate the distinction: the 03:29:39 run failed on a single `SSLError` window (retried three times and dead-lettered; the only `SSLError` run in the retained ledger), and the 03:46:33 run returned to `result=pass` with `failed_target_count=0`. Transient provider/network errors and structural quality failures keep failing the run by design.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
