@@ -6,6 +6,8 @@ import sqlite3
 import tempfile
 import time
 import secrets
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -61,18 +63,16 @@ from data_center.storage.query import (
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
 _sessions: dict[str, tuple[str, float]] = {}
+_password_hasher = PasswordHasher()
 
 def _password_ok(password: str, encoded: str | None) -> bool:
     if not encoded: return False
     try:
-        salt, expected = encoded.split("$", 1)
-        actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
-        return hmac.compare_digest(actual, expected)
-    except (ValueError, TypeError): return False
+        return _password_hasher.verify(encoded, password)
+    except (ValueError, TypeError, VerifyMismatchError): return False
 
 def _password_hash(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    return f"{salt.hex()}${hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1).hex()}"
+    return _password_hasher.hash(password)
 
 def _load_auth_state(config: Settings) -> None:
     if config.auth_password_hash or not config.auth_state_path or not config.auth_state_path.exists(): return
@@ -94,7 +94,7 @@ def require_api_key(config: Settings, provided: str | None, session: str | None 
     session = session or _session_id.get()
     valid_session = bool(session and session in _sessions and _sessions[session][1] > time.time())
     if session and not valid_session: _sessions.pop(session, None)
-    if config.api_key and not hmac.compare_digest(provided or "", config.api_key) and not valid_session:
+    if (config.auth_password_hash or config.api_key) and not hmac.compare_digest(provided or "", config.api_key or "") and not valid_session:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -176,6 +176,8 @@ def submit_maintenance(*, request: MaintenanceTaskRequest, ledger: RunLedger, co
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
+    if config.auth_state_path is None:
+        config.auth_state_path = config.ledger_path.with_name("auth-state.json")
     _load_auth_state(config)
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
