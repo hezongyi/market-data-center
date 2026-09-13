@@ -147,7 +147,7 @@ def require_api_key(config: Settings, provided: str | None, session: str | None 
     store = _auth_store.get()
     valid_session = bool(store and store.session(session))
     valid_key = bool(config.api_key and hmac.compare_digest(provided or "", config.api_key))
-    if store and store.initialized() and not valid_key and not valid_session:
+    if (config.api_key or (store and store.initialized())) and not valid_key and not valid_session:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -309,7 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                              x_api_key: str | None = Header(default=None, alias="X-API-Key")):
         # Keep the protected-route contract's stable API-key failure response,
         # then require an active browser session before rotating credentials.
-        if x_api_key: require_api_key(config, x_api_key, session)
+        require_api_key(config, x_api_key, session)
         current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
         try: auth.change_password(session, current, replacement)
         except AuthError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
