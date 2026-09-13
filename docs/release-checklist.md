@@ -31,6 +31,27 @@ Two environment caveats apply when reproducing this rehearsal:
 - `v0.2.0`'s `scripts/ci.sh` predates the Chromium cache auto-discovery fix (`a11ecff`); `PLAYWRIGHT_BROWSER_EXECUTABLE` must be exported as described in `AGENTS.md`, otherwise browser acceptance looks for an absent managed `chromium_headless_shell` and fails.
 - `scripts/operations_acceptance.py` asserts that `CapacityPolicy(warning_free_ratio=0.99)` reports `warning`, which requires the filesystem backing `tempfile.gettempdir()` to be more than 1% occupied. On a completely free tmpfs the gate reports `ok` and the drill raises `RuntimeError("warning policy did not block broad backfill")`. This reproduces identically on `v0.2.0` and `v0.3.0`, so it is a harness defect rather than a release or rollback defect, and hosted CI does not expose it because runner `/tmp` is not empty.
 
+## v0.3.1 protected-main evidence
+
+Release preparation PR #67 merged as protected-main commit `b5d1bc95681b4ce996938f0581c5df1ecc95b465`; post-merge `Checks` verify run `34732558041` succeeded and local unified CI passed (178 tests, `software_version=0.3.1`). Committed constraints were unchanged from `v0.3.0` (`e8c18665…`), so the v0.3.0 dependency refresh evidence still applies. Annotated tag `v0.3.1` points immutably to that commit and `Release` run `34732637082` published the GitHub release with `release-receipt.json`.
+
+Immutable production activation on 2026-09-13 (receipts under the data-center evidence root):
+
+- `deployment_stage` produced release `b5d1bc95681b-610c867f`; `deployment_activate` switched `releases/current` to it with canonical and ledger hashes unchanged. API readiness, metrics, the monitor receipt and the served Web UI all reported the same deployment id, version and source commit.
+- Failure injection: a candidate release whose runtime was unusable passed the manifest pre-check and failed readiness verification. The failed `deployment_activate` receipt records `deployment_id=ffffffffffff-inject00`, `recovered_deployment_id=b5d1bc95681b-610c867f` and unchanged canonical and ledger hashes, proving automatic restoration of the previous release.
+- Rollback rehearsal: `deployment_rollback` to `4016a992669d-b0be2ea0` passed readiness and smoke, then the release was forward-deployed again; both receipts retained.
+- Receipt index rebuilt (2244 receipts); active dead letters zero.
+- 60-minute monitor soak: 33 runs over 60.2 minutes with a stable identity, no overlapping runs, no catch-up runs (minimum interval 60.7s), maximum evaluation 0.006s, maximum delivery 0.048s, complete receipts, and no webhook side effects while capacity was stable. The monitor timer is configured with `OnUnitInactiveSec=60s` but runs at an effective 120s cadence because of systemd's default `AccuracySec=1min`; the soak criteria were therefore evaluated against that observed cadence.
+- Capacity check without relaxed thresholds: `status=ok` (free ratio 0.117 against warning 0.05 and critical 0.02), so no D4 or over-31-day unattended backfill was recorded as prohibited.
+
+## v0.3.2 protected-main evidence
+
+Release preparation PR #70 merged as protected-main commit `a8f6e3d616e92f78a50ce9ec0800d0eb324836b9`; post-merge `Checks` verify run `34733951586` succeeded and local unified CI passed (183 tests, `software_version=0.3.2`). Annotated tag `v0.3.2` points immutably to that commit and `Release` run `34734039553` published the GitHub release with `release-receipt.json`.
+
+`deployment_stage` produced release `a8f6e3d616e9-257b2f31` and `deployment_activate` switched to it with canonical and ledger hashes unchanged; API readiness, metrics and smoke all reported deployment `a8f6e3d616e9-257b2f31`, version `0.3.2`, source commit `a8f6e3d6`.
+
+Outcome verification for the maintenance fix: before the fix the scheduled 1m maintenance reported `result=failed` every approximately 16 minutes with `failed_target_count=1`; on 2026-09-13 at 03:11:52 it reported `result=pass`, `failed_target_count=0`, `degraded_target_count=1` and `degraded_window_count=17` (BTCUSD degraded, seven other targets passing), and the systemd unit finished with `Result=success`. Provider gaps remain visible as `degraded` and no bars are synthesized. The deployment also inherited the fixes for incomplete provider coverage and for the previously environment-dependent browser capacity gate.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
