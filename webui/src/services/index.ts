@@ -16,6 +16,7 @@ import {
   type Finding,
   type FindingState,
   type MaintenanceTaskRequest,
+  type MaintenanceTaskRecord,
   type MarketBarsCoverage,
   type MarketBarsQuery,
   type OperationAuditEntry,
@@ -80,6 +81,8 @@ export function createServices(apiKey: string) {
         run.terminal === true || ["pass", "failed", "dead_letter"].includes(run.status ?? ""),
     },
     maintenance: {
+      list: async (): Promise<MaintenanceTaskRecord[]> => (await client.maintenanceTasks()).data,
+      updateStatus: async (taskId: string, status: "paused" | "enabled"): Promise<MaintenanceTaskRecord> => (await client.updateMaintenanceTask(taskId, status)).data,
       preview: async (task: MaintenanceTaskRequest): Promise<TaskPreview> => (await client.maintenancePlan(task)).data,
       submit: async (task: MaintenanceTaskRequest): Promise<QueuedEnvelope> =>
         (await client.submitMaintenance(task)).data,

@@ -7,7 +7,7 @@ import {
 import { CopyId, DataTable, DetailDrawer, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { deleteTemplate, loadTemplates, saveTemplate, type TaskTemplate } from "../lib/templates";
 import { useMaintenanceMutation, useQuery, useRunTracker, runScopeOptions, type WriteState } from "../hooks";
-import type { MaintenanceTaskRequest, QueuedEnvelope, Run, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
+import type { MaintenanceTaskRecord, MaintenanceTaskRequest, QueuedEnvelope, Run, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
 import type { Services } from "../services";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -79,13 +79,14 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     onChanged();
   });
   const tracker = useRunTracker(services, tracked);
-  const maintenanceRuns = useQuery(() => services.runs.list({ run_scope: "maintenance" }, null, 50), [services, apiKey, submissions.length]);
-  const maintenanceColumns = useMemo<ColumnDef<Run>[]>(() => [
-    { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
+  const maintenanceTasks = useQuery(() => services.maintenance.list(), [services, apiKey, submissions.length]);
+  const maintenanceColumns = useMemo<ColumnDef<MaintenanceTaskRecord>[]>(() => [
+    { accessorKey: "task_id", header: "Task ID", cell: info => <CopyId value={String(info.getValue())} /> },
     { accessorKey: "dataset_id", header: "Dataset" },
     { accessorKey: "run_kind", header: "Kind" },
     { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
-    { accessorKey: "created_at", header: "Created", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+    { accessorKey: "updated_at", header: "Updated", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload())}>{row.status === "paused" ? "Enable" : "Pause"}</button>; } },
   ], []);
 
   // The platform publishes which dataset each run kind can target; the console
@@ -294,9 +295,9 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       onConfirm={() => void mutation.submit()} onEdit={mutation.edit} submitting={mutation.state === "queued"} />}
 
     <section className="panel" aria-label="Maintenance task list">
-      <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceRuns.reload()}>Refresh</button>} />
+      <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>Refresh</button>} />
       <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label></FilterBar>
-      {maintenanceRuns.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceRuns.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceRuns.data?.items ?? []).filter(run => !taskFilter || run.status === taskFilter)} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
+      {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => !taskFilter || task.status === taskFilter)} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">
       <PanelHeading eyebrow="Live activity" title="Submitted tasks"
