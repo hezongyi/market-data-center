@@ -85,6 +85,9 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     { accessorKey: "dataset_id", header: "Dataset" },
     { accessorKey: "run_kind", header: "Kind" },
     { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
+    { accessorKey: "recent_run_id", header: "Recent run", cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
+    { accessorKey: "next_run_at", header: "Next run", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+    { accessorKey: "recent_error", header: "Recent error", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "updated_at", header: "Updated", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
     { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button>; } },
   ], []);
