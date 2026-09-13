@@ -59,6 +59,7 @@ from data_center.storage.query import (
 )
 
 _request_id = ContextVar("request_id", default="")
+_session_id = ContextVar("session_id", default=None)
 _sessions: dict[str, str] = {}
 
 
@@ -68,6 +69,7 @@ def current_request_id():
 
 def require_api_key(config: Settings, provided: str | None, session: str | None = None) -> None:
     """Apply the service-wide write-authentication policy."""
+    session = session or _session_id.get()
     if config.api_key and not hmac.compare_digest(provided or "", config.api_key) and session not in _sessions:
         raise HTTPException(status_code=401, detail="invalid api key")
 
@@ -186,12 +188,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
         request_id = request.headers.get("x-request-id", str(uuid4()))[:128]
-        token = _request_id.set(request_id)
+        token = _request_id.set(request_id); session_token = _session_id.set(request.cookies.get("mdc_session"))
         started = time.monotonic()
         try:
             response = await call_next(request)
         finally:
-            _request_id.reset(token)
+            _request_id.reset(token); _session_id.reset(session_token)
         response.headers["X-Request-ID"] = request_id
         print(json.dumps({"event": "http_request", "request_id": request_id, "method": request.method,
                           "path": request.url.path, "status": response.status_code,
