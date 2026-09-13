@@ -322,13 +322,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
     await page.getByText("Active alerts", { exact: true }).waitFor();
-    await page.getByLabel("API key").fill("incorrect-key");
+    await page.evaluate(async () => { await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({}) }); });
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     const ingestDialog = page.getByRole("dialog", { name: "Queue ingest run?" });
     await ingestDialog.getByRole("button", { name: "Queue ingest", exact: true }).click();
     await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
     await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await page.getByLabel("API key").fill(key);
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     await page.getByRole("dialog", { name: "Queue ingest run?" }).getByRole("button", { name: "Queue ingest", exact: true }).click();
     await page.locator(".notice").filter({ hasText: "Queued" }).waitFor();
