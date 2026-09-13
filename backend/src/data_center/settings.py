@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     monitor_delivery_timeout_seconds: float = 5.0
     monitor_delivery_budget_seconds: float = 20.0
     worker_timeout_seconds: float = 120.0
+    # Provider endpoints stay configurable so an isolated acceptance run can
+    # point a connector at a local fixture instead of a real provider.
+    fred_endpoint: str | None = None
+    fred_metadata_endpoint: str | None = None
     # Optional production canary allowlist for the governed 1m maintenance
     # scheduler.  CLI --symbols remains an explicit per-run override.
     maintenance_symbols: str | None = None

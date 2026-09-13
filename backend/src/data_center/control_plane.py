@@ -198,6 +198,10 @@ class ControlPlaneRegistry:
         except KeyError as exc:
             raise ValueError(f"provider capability is not registered: {provider}") from exc
 
+    def capabilities(self) -> tuple[ProviderCapability, ...]:
+        """Return a deterministic read model of the registered provider capabilities."""
+        return tuple(sorted(self._capabilities.values(), key=lambda item: item.provider))
+
     def register_recipe(self, recipe: TransformRecipe) -> TransformRecipe:
         key = (recipe.recipe_id, recipe.version)
         current = self._recipes.get(key)

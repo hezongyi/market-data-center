@@ -119,16 +119,41 @@ class LocalWorker:
         return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]}),
                 "manifest": str(published_manifest)}
 
+    def _finding_records(self, claimed: dict, payload: dict) -> list[dict]:
+        """Attach run and selector linkage to every finding the run produced."""
+        summary = payload.get("quality_summary") if isinstance(payload.get("quality_summary"), dict) else {}
+        selector = {key: (claimed.get("payload") or {}).get(key)
+                    for key in ("provider", "symbol", "timeframe", "series_id")}
+        selector = {key: value for key, value in selector.items() if value}
+        records = []
+        for finding in summary.get("findings") or []:
+            records.append({**finding, "run_id": claimed["run_id"],
+                            "job_id": (claimed.get("payload") or {}).get("job_id"),
+                            "dataset_id": payload.get("dataset_id") or (claimed.get("payload") or {}).get("dataset_id"),
+                            "selector": selector})
+        return records
+
+    def _persist_findings(self, claimed: dict, payload: dict) -> None:
+        records = self._finding_records(claimed, payload)
+        if records:
+            self.ledger.record_findings(records)
+
     def _recover(self):
         # The child inherits the lock so a replacement cannot recover a live child.
         for job in self.ledger.running_jobs():
             directory = self.root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
             result_path = directory / "result.json"
             result = json.loads(result_path.read_text()) if result_path.exists() else {}
-            if "receipt" in result:
+            if "verification" in result:
+                # A verification run owns no canonical part; publish nothing.
+                payload = result["verification"]
+                self.ledger.finish_job(job["job_id"], job["run_id"], payload)
+                self._persist_findings(job, payload)
+            elif "receipt" in result:
                 try:
                     receipt = self._publish(directory, result["receipt"])
                     self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
+                    self._persist_findings(job, receipt)
                 except PublicationError:
                     if manifest_path(self.root, job["run_id"]).exists():
                         raise
@@ -167,14 +192,21 @@ class LocalWorker:
                     self.ledger.heartbeat()
                     time.sleep(min(0.2, self.timeout_seconds / 10))
                 result = json.loads((directory / "result.json").read_text())
-                if "receipt" in result:
+                if "verification" in result:
+                    payload = result["verification"]
+                    self.ledger.finish_job(claimed["job_id"], claimed["run_id"], payload)
+                    self._persist_findings(claimed, payload)
+                elif "receipt" in result:
                     receipt = self._publish(directory, result["receipt"])
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], receipt)
+                    self._persist_findings(claimed, receipt)
                 else:
                     self.ledger.fail_job(claimed["job_id"], claimed["run_id"], result["error"],
                                          error_type=result["error_type"], failure_stage=result.get("failure_stage", "execute"), retryable=result["retryable"],
                                          quality_summary=result.get("quality_summary"),
                                          delay_seconds=self.retry_delay_seconds)
+                    self._persist_findings(claimed, {"dataset_id": claimed["payload"].get("dataset_id"),
+                                                     "quality_summary": result.get("quality_summary")})
             except Exception as exc:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -184,7 +216,7 @@ class LocalWorker:
                                          error_type="PublicationError", failure_stage="publish", retryable=False)
                     self.ledger.heartbeat()
                     return True
-                if "receipt" in result:
+                if "receipt" in result or "verification" in result:
                     # Preserve the staged result for recovery after publication/ledger failure.
                     raise
                 self.ledger.fail_job(claimed["job_id"], claimed["run_id"], "ingest execution failed",
