@@ -393,8 +393,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/operations/receipts")
     def operations_receipts_view(limit: int = 5) -> dict:
         payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
     def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
@@ -406,7 +405,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="run not found")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"data": ledger.get(new_id), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(ledger.get(new_id))
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/acknowledge")
     def acknowledge_dead_letter(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
@@ -417,12 +416,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="run not found")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/datasets")
     def datasets() -> dict:
-        return {"data": [definition.as_dict() for definition in iter_dataset_definitions()],
-                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope([definition.as_dict() for definition in iter_dataset_definitions()])
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
@@ -431,7 +429,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload = ledger.get(run_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found")
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}/manifest")
     def run_manifest(run_id: str) -> dict:
@@ -440,7 +438,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             validate_manifest(config.canonical_root, payload)
         except (OSError, json.JSONDecodeError, PublicationError):
             raise HTTPException(status_code=404, detail="manifest not found")
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/ingest/runs")
     def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
@@ -453,7 +451,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run_ids = enqueue_ingest_plan(ledger=ledger, job=job, request_id=current_request_id())
         payload = {"status": "queued", "job_id": job.job_id, "run_id": run_ids[0],
                    "run_ids": run_ids, "window_count": len(run_ids)}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/bars")
     def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None,
@@ -478,7 +476,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.get(f"{config.api_prefix}/provider-bars/coverage")
     def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d",
@@ -514,7 +512,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        "readiness_status": "unknown", "ready_interval_count": 0,
                        "ready_intervals": [], "gap_count": None,
                        "missing_timestamp_count": None}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/market-bars")
     def market_bars(symbol: str, provider: str, timeframe: str, price_basis: str,
@@ -546,7 +544,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.post(f"{config.api_prefix}/derive/runs", status_code=202)
     def derive(job: DeriveJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
@@ -565,8 +563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),
         )
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.post(f"{config.api_prefix}/quality/checks", status_code=202)
     def quality_check(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
@@ -580,8 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),
         )
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.get(f"{config.api_prefix}/quality/findings")
     def quality_findings(severity: str | None = None, code: str | None = None,
@@ -592,11 +588,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = run_view.list_findings(severity=severity, code=code, dataset_id=dataset_id, run_id=run_id,
                                       state=state, series_id=series_id, observed_from=observed_from,
                                       observed_to=observed_to, page_size=page_size, cursor=cursor)
-        return {"data": page["findings"],
-                "meta": {"request_id": current_request_id(), "schema_version": "v1",
-                         "count": page["page"]["count"], "page": page["page"], "filters": page["filters"],
-                         "state_counts": page["state_counts"]},
-                "errors": []}
+        return api_envelope(page["findings"], meta={
+            "count": page["page"]["count"], "page": page["page"], "filters": page["filters"],
+            "state_counts": page["state_counts"],
+        })
 
     @app.post(f"{config.api_prefix}/quality/findings/{{finding_id}}/state")
     def quality_finding_state(finding_id: str, payload: dict, http_request: Request,
@@ -618,8 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "time_range": {}, "outcome": state, "code": None,
             "message": payload.get("note") or f"finding marked {state}",
         })
-        return {"data": record, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(record)
 
     @app.get(f"{config.api_prefix}/economic/observations")
     def economic_observations(series_id: str, provider: str = "fred", start: str | None = None,
@@ -651,12 +645,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.get(f"{config.api_prefix}/economic/coverage")
     def economic_dataset_coverage(series_id: str, provider: str = "fred") -> dict:
         payload = economic_observations_coverage(config.canonical_root, provider=provider, series_id=series_id)
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/economic/ingest", status_code=202)
     def ingest_economic_observations(series_id: str, http_request: Request, start: str | None = None,
@@ -677,8 +671,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Legacy convenience keys stay present: consumers already read
         # ``run_id``/``status`` and the unified envelope keeps them.
         envelope["series_id"] = series_id
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.get(f"{config.api_prefix}/market-bars/coverage")
     def market_bars_dataset_coverage(symbol: str, provider: str, timeframe: str, price_basis: str,
@@ -722,8 +715,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         timeframe=timeframe_delta(timeframe),
                     ).as_dict() | {"recipe": payload["recipe"], "recipe_status": "registered",
                                    "price_basis": price_basis}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     if config.webui_dist is not None and config.webui_dist.is_dir():
         app.mount("/", StaticFiles(directory=config.webui_dist, html=True), name="webui")

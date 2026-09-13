@@ -28,6 +28,18 @@ Runs、Quality、Explorer 和 Operations。
 `meta.economic_schema_version` 在单版本时返回 `v1`/`v2`，混合时返回 `mixed`，空结果返回
 `unknown`。查询接口绝不在请求中直接调用 provider。
 
+## 写操作鉴权与审计策略
+
+所有会排队、写入或改变状态的接口都要求 `X-API-Key`；缺失或错误返回 401，`errors[0].code`
+为 `unauthorized`。唯一例外是 `POST /api/v1/maintenance/plans`：它是无副作用的校验预览，
+既不排队也不写审计，因此不要求鉴权——这是刻意的例外，不是遗漏。该策略由
+`backend/tests/test_api_surface_contract.py` 的路由清单测试强制：新增或删除任何 mutating
+路由都必须在该清单中登记并显式决定"是否鉴权、是否审计"，否则测试失败。
+
+写操作审计通过 `GET /api/v1/operations/audit` 读取，记录 actor（API key 的不可逆指纹或网关
+注入的 `X-Operator`）、时间、selector、任务类型与结果（`queued` / `rejected` / `protected`）；
+被容量保护或校验拒绝的提交同样入账。审计与运行 receipt 都是追加式记录，绝不保存凭据本身。
+
 ## v0.4 数据维护工作台 contract
 
 `POST /api/v1/maintenance/plans` 是无副作用的校验预览：请求体为 maintenance task
