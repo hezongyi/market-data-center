@@ -330,7 +330,10 @@ def test_run_detail_projects_stage_windows_and_retry_chain(tmp_path) -> None:
         "start": START, "end": END,
         "execution_plan": {"run_kind": "ingest", "run_scope": "acceptance", "dataset_id": "provider_bars",
                            "selector": {"provider": "fixture", "symbol": "UI_TEST", "timeframe": "1d"},
-                           "windows": [{"ordinal": 0, "start": START, "end": END, "reason": "ingest",
+                           # A serialized plan carries an explicit offset; Python
+                           # 3.10 does not parse the "Z" suffix in fromisoformat.
+                           "windows": [{"ordinal": 0, "start": "2026-01-01T00:00:00+00:00",
+                                        "end": "2026-01-03T00:00:00+00:00", "reason": "ingest",
                                         "semantics": "half-open"}]},
     })
     worker.run_next()
