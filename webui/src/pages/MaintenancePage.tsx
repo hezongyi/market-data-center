@@ -1,4 +1,4 @@
-import { TimeDisplay } from "../preferences";
+import { TimeDisplay, usePreferences } from "../preferences";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity, AlertTriangle, CalendarClock, CheckCircle2, Database, FileCheck2, Hammer,
@@ -45,6 +45,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   // the operator still validates it against the live platform before queueing.
   draft?: MaintenanceTaskRequest | null;
 }) {
+  const { t } = usePreferences();
   const [runKind, setRunKind] = useState<RunKind>("ingest");
   const [runScope, setRunScope] = useState<string>("production");
   const [provider, setProvider] = useState("fixture");
@@ -85,15 +86,15 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const tracker = useRunTracker(services, tracked);
   const maintenanceTasks = useQuery(() => services.maintenance.list(), [services, apiKey, submissions.length]);
   const maintenanceColumns = useMemo<ColumnDef<MaintenanceTaskRecord>[]>(() => [
-    { accessorKey: "task_id", header: "Task ID", cell: info => <CopyId value={String(info.getValue())} /> },
-    { accessorKey: "dataset_id", header: "Dataset" },
-    { accessorKey: "run_kind", header: "Kind" },
-    { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
-    { accessorKey: "recent_run_id", header: "Recent run", cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
-    { accessorKey: "next_run_at", header: "Next run", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
-    { accessorKey: "recent_error", header: "Recent error", cell: info => String(info.getValue() ?? "—") },
-    { accessorKey: "updated_at", header: "Updated", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
-    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <><button className="link-button" onClick={() => setSelectedRegistryTask(row)}>Details</button><button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button></>; } },
+    { accessorKey: "task_id", header: t("Task ID"), cell: info => <CopyId value={String(info.getValue())} /> },
+    { accessorKey: "dataset_id", header: t("Dataset") },
+    { accessorKey: "run_kind", header: t("Kind") },
+    { accessorKey: "status", header: t("Status"), cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
+    { accessorKey: "recent_run_id", header: t("Recent run"), cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
+    { accessorKey: "next_run_at", header: t("Next run"), cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+    { accessorKey: "recent_error", header: t("Recent error"), cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "updated_at", header: t("Updated"), cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
+    { accessorKey: "task_id", header: t("Actions"), cell: info => { const id = String(info.getValue()); const row = info.row.original; return <><button className="link-button" onClick={() => setSelectedRegistryTask(row)}>{t("Details")}</button><button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button></>; } },
   ], []);
 
   // The platform publishes which dataset each run kind can target; the console
@@ -201,8 +202,8 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
 
   const submissionColumns: ColumnDef<QueuedEnvelope>[] = [
     { accessorKey: "task_id", header: "Task", cell: info => <CopyId value={String(info.getValue())} /> },
-    { accessorKey: "run_kind", header: "Kind" },
-    { accessorKey: "dataset_id", header: "Dataset" },
+    { accessorKey: "run_kind", header: t("Kind") },
+    { accessorKey: "dataset_id", header: t("Dataset") },
     { accessorKey: "window_count", header: "Windows" },
     { accessorKey: "submitted_at", header: "Submitted", cell: info => utc(String(info.getValue())) },
   ];
@@ -304,7 +305,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       onConfirm={() => void mutation.submit()} onEdit={mutation.edit} submitting={mutation.state === "queued"} />}
 
     <section className="panel" aria-label="Maintenance task list">
-      <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>Refresh</button>} />
+      <PanelHeading eyebrow={t("Maintenance tasks")} title={t("Task list")} action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>Refresh</button>} />
       <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label><label>Dataset<select value={taskDatasetFilter} onChange={event => setTaskDatasetFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.dataset_id))).map(dataset => <option key={dataset} value={dataset}>{dataset}</option>)}</select></label><label>Kind<select value={taskKindFilter} onChange={event => setTaskKindFilter(event.target.value)}><option value="">All</option>{Array.from(new Set((maintenanceTasks.data ?? []).map(task => task.run_kind))).map(kind => <option key={kind} value={kind}>{kind}</option>)}</select></label></FilterBar>
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => (!taskFilter || task.status === taskFilter) && (!taskDatasetFilter || task.dataset_id === taskDatasetFilter) && (!taskKindFilter || task.run_kind === taskKindFilter))} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
