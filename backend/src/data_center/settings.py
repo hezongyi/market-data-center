@@ -47,6 +47,8 @@ class Settings(BaseSettings):
             raise ValueError("DATACENTER_API_KEY is required for non-loopback binding")
         if not 0 <= self.capacity_critical_free_ratio < self.capacity_warning_free_ratio <= 1:
             raise ValueError("capacity ratios require 0 <= critical < warning <= 1")
+        if self.capacity_fixed_free_ratio is not None and not 0 <= self.capacity_fixed_free_ratio <= 1:
+            raise ValueError("capacity_fixed_free_ratio must be between 0 and 1")
         return self
 
     def capacity_policy(self):

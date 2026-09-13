@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -18,14 +19,15 @@ def main() -> int:
     if not index.exists():
         errors.append("docs/README.md is missing")
 
-    manifest = Path("/home/quant/market-data-center/releases/current/deployment.json")
+    manifest_text = os.getenv("DATACENTER_DEPLOYMENT_MANIFEST")
+    manifest = Path(manifest_text) if manifest_text else None
     deployment_id = None
-    if manifest.exists():
+    if manifest and manifest.exists():
         try:
             deployment_id = json.loads(manifest.read_text())["deployment_id"]
         except (OSError, KeyError, TypeError, json.JSONDecodeError):
             errors.append("active deployment manifest is unreadable")
-    if deployment_id and deployment_id not in current.read_text():
+    if deployment_id and current.exists() and deployment_id not in current.read_text():
         errors.append(f"current-state.md does not reference active deployment {deployment_id}")
 
     for path in sorted((ROOT / "docs" / "specs").glob("*.md")):

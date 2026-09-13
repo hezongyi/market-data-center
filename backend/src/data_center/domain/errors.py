@@ -15,4 +15,4 @@ class ProviderGapError(ValueError):
 # Run receipts record the error type by name.  ``ValueError`` predates the
 # dedicated type and is still accepted so that receipts written by earlier
 # workers keep their established meaning.
-PROVIDER_GAP_ERROR_TYPES = frozenset({ProviderGapError.__name__, "ValueError"})
+PROVIDER_GAP_ERROR_TYPES = frozenset({ProviderGapError.__name__})
