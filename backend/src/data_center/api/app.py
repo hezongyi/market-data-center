@@ -74,6 +74,16 @@ def _password_hash(password: str) -> str:
     salt = secrets.token_bytes(16)
     return f"{salt.hex()}${hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1).hex()}"
 
+def _load_auth_state(config: Settings) -> None:
+    if config.auth_password_hash or not config.auth_state_path or not config.auth_state_path.exists(): return
+    try: config.auth_password_hash = json.loads(config.auth_state_path.read_text()).get("password_hash")
+    except (OSError, ValueError): return
+
+def _save_auth_state(config: Settings) -> None:
+    if not config.auth_state_path or not config.auth_password_hash: return
+    config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
+    config.auth_state_path.write_text(json.dumps({"password_hash": config.auth_password_hash}))
+
 
 def current_request_id():
     return _request_id.get()
@@ -166,6 +176,7 @@ def submit_maintenance(*, request: MaintenanceTaskRequest, ledger: RunLedger, co
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     config = settings or Settings()
+    _load_auth_state(config)
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
     query_engine = QueryEngine(config.canonical_root)
@@ -209,6 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if username != config.auth_username or len(password) < 12:
             raise HTTPException(status_code=422, detail="username or password does not meet requirements")
         config.auth_password_hash = _password_hash(password)
+        _save_auth_state(config)
         return api_envelope({"initialized": True, "username": username})
 
     @app.post(f"{config.api_prefix}/auth/logout")
@@ -235,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not _password_ok(current, config.auth_password_hash) or len(replacement) < 12:
             raise HTTPException(status_code=422, detail="invalid password change")
         config.auth_password_hash = _password_hash(replacement)
+        _save_auth_state(config)
         _sessions.clear()
         return api_envelope({"changed": True})
 

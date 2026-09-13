@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     api_key: str | None = None
     auth_username: str = "admin"
     auth_password_hash: str | None = None
+    auth_state_path: Path | None = None
     auth_session_ttl_seconds: int = 86400
     auth_cookie_secure: bool = True
     webui_dist: Path | None = None
