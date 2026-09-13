@@ -161,6 +161,7 @@ export type ReadyState = {
   read_status: string;
   write_status: string;
   capacity_status: string;
+  capacity_free_ratio?: number | null;
   operational_snapshot_status: string;
   worker_heartbeat_age_seconds: number | null;
   deployment_id: string;

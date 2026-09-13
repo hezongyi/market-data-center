@@ -417,6 +417,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": status, "read_status": "available" if storage_ready else "unavailable",
             "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
             "capacity_status": capacity["status"] if capacity else "unknown",
+            "capacity_free_ratio": capacity.get("free_ratio") if capacity else None,
             "operational_snapshot_status": snapshot.status if snapshot else "unknown",
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
