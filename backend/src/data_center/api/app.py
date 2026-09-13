@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import tempfile
 import time
+from threading import Lock
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -63,6 +64,7 @@ from data_center.storage.query import (
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
 _sessions: dict[str, tuple[str, float]] = {}
+_auth_lock = Lock()
 _password_hasher = PasswordHasher()
 
 def _password_ok(password: str, encoded: str | None) -> bool:
@@ -232,8 +234,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         development instances may bootstrap without one; non-loopback
         deployments are already required to configure an API key by Settings.
         """
-        if config.auth_password_hash:
-            raise HTTPException(status_code=409, detail="authentication is already initialized")
+        with _auth_lock:
+            if config.auth_password_hash:
+                raise HTTPException(status_code=409, detail="authentication is already initialized")
         origin = request.headers.get("origin")
         if origin and origin.rstrip("/") != f"{request.url.scheme}://{request.url.netloc}".rstrip("/"):
             raise HTTPException(status_code=403, detail="origin not allowed")
@@ -243,8 +246,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         password = str(payload.get("password") or "")
         if username != config.auth_username or len(password) < 12:
             raise HTTPException(status_code=422, detail="username or password does not meet requirements")
-        config.auth_password_hash = _password_hash(password)
-        _save_auth_state(config)
+        with _auth_lock:
+            if config.auth_password_hash:
+                raise HTTPException(status_code=409, detail="authentication is already initialized")
+            config.auth_password_hash = _password_hash(password)
+            _save_auth_state(config)
         return api_envelope({"initialized": True, "username": username})
 
     @app.post(f"{config.api_prefix}/auth/logout")
