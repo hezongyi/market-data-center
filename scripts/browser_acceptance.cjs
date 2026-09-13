@@ -621,7 +621,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     body: JSON.stringify({ data: null, meta: { request_id: "browser-error-state" }, errors: [{ code: "injected", message: "Injected metrics failure" }] }),
   }));
   await errorPage.goto(base);
-  await errorPage.getByText("Unable to load data", { exact: true }).waitFor();
+  await errorPage.locator(".error-state").waitFor();
   await errorPage.getByText("Injected metrics failure", { exact: false }).waitFor();
   await errorPage.close();
   const report = writeReceipt("pass", {
