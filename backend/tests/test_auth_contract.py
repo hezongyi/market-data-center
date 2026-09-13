@@ -10,6 +10,7 @@ def test_auth_initialize_login_me_change_password(tmp_path):
                         evidence_root=tmp_path / "evidence", auth_cookie_secure=False)
     client = TestClient(create_app(settings))
     assert client.get("/api/v1/auth/me").status_code == 401
+
     initialized = client.post("/api/v1/auth/initialize", json={"username": "admin", "password": "initial-password-123"})
     assert initialized.status_code == 200
     assert client.post("/api/v1/auth/initialize", json={"username": "admin", "password": "another-password-123"}).status_code == 409
@@ -20,8 +21,18 @@ def test_auth_initialize_login_me_change_password(tmp_path):
     assert changed.status_code == 200
     assert client.get("/api/v1/auth/me").status_code == 401
     assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "replacement-password-123"}).status_code == 200
-
-
+def test_auth_password_rotation_is_visible_to_second_app(tmp_path):
+    state = tmp_path / "auth-state.json"
+    def config():
+        return Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "ledger.sqlite",
+                        evidence_root=tmp_path / "evidence", auth_state_path=state, auth_cookie_secure=False)
+    first = TestClient(create_app(config()))
+    assert first.post("/api/v1/auth/initialize", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
+    assert first.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
+    second = TestClient(create_app(config()))
+    assert first.post("/api/v1/auth/change-password", json={"current_password": "initial-password-123", "new_password": "replacement-password-123"}).status_code == 200
+    assert second.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 401
+    assert second.post("/api/v1/auth/login", json={"username": "admin", "password": "replacement-password-123"}).status_code == 200
 def test_session_actor_and_password_state_survive_app_restart(tmp_path):
     state = tmp_path / "auth-state.json"
     settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "ledger.sqlite",
