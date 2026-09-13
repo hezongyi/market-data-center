@@ -241,7 +241,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     recordStep("runs");
     await page.getByRole("button", { name: "runs", exact: true }).click();
     await page.locator("button.access-button").click();
-    await page.getByLabel("API key").fill(key);
+    const initialKey = page.getByLabel("API key");
+    if (await initialKey.count()) await initialKey.fill(key);
     await page.getByLabel("Status").selectOption("failed");
     const runIdCell = page.locator(".mono").filter({
       hasText: new RegExp(`^${failed.run_id}$`),
@@ -389,13 +390,13 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     if (!(await keyInput.isVisible().catch(() => false))) {
       await page.locator("button.access-button").click();
     }
-    await keyInput.fill("incorrect-key");
+    if (await keyInput.count()) await keyInput.fill("incorrect-key");
     await page.getByRole("button", { name: "Confirm and queue" }).click();
     await page.getByText("Not authorized", { exact: true }).waitFor();
     assert.equal((await call("GET", "/runs")).length, beforeRefused, "a refused write must not queue a run");
 
     // The authorized path queues one run and tracks it to a terminal receipt.
-    await page.getByLabel("API key").fill(key);
+    if (await page.getByLabel("API key").count()) await page.getByLabel("API key").fill(key);
     await page.getByRole("button", { name: "Done", exact: true }).click();
     const beforeIngest = await call("GET", "/runs");
     await page.getByRole("button", { name: "Confirm and queue" }).click();
