@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import hmac
 import json
@@ -7,7 +8,6 @@ import secrets
 import sqlite3
 import tempfile
 import time
-import fcntl
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from threading import Lock
