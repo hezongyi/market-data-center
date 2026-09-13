@@ -91,7 +91,7 @@ class RunLedger:
             item = {**json.loads(row[1]), "task_id": row[0], "status": row[2], "updated_at": row[3]}
             item.setdefault("schedule", None)
             item.setdefault("next_run_at", None)
-            if row[2] not in {"paused", "enabled"}:
+            if row[2] != "paused":
                 related = [runs[rid] for rid in item.get("run_ids", []) if rid in runs]
                 states = {str(run.get("status", "queued")) for run in related}
                 item["status"] = "failed" if "failed" in states else "running" if "running" in states else "succeeded" if related and states <= {"pass", "succeeded"} else "queued"
