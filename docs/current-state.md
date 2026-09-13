@@ -17,7 +17,7 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.3.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
+| 源码版本 | `0.3.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
 | 最新发布标签 | `v0.3.0` → `ec79720f65bdf6251d48fb3de0c7b4b2de9b6991`（annotated、不可变） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.0) + `release-receipt.json` |
 | 生产 deployment source commit | `4016a992669d445214ae5e34ae8ac74308f0679a`，`software_version=0.2.0`，是 protected `main` 的祖先 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
