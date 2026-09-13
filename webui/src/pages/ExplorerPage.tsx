@@ -1,4 +1,4 @@
-import { TimeDisplay } from "../preferences";
+import { TimeDisplay, usePreferences } from "../preferences";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, ChevronLeft, ChevronRight, CircleSlash, Hammer, Lock, Search } from "lucide-react";
@@ -75,6 +75,7 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
   services?: Services;
   onMaintenance?: (draft?: MaintenanceTaskRequest) => void;
 }) {
+  const { t } = usePreferences();
   const fallbackServices = useMemo(() => createServices(apiKey), [apiKey]);
   const svc = services ?? fallbackServices;
 
@@ -287,14 +288,14 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
 
   return <div className="explorer-page">
     <section className="panel" aria-label="Query">
-      <PanelHeading eyebrow="Published data" title="Data explorer"
+      <PanelHeading eyebrow={t("Published data")} title={t("Data explorer")}
         action={<StatusBadge tone={capabilities.status === "error" ? "warn" : "neutral"}>
           {mode === "market" ? "Derived market_bars" : mode === "bars" ? "Raw provider_bars" : "Economic observations"}
         </StatusBadge>} />
       <div className="segmented" role="group" aria-label="Explorer dataset">
-        <button className={mode === "bars" ? "active" : ""} onClick={() => reset("bars")}>Provider bars</button>
-        <button className={mode === "market" ? "active" : ""} onClick={() => reset("market")}>Market bars</button>
-        <button className={mode === "economic" ? "active" : ""} onClick={() => reset("economic")}>Economic</button>
+        <button className={mode === "bars" ? "active" : ""} onClick={() => reset("bars")}>{t("Provider bars")}</button>
+        <button className={mode === "market" ? "active" : ""} onClick={() => reset("market")}>{t("Market bars")}</button>
+        <button className={mode === "economic" ? "active" : ""} onClick={() => reset("economic")}>{t("Economic")}</button>
       </div>
 
       <form className="explorer-toolbar" onSubmit={event => load(event)}>

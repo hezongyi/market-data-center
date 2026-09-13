@@ -1,4 +1,4 @@
-import { TimeDisplay } from "../preferences";
+import { TimeDisplay, usePreferences } from "../preferences";
 /**
  * Quality feedback loop (v0.4 Phase 3).
  *
@@ -319,6 +319,7 @@ const noticesOf = (data: Paged<Finding> | null): string[] => {
 };
 
 export function QualityPage({ findings: initialFindings, services, onMessage, onChanged, onMaintenance }: QualityPageProps) {
+  const { t } = usePreferences();
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [cursor, setCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([]);
@@ -377,19 +378,19 @@ export function QualityPage({ findings: initialFindings, services, onMessage, on
   };
 
   const columns = useMemo<ColumnDef<Finding>[]>(() => [
-    { accessorKey: "severity", header: "Severity", cell: ({ row }) => {
+    { accessorKey: "severity", header: t("Severity"), cell: ({ row }) => {
       const severity = row.original.severity;
       const Icon = severityIcon(severity);
       return <StatusBadge tone={severityTone(severity)}><Icon size={12} />{severity}</StatusBadge>;
     } },
-    { accessorKey: "code", header: "Code", cell: info => <span className="mono">{String(info.getValue())}</span> },
-    { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
-    { id: "observed", header: "Observed", cell: ({ row }) => utcPosition(observedOf(row.original)) },
-    { accessorKey: "run_id", header: "Run", cell: info => {
+    { accessorKey: "code", header: t("Code"), cell: info => <span className="mono">{String(info.getValue())}</span> },
+    { accessorKey: "dataset_id", header: t("Dataset"), cell: info => String(info.getValue() ?? "—") },
+    { id: "observed", header: t("Observed"), cell: ({ row }) => utcPosition(observedOf(row.original)) },
+    { accessorKey: "run_id", header: t("Run"), cell: info => {
       const runId = info.getValue() as string | undefined;
       return runId ? <CopyId value={runId} /> : <span className="filter-note">not recorded</span>;
     } },
-    { id: "state", header: "State", cell: ({ row }) => {
+    { id: "state", header: t("State"), cell: ({ row }) => {
       const state = stateOf(row.original);
       const meta = stateMetaOf(state);
       const Icon = meta.icon;

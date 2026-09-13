@@ -1,4 +1,4 @@
-import { TimeDisplay } from "../preferences";
+import { TimeDisplay, usePreferences } from "../preferences";
 import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -77,6 +77,7 @@ type OperationsPageProps = {
 };
 
 export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, services }: OperationsPageProps) {
+  const { t } = usePreferences();
   const [provider, setProvider] = useState("fixture");
   const [symbol, setSymbol] = useState("UI_TEST");
   const [assetClass, setAssetClass] = useState("crypto");
@@ -193,7 +194,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
 
     <div className="operations-grid">
       <section className="panel" aria-label="Maintenance queue">
-        <PanelHeading eyebrow="Ledger queue" title="Maintenance queue" action={<div className="header-actions">
+        <PanelHeading eyebrow={t("Ledger queue")} title={t("Maintenance queue")} action={<div className="header-actions">
           {queue.data && <StatusBadge tone={queue.data.queued ? "warn" : "good"}>
             {queue.data.queued ? `${queue.data.queued} queued` : "Queue empty"}</StatusBadge>}
           <button className="link-button" aria-label="Refresh maintenance queue" onClick={queue.reload}><RefreshCw size={12} /> Refresh →</button>
@@ -201,9 +202,9 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
         <PanelQueryState query={queue} emptyTitle="No queue state recorded">
           {queue.data && <>
             <div className="operations-counts">
-              <OperationsCount icon={<Clock size={13} />} label="Queued" value={queue.data.queued} hint="waiting for the worker" />
-              <OperationsCount icon={<Activity size={13} />} label="Running" value={queue.data.running} hint="in-flight jobs" />
-              <OperationsCount icon={<CheckCircle2 size={13} />} label="Completed" value={queue.data.completed} hint="finished jobs" />
+              <OperationsCount icon={<Clock size={13} />} label={t("Queued")} value={queue.data.queued} hint={t("waiting for the worker")} />
+              <OperationsCount icon={<Activity size={13} />} label={t("Running")} value={queue.data.running} hint={t("in-flight jobs")} />
+              <OperationsCount icon={<CheckCircle2 size={13} />} label={t("Completed")} value={queue.data.completed} hint={t("finished jobs")} />
             </div>
             <dl className="detail-list">
               <div><dt>Oldest queued (UTC)</dt><dd>{queue.data.oldest_queued_available_at

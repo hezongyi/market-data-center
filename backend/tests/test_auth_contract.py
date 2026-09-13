@@ -39,7 +39,7 @@ def test_session_actor_and_password_state_survive_app_restart(tmp_path):
                         evidence_root=tmp_path / "evidence", auth_cookie_secure=False, auth_state_path=state)
     first = TestClient(create_app(settings))
     assert first.post("/api/v1/auth/initialize", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
-    assert state.exists()
+    assert settings.ledger_path.with_name("auth.sqlite3").exists()
     assert first.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
     payload = {"run_kind": "ingest", "run_scope": "acceptance", "provider": "fixture", "symbol": "UI_TEST",
                "asset_class": "test", "timeframe": "1d", "start": "2026-01-01T00:00:00Z", "end": "2026-01-02T00:00:00Z"}
@@ -52,15 +52,21 @@ def test_session_actor_and_password_state_survive_app_restart(tmp_path):
     assert restarted.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
 
 def test_concurrent_worker_logins_preserve_both_sessions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
     state = tmp_path / "auth-state.json"
     def config():
         return Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "ledger.sqlite",
                         evidence_root=tmp_path / "evidence", auth_state_path=state, auth_cookie_secure=False)
     first = TestClient(create_app(config()))
     assert first.post("/api/v1/auth/initialize", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
-    a = TestClient(create_app(config()))
-    b = TestClient(create_app(config()))
-    assert a.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
-    assert b.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 200
+    def login():
+        client = TestClient(create_app(config()))
+        return client, client.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_result, second_result = list(pool.map(lambda _: login(), range(2)))
+    a, login_a = first_result
+    b, login_b = second_result
+    assert login_a.status_code == 200
+    assert login_b.status_code == 200
     assert a.get("/api/v1/auth/me").status_code == 200
     assert b.get("/api/v1/auth/me").status_code == 200

@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { ConfirmDialog, DataTable, DetailDrawer, EmptyState, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { messageOf, permissionOf, useQuery } from "../hooks";
-import { TimeDisplay } from "../preferences";
+import { TimeDisplay, usePreferences } from "../preferences";
 import type { RunDetail, RunFilters } from "../lib/api";
 import type { Services } from "../services";
 
@@ -30,6 +30,7 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
   onMessage: (message: string) => void;
   onChanged: () => void;
 }) {
+  const { t } = usePreferences();
   const [filters, setFilters] = useState<RunFilters>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [cursors, setCursors] = useState<Array<string | null>>([]);
@@ -98,9 +99,9 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
   const columns = useMemo<ColumnDef<RunDetail>[]>(() => [
     { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
     { accessorKey: "dataset_id", header: "Dataset" },
-    { accessorKey: "run_kind", header: "Kind", cell: info => String(info.getValue() ?? "ingest") },
-    { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
-    { accessorKey: "outcome", header: "Outcome", cell: ({ row }) => <div className="status-cell">
+    { accessorKey: "run_kind", header: t("Kind"), cell: info => String(info.getValue() ?? "ingest") },
+    { accessorKey: "run_scope", header: t("Scope"), cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "outcome", header: t("Outcome"), cell: ({ row }) => <div className="status-cell">
       <StatusBadge tone={tone(row.original.outcome)}>{row.original.outcome}</StatusBadge>
       {row.original.degraded_reasons.length > 0 && <span className="reason-chip" title={row.original.degraded_reasons.map(item => item.message).join("; ")}>
         <AlertTriangle size={11} />{row.original.degraded_reasons.length}</span>}
