@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_runtime_version_and_release_notes_are_consistent():
     backend = tomllib.loads((ROOT / "backend/pyproject.toml").read_text())
     web = json.loads((ROOT / "webui/package.json").read_text())
-    assert backend["project"]["version"] == web["version"] == __version__ == "0.3.1"
-    assert (ROOT / "docs/releases/v0.3.1.md").is_file()
+    assert backend["project"]["version"] == web["version"] == __version__ == "0.3.2"
+    assert (ROOT / "docs/releases/v0.3.2.md").is_file()
 
 
 def test_portable_environment_template_has_no_machine_defaults():

@@ -6,7 +6,7 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 当前 deployment | `4016a992669d-b0be2ea0` | deployment activation receipt |
+| 当前 deployment | `b5d1bc95681b-610c867f`（`software_version=0.3.1`） | deployment activation receipt |
 | API/worker | systemd active；readiness=ready | `/api/v1/health/ready` |
 | 容量/队列 | `capacity_status=ok`、queue=0 | `/api/v1/metrics` |
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
@@ -17,12 +17,12 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.3.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
-| 最新发布标签 | `v0.3.0` → `ec79720f65bdf6251d48fb3de0c7b4b2de9b6991`（annotated、不可变） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.0) + `release-receipt.json` |
-| 生产 deployment source commit | `4016a992669d445214ae5e34ae8ac74308f0679a`，`software_version=0.2.0`，是 protected `main` 的祖先 | active deployment manifest |
+| 源码版本 | `0.3.2`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
+| 最新发布标签 | `v0.3.1` → `b5d1bc95681b4ce996938f0581c5df1ecc95b465`（annotated、不可变） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.3.1) + `release-receipt.json` |
+| 生产 deployment source commit | `b5d1bc95681b4ce996938f0581c5df1ecc95b465`（= `v0.3.1`），是 protected `main` 的祖先 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
-生产 deployment 的 source commit（`4016a99`，#57）早于当前 protected `main`，即生产版本落后于 main 基线；升级必须走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+生产 deployment 现与 `v0.3.1` 发布基线一致。2026-09-13 的 activation 演练保留了三条回执：成功前滚、注入候选 readiness 失败后的自动恢复（`recovered_deployment_id` 指向本 release）、以及回滚到 `4016a992669d-b0be2ea0` 后再次前滚。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
 
 ## Consumer / ownership 矩阵
 
@@ -43,4 +43,4 @@
 1. yfinance macro-daily 数据域迁移。
 2. economic PIT/current consumer 全量切换。
 3. Dukascopy 历史 provider gap 不补造；高周期完整历史覆盖不作为已完成条件。
-4. 1m maintenance 的 `failed` 语义：provider gap 的分级缺陷已在代码中修复（专用 `ProviderGapError` → `degraded`，不计入 target 失败，cooldown 抑制同样为 `degraded`）。生产仍运行 `0.2.0`/`4016a99`，该修复要等下一次 immutable release 部署后才生效；在此之前生产仍会每约 16 分钟报 `result=failed`，且数据本身 `quality_status=pass`、未被伪造或丢失。
+4. 1m maintenance 的 `failed` 语义：provider gap 分级缺陷已随 `v0.3.1` 部署生效（专用 `ProviderGapError` → `degraded`，不计入 target 失败，cooldown 抑制同样为 `degraded`），数据本身始终 `quality_status=pass`、未被伪造或丢失。
