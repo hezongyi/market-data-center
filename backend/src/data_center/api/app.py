@@ -5,13 +5,14 @@ import math
 import sqlite3
 import tempfile
 import time
+import secrets
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from data_center import __version__
@@ -58,15 +59,16 @@ from data_center.storage.query import (
 )
 
 _request_id = ContextVar("request_id", default="")
+_sessions: dict[str, str] = {}
 
 
 def current_request_id():
     return _request_id.get()
 
 
-def require_api_key(config: Settings, provided: str | None) -> None:
+def require_api_key(config: Settings, provided: str | None, session: str | None = None) -> None:
     """Apply the service-wide write-authentication policy."""
-    if config.api_key and not hmac.compare_digest(provided or "", config.api_key):
+    if config.api_key and not hmac.compare_digest(provided or "", config.api_key) and session not in _sessions:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -164,6 +166,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     print(json.dumps({"event": "api_started", "request_id": None,
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
           flush=True)
+
+    @app.post(f"{config.api_prefix}/auth/login")
+    def auth_login(payload: dict, response: Response):
+        username = str(payload.get("username", "")); password = str(payload.get("password", ""))
+        expected = config.auth_password or config.api_key
+        if username != config.auth_username or not expected or not hmac.compare_digest(password, expected):
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        token = secrets.token_urlsafe(32); _sessions[token] = username
+        response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=False, max_age=86400)
+        return {"data": {"username": username}, "meta": {"schema_version": "v1"}, "errors": []}
+
+    @app.post(f"{config.api_prefix}/auth/logout")
+    def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
+        if session: _sessions.pop(session, None)
+        result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
+        response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
 
     @app.middleware("http")
     async def audit_request(request: Request, call_next):

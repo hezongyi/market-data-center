@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     evidence_root: Path = Path("/home/quant/market_lake/evidence/data-center")
     backup_root: Path | None = None
     api_key: str | None = None
+    auth_username: str = "admin"
+    auth_password: str | None = None
     webui_dist: Path | None = None
     deployment_manifest: Path | None = None
     release_root: Path = Path("./var/releases")
