@@ -12,7 +12,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel
 
@@ -30,32 +30,44 @@ from data_center.platform_registry import (
     resolve_capability,
 )
 
-RUN_KINDS = ("ingest", "derive", "backfill", "gap_repair", "quality", "parity")
-# Runs that only verify existing data.  They publish no canonical part, so they
-# must never be mistaken for a data-producing run by the worker or the console.
-VERIFICATION_RUN_KINDS = ("quality", "parity")
 PROVIDER_DATASET = "provider_bars"
 DERIVED_DATASET = "market_bars"
 ECONOMIC_DATASET = "economic_observations"
 PAGE_OF_WINDOWS = 20
 WINDOW_SEMANTICS = "half-open"
-# Datasets each run kind may target; the console uses this to disable options
-# that the platform cannot serve instead of guessing.
-RUN_KIND_DATASETS = {
-    "ingest": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "backfill": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "gap_repair": [PROVIDER_DATASET],
-    "quality": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "derive": [DERIVED_DATASET],
-    "parity": [DERIVED_DATASET],
+RunKind: TypeAlias = Literal["ingest", "derive", "backfill", "gap_repair", "quality", "parity"]
+RunScope: TypeAlias = Literal["production", "acceptance", "migration", "maintenance"]
+RUN_SCOPES = ("production", "acceptance", "migration", "maintenance")
+# Datasets each run kind may target.  This matrix is the single authority: the
+# console reads it to disable options the platform cannot serve, the planner
+# rejects anything outside it, and the default dataset per run kind is derived
+# from it instead of being restated.
+RUN_KIND_DATASETS: dict[str, tuple[str, ...]] = {
+    "ingest": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "derive": (DERIVED_DATASET,),
+    "backfill": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "gap_repair": (PROVIDER_DATASET,),
+    "quality": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "parity": (DERIVED_DATASET,),
+}
+RUN_KINDS = tuple(RUN_KIND_DATASETS)
+# Runs that only verify existing data.  They publish no canonical part, so they
+# must never be mistaken for a data-producing run by the worker or the console.
+VERIFICATION_RUN_KINDS = ("quality", "parity")
+RUN_KIND_DEFAULT_DATASET = {
+    run_kind: DERIVED_DATASET if DERIVED_DATASET in datasets else PROVIDER_DATASET
+    for run_kind, datasets in RUN_KIND_DATASETS.items()
 }
 
 
 class MaintenanceTaskRequest(BaseModel):
     """One maintenance request, normalized by :func:`evaluate_task`."""
 
-    run_kind: Literal["ingest", "derive", "backfill", "gap_repair", "quality", "parity"] = "ingest"
-    run_scope: Literal["production", "acceptance", "migration", "maintenance"] = "production"
+    run_kind: RunKind = "ingest"
+    run_scope: RunScope = "production"
+    # Deliberately free-form: an unknown dataset must reach the planner, which
+    # answers with a stable ``unsupported_dataset`` error, and must not fail
+    # inside pydantic (whose raw message is not part of the API contract).
     dataset_id: str | None = None
     provider: str = "fixture"
     symbol: str | None = None
@@ -88,14 +100,35 @@ def _error(field: str, code: str, message: str) -> dict:
 
 
 def resolve_dataset(request: MaintenanceTaskRequest) -> str:
-    """Select the dataset a task writes, without guessing beyond the request."""
+    """Select the dataset a task writes, without guessing beyond the request.
+
+    An explicit ``series_id`` means the caller asked for the economic dataset;
+    whether the requested run kind can actually serve it is decided by
+    :data:`RUN_KIND_DATASETS`, so the two rules cannot drift apart.
+    """
     if request.dataset_id:
         return request.dataset_id
-    if request.series_id and request.run_kind in {"ingest", "backfill", "gap_repair", "quality"}:
+    if request.series_id:
         return ECONOMIC_DATASET
-    if request.run_kind in {"derive", "parity"}:
-        return DERIVED_DATASET
-    return PROVIDER_DATASET
+    return RUN_KIND_DEFAULT_DATASET.get(request.run_kind, PROVIDER_DATASET)
+
+
+def _validate_run_kind_dataset(run_kind: str, dataset_id: str) -> list[dict]:
+    """Reject combinations the platform cannot execute.
+
+    ``RUN_KIND_DATASETS`` is also exposed through ``/capabilities``; keeping
+    the same matrix at the planner boundary prevents callers from bypassing
+    the UI and enqueueing a job whose worker semantics do not match its
+    declared run kind.
+    """
+    allowed = RUN_KIND_DATASETS.get(run_kind, ())
+    if dataset_id not in allowed:
+        return [_error(
+            "run_kind",
+            "unsupported_run_kind",
+            f"{run_kind} is not available for {dataset_id}; supported datasets: {', '.join(allowed)}",
+        )]
+    return []
 
 
 def _resolve_asset_class(request: MaintenanceTaskRequest, provider: str) -> str | None:
@@ -244,6 +277,7 @@ def evaluate_task(*, request: MaintenanceTaskRequest, root: Path, capacity_polic
     dataset_id = resolve_dataset(request)
     asset_class = _resolve_asset_class(request, request.provider)
     task = _task_document(request, dataset_id, asset_class=asset_class, run_kind=request.run_kind)
+    errors.extend(_validate_run_kind_dataset(request.run_kind, dataset_id))
     if request.end <= request.start:
         errors.append(_error("end", "invalid_time_range", "end must be after start"))
     if dataset_id == ECONOMIC_DATASET:
@@ -252,14 +286,9 @@ def evaluate_task(*, request: MaintenanceTaskRequest, root: Path, capacity_polic
         if request.provider != "fred":
             errors.append(_error("provider", "unsupported_provider",
                                  "economic_observations is served by the fred provider"))
-        if request.run_kind in {"derive", "parity"}:
-            errors.append(_error("run_kind", "unsupported_run_kind",
-                                 f"{request.run_kind} is not available for {ECONOMIC_DATASET}"))
     elif dataset_id in {PROVIDER_DATASET, DERIVED_DATASET}:
         if not request.symbol:
             errors.append(_error("symbol", "symbol_required", "symbol is required for market data work"))
-        if request.run_kind == "parity" and dataset_id != DERIVED_DATASET:
-            errors.append(_error("run_kind", "unsupported_run_kind", "parity verifies derived market bars"))
         if dataset_id == PROVIDER_DATASET and not asset_class:
             errors.append(_error("asset_class", "asset_class_required",
                                  f"asset_class cannot be inferred for {request.provider}; select one explicitly"))

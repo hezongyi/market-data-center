@@ -78,6 +78,17 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   });
   const tracker = useRunTracker(services, tracked);
 
+  // The platform publishes which dataset each run kind can target; the console
+  // disables the combinations it cannot serve instead of letting the operator
+  // submit a request the planner will reject.
+  const runKindMatrix = capabilities.data?.run_kinds ?? [];
+  const datasetForKind = (kind: RunKind) =>
+    economic ? "economic_observations" : runKinds.find(item => item.value === kind)!.dataset;
+  const kindAvailable = (kind: RunKind) => {
+    if (!runKindMatrix.length) return true;
+    const entry = runKindMatrix.find(item => item.run_kind === kind);
+    return !entry || entry.datasets.includes(datasetForKind(kind));
+  };
   const providers = capabilities.data?.providers ?? [];
   const selectedProvider = providers.find(item => item.provider === effectiveProvider);
   const timeframes = useMemo(() => {
@@ -104,6 +115,18 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     start: isoFromInput(start),
     end: isoFromInput(end),
   };
+
+  const unavailableKind = runKindMatrix.length > 0 && !kindAvailable(runKind);
+  useEffect(() => {
+    if (!unavailableKind) return;
+    const fallback = runKinds.find(item => kindAvailable(item.value));
+    if (!fallback) return;
+    setRunKind(fallback.value);
+    mutation.reset();
+    onMessage(`${runKind} is not available for ${effectiveProvider}; switched to ${fallback.label}.`);
+    // Only the availability decision may trigger the switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unavailableKind, effectiveProvider]);
 
   const draftKey = draft ? JSON.stringify(draft) : "";
   useEffect(() => {
@@ -197,7 +220,10 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
       <div className="run-kind-grid" role="radiogroup" aria-label="Run kind">
         {runKinds.map(({ value, label, dataset, hint, icon: Icon }) => (
           <button key={value} role="radio" aria-checked={runKind === value} aria-label={label}
-            className={`run-kind${runKind === value ? " selected" : ""}`} onClick={() => { setRunKind(value); mutation.reset(); }}>
+            disabled={!kindAvailable(value)}
+            title={kindAvailable(value) ? hint : `${label} is not available for ${datasetForKind(value)}`}
+            className={`run-kind${runKind === value ? " selected" : ""}`}
+            onClick={() => { setRunKind(value); mutation.reset(); }}>
             <Icon size={16} /><b>{label}</b><small>{hint}</small><span className="mono">{dataset}</span>
           </button>
         ))}

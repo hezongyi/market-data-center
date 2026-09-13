@@ -20,7 +20,7 @@ let fredEndpoint;
 // The last completed step is recorded in the receipt so a failure names the
 // stage that broke instead of only the locator that timed out.
 let step = "start";
-const at = name => { step = name; };
+const recordStep = name => { step = name; };
 
 const commit = () => {
   try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(); }
@@ -224,7 +224,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.locator(".app-shell:not(.shell-collapsed)").waitFor();
     }
 
-    at("catalog");
+    recordStep("catalog");
     await page.getByRole("button", { name: "datasets", exact: true }).click();
     await page.getByText("provider_bars", { exact: true }).waitFor();
     await page.getByText("provider_bars", { exact: true }).click();
@@ -235,7 +235,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Economic", exact: true }).waitFor();
     await page.getByRole("button", { name: "datasets", exact: true }).click();
 
-    at("runs");
+    recordStep("runs");
     await page.getByRole("button", { name: "runs", exact: true }).click();
     await page.getByRole("button", { name: "Session access", exact: true }).click();
     await page.getByLabel("API key").fill(key);
@@ -271,7 +271,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       assert.equal(acknowledged.dead_letter_state.state, "acknowledged");
     }
 
-    at("explorer");
+    recordStep("explorer");
     await page.getByRole("button", { name: "explorer", exact: true }).click();
     await page.getByRole("button", { name: "Provider bars", exact: true }).click();
     await page.getByLabel("Provider").fill("fixture");
@@ -299,7 +299,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Load observations", exact: true }).click();
     await page.getByText("PIT mode requires an as-of timestamp.", { exact: true }).waitFor();
 
-    at("quality");
+    recordStep("quality");
     await page.getByRole("button", { name: "quality", exact: true }).click();
     await page.getByLabel("Finding code").waitFor();
     await page.getByLabel("Finding from date").waitFor();
@@ -314,7 +314,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.locator("table tbody tr").filter({ hasText: "coverage_degraded" }).first().waitFor();
     }
 
-    at("operations");
+    recordStep("operations");
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
     await page.getByText("Active alerts", { exact: true }).waitFor();
@@ -337,10 +337,23 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }, "UI ingest did not reach terminal pass");
 
     // ---- v0.4 unified maintenance workbench -------------------------------
-    at("maintenance");
+    recordStep("maintenance");
     await page.getByRole("button", { name: "maintenance", exact: true }).click();
     await page.getByRole("radio", { name: "Provider ingest", exact: true }).waitFor();
     await page.getByLabel("Run scope").selectOption("acceptance");
+
+    // The console disables run kinds the platform cannot serve for the selected
+    // dataset, instead of letting the planner reject the submission later.
+    await page.getByLabel("Task provider").selectOption("fred");
+    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled(), true,
+      "gap repair is not available for the economic dataset");
+    assert.equal(await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled(), true,
+      "derive is not available for the economic dataset");
+    assert.equal(await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(), true,
+      "quality checks are available for the economic dataset");
+    await page.getByLabel("Task provider").selectOption("fixture");
+    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isEnabled(), true,
+      "gap repair stays available for provider bars");
 
     // A saved template only refills parameters; it is re-validated on use.
     await page.getByLabel("Template name").fill("acceptance ingest");
@@ -487,7 +500,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "a capacity-protected write must not queue a run");
 
     // ---- v0.4 data asset workbench (Phase 2) ------------------------------
-    at("catalog_v04");
+    recordStep("catalog_v04");
     await page.getByRole("button", { name: "datasets", exact: true }).click();
     await page.getByText("Data asset catalog", { exact: true }).waitFor();
     await page.getByText("Raw → derived recipes", { exact: true }).waitFor();
@@ -496,7 +509,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByText("raw · provider feed", { exact: false }).first().waitFor();
     await page.getByText("utc-24x7-1m-to-1h-ohlcv", { exact: false }).first().waitFor();
 
-    at("explorer_market");
+    recordStep("explorer_market");
     await page.getByRole("button", { name: "explorer", exact: true }).click();
     await page.getByRole("button", { name: "Market bars", exact: true }).click();
     await page.getByLabel("Provider").fill("fixture");
@@ -528,7 +541,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByText("Ready to submit", { exact: true }).waitFor();
 
     // ---- v0.4 quality feedback loop (Phase 3) -----------------------------
-    at("quality_v04");
+    recordStep("quality_v04");
     await page.getByRole("button", { name: "quality", exact: true }).click();
     await page.getByLabel("Finding state").waitFor();
     await page.getByLabel("Finding code").selectOption("coverage_degraded");
@@ -545,7 +558,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByLabel("Finding state").selectOption("open");
 
     // ---- v0.4 operations and audit (Phase 4) ------------------------------
-    at("operations_v04");
+    recordStep("operations_v04");
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Maintenance queue", { exact: true }).waitFor();
     await page.getByText("Worker activity", { exact: true }).waitFor();
@@ -624,7 +637,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
-      "operations_write_audit"],
+      "operations_write_audit", "maintenance_run_kind_matrix"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

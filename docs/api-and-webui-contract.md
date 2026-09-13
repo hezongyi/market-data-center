@@ -28,6 +28,21 @@ Runs、Quality、Explorer 和 Operations。
 `meta.economic_schema_version` 在单版本时返回 `v1`/`v2`，混合时返回 `mixed`，空结果返回
 `unknown`。查询接口绝不在请求中直接调用 provider。
 
+## 写操作鉴权与审计策略
+
+配置了 `DATACENTER_API_KEY` 时（非 loopback 绑定由 `Settings` 强制要求配置），所有会排队、
+写入或改变状态的接口都要求 `X-API-Key`，缺失或错误返回 401 且 `errors[0].code` 为
+`unauthorized`；loopback 上的无 key 开发部署沿用同一代码路径，即写接口在该配置下不做校验。
+唯一无论是否配置 key 都不鉴权的 mutating 接口是 `POST /api/v1/maintenance/plans`：它是无副作用
+的校验预览，既不排队也不写审计——这是刻意的例外，不是遗漏。该策略由
+`backend/tests/test_api_surface_contract.py` 的路由清单测试强制：新增或删除任何 mutating
+路由都必须在该清单中登记并显式决定"是否鉴权、是否审计"，否则测试失败。
+
+写操作审计通过 `GET /api/v1/operations/audit` 读取，记录 actor（API key 的不可逆指纹或网关
+注入的 `X-Operator`）、时间、selector、任务类型与结果（`queued` / `acknowledged` / `rejected` /
+`protected`）；retry、dead-letter acknowledge 与 `/ingest/runs` 与 v0.4 写接口一样入账，
+被容量保护或校验拒绝的提交同样入账。审计与运行 receipt 都是追加式记录，绝不保存凭据本身。
+
 ## v0.4 数据维护工作台 contract
 
 `POST /api/v1/maintenance/plans` 是无副作用的校验预览：请求体为 maintenance task
@@ -39,8 +54,10 @@ Runs、Quality、Explorer 和 Operations。
 `POST /api/v1/maintenance/tasks` 是唯一写入口，返回统一的 queued envelope：`status=queued`、
 `task_id`、`run_kind`、`run_scope`、`dataset_id`、`run_id`/`run_ids`、`window_count`、`plan_id`、
 `input_snapshot_id`、`capacity`、`submitted_at` 和 `audit_id`。`run_kind` 取
-`ingest|backfill|gap_repair|derive|quality|parity`；`quality` 与 `parity` 是只读校验运行，只记录
-findings，不发布 canonical part。`/derive/runs`、`/economic/ingest` 与 `/quality/checks` 复用同一
+`ingest|backfill|gap_repair|derive|quality|parity`；每个 run kind 可作用的 dataset 由 capability
+矩阵给定（`GET /capabilities` 的 `run_kinds` 同源发布），矩阵之外的组合在规划边界返回 422
+`unsupported_run_kind`，WebUI 据同一矩阵禁用不可用组合而不是先提交再失败。`quality` 与 `parity`
+是只读校验运行，只记录 findings，不发布 canonical part。`/derive/runs`、`/economic/ingest` 与 `/quality/checks` 复用同一
 contract（后者由同步返回改为 202 queued）。容量 critical（或 warning 下超过 31 天的 backfill）返回
 507 `capacity_protected`，鉴权失败返回 401，校验失败返回 422 并带稳定 `code`；被拒绝的提交同样进入
 写审计。

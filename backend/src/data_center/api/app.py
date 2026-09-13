@@ -27,6 +27,7 @@ from data_center.control_plane import timeframe_delta
 from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.maintenance_tasks import (
+    RUN_SCOPES,
     MaintenanceTaskError,
     MaintenanceTaskRequest,
     evaluate_with_capacity,
@@ -61,6 +62,24 @@ _request_id = ContextVar("request_id", default="")
 
 def current_request_id():
     return _request_id.get()
+
+
+def require_api_key(config: Settings, provided: str | None) -> None:
+    """Apply the service-wide write-authentication policy."""
+    if config.api_key and not hmac.compare_digest(provided or "", config.api_key):
+        raise HTTPException(status_code=401, detail="invalid api key")
+
+
+def api_envelope(data, *, meta: dict | None = None) -> dict:
+    """Build the versioned success envelope without duplicating its shape.
+
+    Failure paths keep their own handlers: they answer with distinct status
+    codes and, for capacity protection, a structured ``data`` payload.
+    """
+    response_meta = {"request_id": current_request_id(), "schema_version": "v1"}
+    if meta:
+        response_meta.update(meta)
+    return {"data": data, "meta": response_meta, "errors": []}
 
 
 def operator_identity(request: Request, config: Settings) -> str:
@@ -242,18 +261,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
-        return {
-            "data": {"status": "ok"},
-            "meta": {
-                "request_id": current_request_id(),
-                "schema_version": "v1",
-            },
-            "errors": [],
-        }
+        return api_envelope({"status": "ok"})
 
     @app.get(f"{config.api_prefix}/health/live")
     def health_live(request: Request) -> dict:
-        return {"data": {"status": "ok"}, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope({"status": "ok"})
 
     @app.get(f"{config.api_prefix}/health/ready")
     def health_ready(request: Request) -> JSONResponse:
@@ -280,7 +292,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status = "ready" if ready else "not_ready"
         except (OSError, sqlite3.Error):
             status_code, status, age, capacity, ready, snapshot = 503, "not_ready", None, None, False, None
-        return JSONResponse(status_code=status_code, content={"data": {
+        return JSONResponse(status_code=status_code, content=api_envelope({
             "status": status, "read_status": "available" if storage_ready else "unavailable",
             "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
             "capacity_status": capacity["status"] if capacity else "unknown",
@@ -288,7 +300,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
             "deployment_id": identity["deployment_id"],
-        }, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []})
+        }))
 
     @app.get(f"{config.api_prefix}/metrics")
     def metrics() -> dict:
@@ -299,7 +311,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         payload.update({key: identity[key] for key in ("deployment_id", "software_version", "source_commit")})
         payload["query"] = query_engine.metrics.snapshot(query_engine.catalog)
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/runs")
     def runs(status: str | None = None, dataset_id: str | None = None, run_kind: str | None = None,
@@ -310,11 +322,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   run_scope=run_scope, provider=provider, symbol=symbol,
                                   created_from=created_from, created_to=created_to,
                                   page_size=page_size, cursor=cursor)
-        meta = {"request_id": current_request_id(), "schema_version": "v1",
-                "count": page["page"]["count"], "page": page["page"], "filters": page["filters"]}
+        meta = {"count": page["page"]["count"], "page": page["page"], "filters": page["filters"]}
         if page["warnings"]:
             meta["warnings"] = page["warnings"]
-        return {"data": page["runs"], "meta": meta, "errors": []}
+        return api_envelope(page["runs"], meta=meta)
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}/detail")
     def run_detail(run_id: str) -> dict:
@@ -326,33 +337,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         projection = run_view.get_run(run_id)
         if projection is None:
             raise HTTPException(status_code=404, detail="run not found")
-        return {"data": projection, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(projection)
 
     @app.post(f"{config.api_prefix}/maintenance/plans")
     def maintenance_plan(request: MaintenanceTaskRequest) -> dict:
         """Validate a maintenance request and describe exactly what it would queue."""
         preview = evaluate_with_capacity(request=request, root=config.canonical_root,
                                          capacity_policy=capacity_policy)
-        return {"data": preview, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(preview)
 
     @app.post(f"{config.api_prefix}/maintenance/tasks", status_code=202)
     def maintenance_task(request: MaintenanceTaskRequest, http_request: Request,
                          x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+        require_api_key(config, x_api_key)
         envelope = submit_maintenance(request=request, ledger=ledger, config=config,
                                       capacity_policy=capacity_policy, http_request=http_request,
                                       request_id=current_request_id())
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.get(f"{config.api_prefix}/capabilities")
     def capabilities() -> dict:
         """Read model for form validation: what the platform can actually do."""
-        return {"data": platform_capabilities(capacity_policy, config, ledger),
-                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(platform_capabilities(capacity_policy, config, ledger))
 
     @app.get(f"{config.api_prefix}/operations/queue")
     def operations_queue() -> dict:
@@ -361,65 +367,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for run in ledger.list():
             status = run.get("status", "unknown")
             payload["runs_by_status"][status] = payload["runs_by_status"].get(status, 0) + 1
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/operations/audit")
     def operations_audit(limit: int = 50) -> dict:
         entries = ledger.write_audit_entries(limit=max(1, min(limit, 500)))
-        return {"data": entries, "meta": {"request_id": current_request_id(), "schema_version": "v1",
-                                          "count": len(entries)}, "errors": []}
+        return api_envelope(entries, meta={"count": len(entries)})
 
     @app.get(f"{config.api_prefix}/operations/capacity-history")
     def operations_capacity_history(limit: int = 50) -> dict:
         live = capacity_policy.inspect(config.canonical_root).as_dict()
         live["fixed_measurement"] = config.capacity_fixed_free_ratio is not None
         payload = capacity_history(alert_sink, live, limit=max(1, min(limit, 500)))
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/operations/worker")
     def operations_worker() -> dict:
         payload = worker_activity(ledger)
         payload["worker_heartbeat_age_seconds"] = payload["heartbeat_age_seconds"]
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/operations/receipts")
     def operations_receipts_view(limit: int = 5) -> dict:
         payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
-    def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
-        capacity_policy.require_ingest_capacity(config.canonical_root)
+    def retry(run_id: str, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        actor = operator_identity(http_request, config)
         try:
+            capacity_policy.require_ingest_capacity(config.canonical_root)
             new_id = ledger.retry_run(run_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="run not found")
-        except ValueError as exc:
+        except (KeyError, ValueError, CapacityProtectedError) as exc:
+            code = "not_found" if isinstance(exc, KeyError) else (
+                "conflict" if isinstance(exc, ValueError) else "capacity_protected")
+            ledger.record_write_audit({
+                "action": "runs.retry", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": code, "message": str(exc),
+            })
+            if isinstance(exc, KeyError):
+                raise HTTPException(status_code=404, detail="run not found")
+            if isinstance(exc, CapacityProtectedError):
+                raise
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"data": ledger.get(new_id), "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        ledger.record_write_audit({
+            "action": "runs.retry", "actor": actor, "request_id": current_request_id(),
+            "run_ids": [run_id, new_id], "selector": {"run_id": run_id}, "outcome": "queued",
+            "code": None, "message": f"retry queued as {new_id}",
+        })
+        return api_envelope(ledger.get(new_id))
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/acknowledge")
-    def acknowledge_dead_letter(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+    def acknowledge_dead_letter(run_id: str, http_request: Request,
+                                x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        actor = operator_identity(http_request, config)
         try:
             payload = ledger.acknowledge_dead_letter(run_id)
         except KeyError:
+            ledger.record_write_audit({
+                "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": "not_found", "message": "run not found",
+            })
             raise HTTPException(status_code=404, detail="run not found")
         except ValueError as exc:
+            ledger.record_write_audit({
+                "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": "conflict", "message": str(exc),
+            })
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        ledger.record_write_audit({
+            "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+            "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "acknowledged",
+            "code": None, "message": "dead letter acknowledged",
+        })
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/datasets")
     def datasets() -> dict:
-        return {"data": [definition.as_dict() for definition in iter_dataset_definitions()],
-                "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope([definition.as_dict() for definition in iter_dataset_definitions()])
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
@@ -428,7 +458,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload = ledger.get(run_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="run not found")
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}/manifest")
     def run_manifest(run_id: str) -> dict:
@@ -437,21 +467,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             validate_manifest(config.canonical_root, payload)
         except (OSError, json.JSONDecodeError, PublicationError):
             raise HTTPException(status_code=404, detail="manifest not found")
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/ingest/runs")
-    def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+    def ingest(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        actor = operator_identity(http_request, config)
         requested_days = max(0, math.ceil((job.end - job.start).total_seconds() / 86_400))
         if job.run_kind == "backfill":
             capacity_policy.require_backfill_capacity(config.canonical_root, requested_days=requested_days)
         else:
             capacity_policy.require_ingest_capacity(config.canonical_root)
         run_ids = enqueue_ingest_plan(ledger=ledger, job=job, request_id=current_request_id())
+        ledger.record_write_audit({
+            "action": "maintenance.ingest", "actor": actor, "request_id": current_request_id(),
+            "task_id": job.job_id, "run_ids": run_ids, "run_kind": job.run_kind, "run_scope": job.run_scope,
+            "dataset_id": job.dataset_id,
+            "selector": {"provider": job.provider, "symbol": job.symbol, "timeframe": job.timeframe},
+            "time_range": {"start": job.start.isoformat(), "end": job.end.isoformat()},
+            "outcome": "queued", "code": None, "message": f"{len(run_ids)} run(s) queued",
+        })
         payload = {"status": "queued", "job_id": job.job_id, "run_id": run_ids[0],
                    "run_ids": run_ids, "window_count": len(run_ids)}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/bars")
     def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None,
@@ -471,12 +509,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "snapshot_id": page.snapshot_id, "query_mode": "current",
                           "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
-                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
-                "next_cursor": page.next_cursor}
+        meta = {"count": page.count, "schema_versions": page.schema_versions,
+                "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.get(f"{config.api_prefix}/provider-bars/coverage")
     def provider_bars_dataset_coverage(provider: str, symbol: str, timeframe: str = "1d",
@@ -512,7 +549,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        "readiness_status": "unknown", "ready_interval_count": 0,
                        "ready_intervals": [], "gap_count": None,
                        "missing_timestamp_count": None}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/market-bars")
     def market_bars(symbol: str, provider: str, timeframe: str, price_basis: str,
@@ -539,17 +576,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "page_size": page_size,
                           "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
-                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
-                "next_cursor": page.next_cursor}
+        meta = {"count": page.count, "schema_versions": page.schema_versions,
+                "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.post(f"{config.api_prefix}/derive/runs", status_code=202)
     def derive(job: DeriveJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+        require_api_key(config, x_api_key)
         try:
             source_timeframe = REGISTRY.recipe(job.recipe_id, job.recipe_version).source_timeframe
         except ValueError:
@@ -564,13 +599,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),
         )
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.post(f"{config.api_prefix}/quality/checks", status_code=202)
     def quality_check(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+        require_api_key(config, x_api_key)
         envelope = submit_maintenance(
             request=MaintenanceTaskRequest(
                 run_kind="quality", run_scope=job.run_scope, dataset_id=job.dataset_id,
@@ -580,8 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),
         )
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.get(f"{config.api_prefix}/quality/findings")
     def quality_findings(severity: str | None = None, code: str | None = None,
@@ -592,17 +624,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = run_view.list_findings(severity=severity, code=code, dataset_id=dataset_id, run_id=run_id,
                                       state=state, series_id=series_id, observed_from=observed_from,
                                       observed_to=observed_to, page_size=page_size, cursor=cursor)
-        return {"data": page["findings"],
-                "meta": {"request_id": current_request_id(), "schema_version": "v1",
-                         "count": page["page"]["count"], "page": page["page"], "filters": page["filters"],
-                         "state_counts": page["state_counts"]},
-                "errors": []}
+        return api_envelope(page["findings"], meta={
+            "count": page["page"]["count"], "page": page["page"], "filters": page["filters"],
+            "state_counts": page["state_counts"],
+        })
 
     @app.post(f"{config.api_prefix}/quality/findings/{{finding_id}}/state")
     def quality_finding_state(finding_id: str, payload: dict, http_request: Request,
                               x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
+        require_api_key(config, x_api_key)
         state = str(payload.get("state") or "")
         if state not in {"open", "acknowledged", "resolved"}:
             raise HTTPException(status_code=422, detail="state must be open, acknowledged or resolved")
@@ -619,8 +649,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "time_range": {}, "outcome": state, "code": None,
             "message": payload.get("note") or f"finding marked {state}",
         })
-        return {"data": record, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(record)
 
     @app.get(f"{config.api_prefix}/economic/observations")
     def economic_observations(series_id: str, provider: str = "fred", start: str | None = None,
@@ -646,26 +675,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "snapshot_id": page.snapshot_id, "query_mode": effective_mode,
                           "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1",
-                "economic_schema_version": economic_schema_version, "query_mode": effective_mode,
+        meta = {"economic_schema_version": economic_schema_version, "query_mode": effective_mode,
                 "count": page.count, "schema_versions": page.schema_versions,
                 "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
-        return {"data": page.rows, "meta": meta, "errors": []}
+        return api_envelope(page.rows, meta=meta)
 
     @app.get(f"{config.api_prefix}/economic/coverage")
     def economic_dataset_coverage(series_id: str, provider: str = "fred") -> dict:
         payload = economic_observations_coverage(config.canonical_root, provider=provider, series_id=series_id)
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []}
+        return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/economic/ingest", status_code=202)
     def ingest_economic_observations(series_id: str, http_request: Request, start: str | None = None,
                                      end: str | None = None, run_scope: str = "production",
                                      x_api_key: str | None = Header(default=None)) -> dict:
-        if config.api_key and not hmac.compare_digest(x_api_key or "", config.api_key):
-            raise HTTPException(status_code=401, detail="invalid api key")
-        if run_scope not in {"production", "acceptance", "migration", "maintenance"}:
+        require_api_key(config, x_api_key)
+        if run_scope not in RUN_SCOPES:
             raise HTTPException(status_code=422, detail="invalid run_scope")
         envelope = submit_maintenance(
             request=MaintenanceTaskRequest(
@@ -679,8 +706,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Legacy convenience keys stay present: consumers already read
         # ``run_id``/``status`` and the unified envelope keeps them.
         envelope["series_id"] = series_id
-        return {"data": envelope, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(envelope)
 
     @app.get(f"{config.api_prefix}/market-bars/coverage")
     def market_bars_dataset_coverage(symbol: str, provider: str, timeframe: str, price_basis: str,
@@ -724,8 +750,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         timeframe=timeframe_delta(timeframe),
                     ).as_dict() | {"recipe": payload["recipe"], "recipe_status": "registered",
                                    "price_basis": price_basis}
-        return {"data": payload, "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": []}
+        return api_envelope(payload)
 
     if config.webui_dist is not None and config.webui_dist.is_dir():
         app.mount("/", StaticFiles(directory=config.webui_dist, html=True), name="webui")
