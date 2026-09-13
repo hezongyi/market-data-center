@@ -2,7 +2,7 @@ import { TimeDisplay } from "../preferences";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, ChevronLeft, ChevronRight, CircleSlash, Hammer, Lock, Search } from "lucide-react";
-import { DataTable, EmptyState, ErrorState, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
+import { CopyId, DataTable, EmptyState, ErrorState, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { useQuery } from "../hooks";
 import type {
   ApiMeta, Bar, BarsQuery, CoverageReport, EconomicCoverage, EconomicObservation, EconomicQuery,
@@ -363,7 +363,7 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
       <PanelHeading eyebrow="Snapshot"
         title={result.mode === "bars" ? "Provider bars" : result.mode === "market" ? "Market bars" : "Economic observations"}
         action={<div className="meta-badges">
-          <StatusBadge tone="neutral">{String(result.meta.snapshot_id ?? "no snapshot")}</StatusBadge>
+          {result.meta.snapshot_id ? <CopyId value={String(result.meta.snapshot_id)} /> : "no snapshot"}
           <StatusBadge tone="neutral">{(result.meta.schema_versions ?? []).join(", ") || "schema unknown"}</StatusBadge>
           <StatusBadge tone="neutral">{result.meta.count ?? rows.length} row(s) in page</StatusBadge>
         </div>} />
