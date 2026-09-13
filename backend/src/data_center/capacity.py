@@ -91,6 +91,8 @@ class FixedCapacityPolicy(CapacityPolicy):
     def for_free_ratio(cls, free_ratio: float, *, warning_free_ratio: float = 0.15,
                        critical_free_ratio: float = 0.10, total_bytes: int = 1 << 30) -> FixedCapacityPolicy:
         """Build a policy that always measures ``free_ratio``, for deterministic gate checks."""
+        if not 0 <= free_ratio <= 1:
+            raise ValueError("free_ratio must be between 0 and 1")
         probe = CapacityPolicy(warning_free_ratio=warning_free_ratio,
                                critical_free_ratio=critical_free_ratio)
         free_bytes = max(0, min(total_bytes, int(total_bytes * free_ratio)))

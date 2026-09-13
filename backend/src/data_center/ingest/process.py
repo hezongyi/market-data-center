@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from data_center.catalog.snapshot import Catalog
+from data_center.domain.errors import ProviderGapError
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.ingest.economic import run_fred_ingest
 from data_center.ingest.service import run_fixture_ingest
@@ -27,7 +28,7 @@ def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
                 "quality_summary": {"status": "fail", "finding_count": len(exc.findings),
                                     "findings": exc.findings}}
     return {"error_type": type(exc).__name__, "failure_stage": "execute", "error": "ingest failed",
-            "retryable": not isinstance(exc, (ValueError, KeyError, ModuleNotFoundError)),
+            "retryable": isinstance(exc, ProviderGapError) or not isinstance(exc, (ValueError, KeyError, ModuleNotFoundError)),
             "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
 
 
