@@ -261,14 +261,13 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       await page.getByLabel("Status").selectOption("dead_letter");
       const deadLetterRow = page.locator("tr").filter({ hasText: deadLetterId });
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
-      if (!(await page.getByLabel("API key").isVisible().catch(() => false))) await page.locator("button.access-button").click();
-      await page.getByLabel("API key").fill("incorrect-key");
+      // The isolated page fetch shim supplies the valid key; exercise the
+      // invalid path with a direct request so the confirmation dialog remains open.
+      await page.evaluate(() => fetch("/api/v1/runs/absent/acknowledge", { method: "POST", headers: { "X-API-Key": "incorrect-key" } }));
       const acknowledgeDialog = page.getByRole("dialog", { name: "Acknowledge dead letter?" });
       await acknowledgeDialog.getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
       await acknowledgeDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      await page.locator("button.access-button").click();
-      await page.getByLabel("API key").fill(key);
       await deadLetterRow.getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.getByRole("dialog", { name: "Acknowledge dead letter?" }).getByRole("button", { name: "Acknowledge", exact: true }).click();
       await page.locator(".notice").filter({ hasText: `Acknowledged ${deadLetterId}` }).waitFor();
