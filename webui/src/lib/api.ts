@@ -309,7 +309,7 @@ export type EconomicCoverage = {
   max_date: string | null;
 };
 
-export type RequestOptions = { allowStatuses?: readonly number[] };
+export type RequestOptions = { allowStatuses?: readonly number[]; skipApiKey?: boolean };
 
 // -- v0.4 maintenance workbench contracts --------------------------------
 
@@ -607,7 +607,7 @@ export function createDataCenterClient(apiKey: string) {
   const request = async <T,>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<ApiResult<T>> => {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
-    if (apiKey) headers.set("X-API-Key", apiKey);
+    if (apiKey && !options.skipApiKey) headers.set("X-API-Key", apiKey);
     const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: "include" });
     let payload: Envelope<T>;
     try {
@@ -630,11 +630,12 @@ export function createDataCenterClient(apiKey: string) {
 
   return {
     auth: {
-      login: (username: string, password: string) => request<{ username: string }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
-      logout: () => request<{ logged_out: boolean }>("/auth/logout", { method: "POST" }),
-      me: () => request<{ username: string; expires_at: number }>("/auth/me"),
+      login: (username: string, password: string) => request<{ username: string }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }, { skipApiKey: true }),
+      logout: () => request<{ logged_out: boolean }>("/auth/logout", { method: "POST" }, { skipApiKey: true }),
+      me: () => request<{ username: string; expires_at: number }>("/auth/me", {}, { skipApiKey: true }),
+      status: () => request<{ initialized: boolean; username: string }>("/auth/status", {}, { skipApiKey: true }),
       initialize: (username: string, password: string) => request<{ initialized: boolean; username: string }>("/auth/initialize", { method: "POST", body: JSON.stringify({ username, password }) }),
-      changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
+      changePassword: (currentPassword: string, newPassword: string) => request<{ changed: boolean }>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }, { skipApiKey: true }),
     },
     // Readiness intentionally accepts HTTP 503: the API returns structured degraded state
     // so the console can keep reads visible while protecting writes when necessary.
