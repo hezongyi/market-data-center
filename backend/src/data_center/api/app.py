@@ -84,6 +84,17 @@ def _load_auth_state(config: Settings) -> None:
         _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
     except (OSError, ValueError): return
 
+def _refresh_sessions(config: Settings) -> None:
+    """Refresh session records so multiple API workers observe revocations/logins."""
+    if not config.auth_state_path or not config.auth_state_path.exists():
+        return
+    try:
+        state = json.loads(config.auth_state_path.read_text())
+        _sessions.clear()
+        _sessions.update({k: (v[0], float(v[1])) for k, v in state.get("sessions", {}).items() if float(v[1]) > time.time()})
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+
 def _save_auth_state(config: Settings) -> None:
     if not config.auth_state_path or not config.auth_password_hash: return
     config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +113,7 @@ def current_request_id():
 
 def require_api_key(config: Settings, provided: str | None, session: str | None = None) -> None:
     """Apply the service-wide write-authentication policy."""
+    _refresh_sessions(config)
     session = session or _session_id.get()
     valid_session = bool(session and session in _sessions and _sessions[session][1] > time.time())
     if session and not valid_session: _sessions.pop(session, None)
@@ -261,6 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/auth/me")
     def auth_me(session: str | None = Cookie(default=None, alias="mdc_session")):
+        _refresh_sessions(config)
         valid = bool(session and session in _sessions and _sessions[session][1] > time.time())
         if not valid: raise HTTPException(status_code=401, detail="not authenticated")
         return api_envelope({"username": _sessions[session][0], "expires_at": _sessions[session][1]})
@@ -279,6 +292,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         config.auth_password_hash = _password_hash(replacement)
         _save_auth_state(config)
         _sessions.clear()
+        _save_auth_state(config)
         return api_envelope({"changed": True})
 
     @app.middleware("http")
