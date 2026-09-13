@@ -120,6 +120,9 @@ def operator_identity(request: Request, config: Settings) -> str:
     declared = (request.headers.get("x-operator") or "").strip()
     if declared:
         return declared[:64]
+    session = _session_id.get()
+    if session and session in _sessions and _sessions[session][1] > time.time():
+        return f"session:{_sessions[session][0]}"
     key = request.headers.get("x-api-key") or ""
     if key:
         return f"api-key:{hashlib.sha256(key.encode()).hexdigest()[:12]}"
@@ -205,6 +208,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds)
         response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return api_envelope({"username": username})
+
+    @app.get(f"{config.api_prefix}/auth/status")
+    def auth_status():
+        """Expose only whether first-time authentication setup is required."""
+        return api_envelope({"initialized": bool(config.auth_password_hash),
+                              "username": config.auth_username})
 
     @app.post(f"{config.api_prefix}/auth/initialize")
     def auth_initialize(payload: dict, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
