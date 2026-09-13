@@ -564,6 +564,21 @@ def test_worker_and_receipt_views_are_read_only(tmp_path) -> None:
     if receipts["available"]:
         assert isinstance(receipts["receipts"], list)
 
+    # A deployment receipt must surface under the action name it was recorded
+    # with; naming it "deployment" would report a missing record for a record
+    # that exists.
+    from data_center.evidence import operation_receipt, write_receipt
+
+    write_receipt(config.evidence_root, operation_receipt(
+        action="deployment_stage", command="deployment stage probe", started_at="2026-09-13T00:00:00+00:00",
+        result="pass", details={"deployment_id": "probe-release", "software_version": "0.4.0"}))
+    refreshed = http.get("/api/v1/operations/receipts").json()["data"]
+    staged = refreshed["latest"]["deployment_stage"]
+    assert staged["reference"].endswith(".json") and staged["result"] == "pass"
+    assert staged["deployment_id"] == "probe-release"
+    assert "deployment_stage" in {item["action"] for item in refreshed["receipts"]}
+    assert refreshed["latest"]["backup"] is None
+
     # Capacity history only reports transitions the monitor recorded.
     sink = AlertSink(config.evidence_root / "alerts", True)
     sink.emit_transition("capacity", "warning", event="capacity_warning",

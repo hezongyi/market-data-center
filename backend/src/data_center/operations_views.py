@@ -11,7 +11,12 @@ from datetime import datetime, timezone
 # Capacity transitions are recorded by the monitor as alert events; these are
 # the only historical capacity states this platform actually persists.
 CAPACITY_EVENTS = {"capacity_warning", "capacity_critical", "capacity_recovered", "capacity_ok"}
-RECEIPT_ACTIONS = ("backup", "restore", "recovery_drill", "release", "deployment")
+# Action names as they are actually recorded under the evidence root.  A name
+# that the platform never writes would render as "no receipt recorded" for a
+# record that does exist, so this list is kept to observed actions.
+RECEIPT_ACTIONS = ("backup", "backup_verify", "restore", "recovery_drill",
+                   "deployment_stage", "deployment_activate", "deployment_rollback",
+                   "real_release_webui_acceptance", "post_release_rehearsal")
 
 
 def _iso(value) -> str | None:

@@ -54,6 +54,16 @@ Outcome verification for the maintenance fix: before the fix the scheduled 1m ma
 
 `failed` therefore still means something needs attention rather than a provider gap. Two consecutive runs under `v0.3.2` illustrate the distinction: the 03:29:39 run failed on a single `SSLError` window (retried three times and dead-lettered; the only `SSLError` run in the retained ledger), and the 03:46:33 run returned to `result=pass` with `failed_target_count=0`. Transient provider/network errors and structural quality failures keep failing the run by design.
 
+## v0.4.0 protected-main evidence
+
+Release preparation PR #77 merged as protected-main commit `5dfc1b1c6803feb4b577040c0d5e5f21bed9b96e`; the post-merge `Checks` `verify` job succeeded on that commit and local unified CI passed on the release branch (234 tests, browser acceptance 56 checks at 1440/390, `software_version=0.4.0`). Annotated tag `v0.4.0` points immutably to that commit and `Release` run `34751145976` published the GitHub release with `release-receipt.json` (hosted Python 3.10/3.11/3.12, Node 22).
+
+Committed constraints were unchanged from v0.3.3 (`e8c18665…`), so the existing dependency refresh evidence still applies. The v0.4.0 tag also carries its own `Checks` run `34751146044`.
+
+`deployment_stage` produced release `5dfc1b1c6803-377c1193`, and `deployment_activate` switched `releases/current` to it with canonical and ledger hashes unchanged; readiness, metrics and the served Web UI all reported `software_version=0.4.0`, `source_commit=5dfc1b1`, `deployment_id=5dfc1b1c6803-377c1193`. `deployment_rollback` to the previous release `f6f69366d01d-021478b1` (v0.3.3) passed readiness and was followed by a forward activation; all three pointer switches retained receipts and left both hashes unchanged. The rehearsal receipt is `operations/post_release_rehearsal/2026-09-13T102344…json` under the data-center evidence root.
+
+Real-canonical walkthrough on the activated release (read-only): `/capabilities` published 4 providers, 8 recipes and 6 run kinds with `write_status=available`; `/runs` cursor paging and `/runs/{id}/detail` projected stage/outcome/manifest; `/quality/findings` and `/operations/{queue,worker,capacity-history,receipts,audit}` answered from production state. Maintenance previews (`POST /maintenance/plans`, no side effects) returned real coverage for dukascopy EURUSD 1m gap repair (11 windows, coverage `not_ready`, 644 gaps), binance BTCUSDT 1m quality and dukascopy EURUSD 1m derive; the yfinance SPY backfill preview correctly refused to guess an asset class.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
