@@ -240,7 +240,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
 
     recordStep("runs");
     await page.getByRole("button", { name: "runs", exact: true }).click();
-    await page.getByRole("button", { name: "Session access", exact: true }).click();
+    await page.locator("button.access-button").click();
     await page.getByLabel("API key").fill(key);
     await page.getByLabel("Status").selectOption("failed");
     const runIdCell = page.locator(".mono").filter({
@@ -387,7 +387,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     const beforeRefused = (await call("GET", "/runs")).length;
     const keyInput = page.getByLabel("API key");
     if (!(await keyInput.isVisible().catch(() => false))) {
-      await page.getByRole("button", { name: "Session access", exact: true }).click();
+      await page.locator("button.access-button").click();
     }
     await keyInput.fill("incorrect-key");
     await page.getByRole("button", { name: "Confirm and queue" }).click();
