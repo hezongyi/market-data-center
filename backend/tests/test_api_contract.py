@@ -62,7 +62,7 @@ def test_write_api_requires_key(tmp_path) -> None:
     job = {"job_id": "secure", "symbol": "BTCUSDT", "start": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(), "end": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()}
     unauthorized = client.post("/api/v1/ingest/runs", json=job)
     assert unauthorized.status_code == 401
-    assert unauthorized.json()["errors"] == [{"code": "401", "message": "invalid api key"}]
+    assert unauthorized.json()["errors"] == [{"code": "unauthorized", "message": "invalid api key"}]
     assert client.post("/api/v1/ingest/runs", json=job, headers={"X-API-Key": "secret"}).status_code == 200
 
 

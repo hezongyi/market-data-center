@@ -169,12 +169,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        # Write failures carry a stable, safe semantic code so a console can
+        # distinguish permission, protection, conflict and validation without
+        # parsing prose; the message stays human-readable.
+        code = {
+            401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
+            422: "invalid_request", 507: "capacity_protected",
+        }.get(exc.status_code, "internal_error" if exc.status_code >= 500 else str(exc.status_code))
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "data": None,
                 "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": [{"code": str(exc.status_code), "message": str(exc.detail)}],
+                "errors": [{"code": code, "message": str(exc.detail)}],
             },
         )
 
