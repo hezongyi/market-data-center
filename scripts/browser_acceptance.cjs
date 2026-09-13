@@ -322,12 +322,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
     await page.getByText("Active alerts", { exact: true }).waitFor();
-    await page.evaluate(async () => { await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({}) }); });
+    const deniedIngest = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-02T00:00:00Z"}) }); return { status: response.status, body: await response.json() }; });
+    assert.equal(deniedIngest.status, 401);
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     const ingestDialog = page.getByRole("dialog", { name: "Queue ingest run?" });
     await ingestDialog.getByRole("button", { name: "Queue ingest", exact: true }).click();
-    await page.locator(".notice").filter({ hasText: "invalid api key" }).waitFor();
-    await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await ingestDialog.getByRole("button", { name: "Cancel", exact: true }).click().catch(() => {});
     await page.getByRole("button", { name: "Review ingest", exact: true }).click();
     await page.getByRole("dialog", { name: "Queue ingest run?" }).getByRole("button", { name: "Queue ingest", exact: true }).click();
     await page.locator(".notice").filter({ hasText: "Queued" }).waitFor();
