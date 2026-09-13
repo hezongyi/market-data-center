@@ -239,6 +239,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post(f"{config.api_prefix}/auth/login")
     def auth_login(payload: dict, response: Response):
+        _refresh_sessions(config)
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
         if username != config.auth_username or not _password_ok(password, config.auth_password_hash):
             raise HTTPException(status_code=401, detail="invalid credentials")
