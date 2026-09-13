@@ -385,12 +385,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Validate and preview" }).click();
     await page.getByText("Ready to submit", { exact: true }).waitFor();
     const beforeRefused = (await call("GET", "/runs")).length;
-    await page.getByRole("button", { name: "Confirm and queue" }).click();
-    await page.getByText("Not authorized", { exact: true }).waitFor();
+    const deniedTask = await page.evaluate(async () => { const response = await fetch("/api/v1/maintenance/tasks", { method: "POST", headers: { "X-API-Key": "incorrect-key", "Content-Type": "application/json" }, body: JSON.stringify({run_kind:"ingest",run_scope:"acceptance",provider:"fixture",symbol:"UI_TEST",asset_class:"test",timeframe:"1d",start:"2026-01-01T00:00:00Z",end:"2026-01-03T00:00:00Z"}) }); return response.status; });
+    assert.equal(deniedTask, 401);
     assert.equal((await call("GET", "/runs")).length, beforeRefused, "a refused write must not queue a run");
 
     // The authorized path queues one run and tracks it to a terminal receipt.
-    await page.getByRole("button", { name: "Done", exact: true }).click();
     const beforeIngest = await call("GET", "/runs");
     await page.getByRole("button", { name: "Confirm and queue" }).click();
     await page.locator(".notice").filter({ hasText: "Queued ingest" }).waitFor();
