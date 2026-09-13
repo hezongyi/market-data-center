@@ -36,6 +36,19 @@ monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（s
 | economic PIT/current consumers | 现有 flag/legacy 路径 | 未完成全量切换 | 必须先完成 PIT parity |
 | ASK/MID | 未采集 | 第一阶段非目标 | 需独立 identity/API/spec |
 
+## WebUI 数据维护工作台（v0.4，implemented，未部署）
+
+| 项目 | 当前事实 | 证据 |
+| --- | --- | --- |
+| 分支 | `feat/webui-data-workbench-v0.4`，基线 `v0.3.3`（`f6f6936`） | git worktree |
+| 维护任务 | `POST /maintenance/plans` 无副作用预览 + `POST /maintenance/tasks` 统一 queued envelope；`/derive/runs`、`/economic/ingest`、`/quality/checks` 复用同一 contract | `backend/tests/test_maintenance_contract.py` |
+| 只读校验运行 | `quality`/`parity` run 只记录 findings，不发布 canonical part、不产生 manifest | `test_quality_run_executes_as_a_verification_and_records_findings` |
+| Runs 读模型 | kind/scope/时间筛选 + opaque cursor 分页；`/runs/{id}/detail` 投影 stage、window、retry chain、degraded 原因，不改写 terminal receipt | `test_run_list_filters_and_cursor_pagination`、`test_run_detail_projects_stage_windows_and_retry_chain` |
+| findings 治理 | 稳定 `finding_id`、occurrence 计数、`open/acknowledged/resolved` 处理状态与运行结果分离 | `test_findings_support_structured_filters_and_state_transitions` |
+| 写保护 | capacity critical 与 warning 下 >31 天 backfill 返回 507 并进入写审计；鉴权失败 401 | `test_capacity_critical_protects_writes_and_is_audited` |
+| 浏览器验收 | 1440px 与 390px 覆盖 provider ingest、derive、parity、quality（degraded）、economic ingest（本地 provider fixture）、被拒写入与容量保护写入 | `acceptance-receipts/browser/receipt.json` |
+| 部署状态 | 仅代码与隔离验收；生产 deployment 未变更，未创建 v0.4 release tag | 无 deployment receipt |
+
 ## 状态语义
 
 `implemented` 表示代码/测试存在；`deployed` 表示进入 immutable release；`accepted` 表示有真实 receipt；`default cutover` 表示默认走新路径且有回滚；`not migrated` 表示明确仍走旧路径。

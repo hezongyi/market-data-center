@@ -7,13 +7,28 @@ from data_center.settings import Settings
 
 
 def test_runs_and_quality_contract(tmp_path) -> None:
-    app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
-                              evidence_root=tmp_path / "evidence"))
-    client = TestClient(app)
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence")
+    client = TestClient(create_app(config))
     job = {"job_id": "test-1", "symbol": "BTCUSDT", "start": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(), "end": datetime(2026, 1, 2, tzinfo=timezone.utc).isoformat()}
     response = client.post("/api/v1/quality/checks", json=job)
-    assert response.status_code == 200
-    assert response.json()["data"]["status"] == "pass"
+    # Quality checks are queued maintenance work: the console tracks the run
+    # instead of blocking on a provider round trip.
+    assert response.status_code == 202
+    envelope = response.json()["data"]
+    assert envelope["status"] == "queued"
+    assert envelope["run_kind"] == "quality"
+    assert envelope["dataset_id"] == "provider_bars"
+
+    from data_center.ingest.worker import LocalWorker
+    from data_center.runs.ledger import RunLedger
+
+    worker = LocalWorker(config.canonical_root, RunLedger(config.ledger_path))
+    assert worker.run_next() is True
+    receipt = client.get(f"/api/v1/runs/{envelope['run_id']}").json()["data"]
+    assert receipt["status"] == "pass"
+    assert receipt["verification"]["publishes_parts"] is False
+    assert receipt["quality_summary"]["finding_count"] == 0
 
 
 def test_fixture_ingest_accepts_controlled_test_asset_class(tmp_path) -> None:
@@ -47,7 +62,7 @@ def test_write_api_requires_key(tmp_path) -> None:
     job = {"job_id": "secure", "symbol": "BTCUSDT", "start": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(), "end": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()}
     unauthorized = client.post("/api/v1/ingest/runs", json=job)
     assert unauthorized.status_code == 401
-    assert unauthorized.json()["errors"] == [{"code": "401", "message": "invalid api key"}]
+    assert unauthorized.json()["errors"] == [{"code": "unauthorized", "message": "invalid api key"}]
     assert client.post("/api/v1/ingest/runs", json=job, headers={"X-API-Key": "secret"}).status_code == 200
 
 

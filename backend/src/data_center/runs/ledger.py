@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
 import json
 import sqlite3
 import time
@@ -80,12 +81,179 @@ class RunLedger:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             rows = conn.execute("select payload from quality_findings order by id desc").fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return self._with_finding_state([json.loads(row[0]) for row in rows])
+
+    def _with_finding_state(self, payloads: builtins.list[dict]) -> builtins.list[dict]:
+        states = self.finding_states()
+        records = []
+        for payload in payloads:
+            state = states.get(payload.get("finding_id"))
+            records.append({**payload, "state": (state or {}).get("state", payload.get("state", "open")),
+                            "state_updated_at": (state or {}).get("updated_at"),
+                            "resolved_by_run_id": (state or {}).get("resolved_by_run_id")})
+        return records
 
     def add_findings(self, payloads: builtins.list[dict]) -> None:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
+
+    @staticmethod
+    def _finding_dedupe_key(payload: dict) -> str:
+        """Identity of an observed defect, independent of when it was re-checked.
+
+        The same defect re-detected by a later run must keep one identity so the
+        console can distinguish "still present" from "newly introduced" without
+        rewriting the run that reported it.
+        """
+        selector = payload.get("selector") if isinstance(payload.get("selector"), dict) else {}
+        identity = {
+            "dataset_id": payload.get("dataset_id"),
+            "code": payload.get("code"),
+            "provider": payload.get("provider") or selector.get("provider"),
+            "symbol": payload.get("symbol") or selector.get("symbol"),
+            "timeframe": payload.get("timeframe") or selector.get("timeframe"),
+            "series_id": payload.get("series_id") or selector.get("series_id"),
+            "bar_ts": payload.get("bar_ts"),
+            "observation_date": payload.get("observation_date"),
+            "message": payload.get("message"),
+        }
+        return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def record_findings(self, payloads: builtins.list[dict]) -> builtins.list[dict]:
+        """Persist findings idempotently and return the stored records.
+
+        Findings never mutate terminal run receipts; they are additive records
+        that carry their own stable ``finding_id`` and handling state.
+        """
+        stamp = datetime.now(timezone.utc).isoformat()
+        stored_ids: builtins.list[str] = []
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
+            columns = {row[1] for row in conn.execute("pragma table_info(quality_findings)")}
+            for column in ("finding_id", "dedupe_key", "created_at"):
+                if column not in columns:
+                    conn.execute(f"alter table quality_findings add column {column} text")
+            conn.execute("create unique index if not exists quality_findings_dedupe "
+                         "on quality_findings(dedupe_key)")
+            for payload in payloads:
+                record = {key: value for key, value in payload.items() if value is not None}
+                dedupe_key = self._finding_dedupe_key(record)
+                finding_id = record.get("finding_id") or f"finding-{dedupe_key[:16]}"
+                record["finding_id"] = finding_id
+                record.setdefault("state", "open")
+                existing = conn.execute("select payload from quality_findings where dedupe_key=?",
+                                        (dedupe_key,)).fetchone()
+                if existing is not None:
+                    # Re-observing a defect keeps its identity and first
+                    # observer, and records that it is still present instead of
+                    # rewriting the run that reported it.
+                    previous = json.loads(existing[0])
+                    record = {**previous, **record, "run_id": previous.get("run_id"),
+                              "occurrence_count": int(previous.get("occurrence_count") or 1) + 1,
+                              "first_observed_at": previous.get("first_observed_at") or previous.get("observed_at"),
+                              "last_observed_at": stamp, "last_run_id": record.get("run_id")}
+                    conn.execute("update quality_findings set payload=? where dedupe_key=?",
+                                 (json.dumps(record), dedupe_key))
+                else:
+                    record = {**record, "occurrence_count": 1, "first_observed_at": stamp,
+                              "last_observed_at": stamp, "last_run_id": record.get("run_id")}
+                    conn.execute(
+                        "insert or ignore into quality_findings(finding_id, dedupe_key, created_at, payload) "
+                        "values (?, ?, ?, ?)",
+                        (finding_id, dedupe_key, stamp, json.dumps(record)),
+                    )
+                stored_ids.append(finding_id)
+        return [item for item in self.findings() if item.get("finding_id") in set(stored_ids)]
+
+    def finding_states(self) -> dict[str, dict]:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("create table if not exists quality_finding_state "
+                         "(finding_id text primary key, state text not null, updated_at text not null, "
+                         "note text, resolved_by_run_id text)")
+            rows = conn.execute("select finding_id, state, updated_at, note, resolved_by_run_id "
+                                "from quality_finding_state").fetchall()
+        return {row[0]: {"finding_id": row[0], "state": row[1], "updated_at": row[2],
+                         "note": row[3], "resolved_by_run_id": row[4]} for row in rows}
+
+    def set_finding_state(self, finding_id: str, state: str, *, note: str | None = None,
+                          resolved_by_run_id: str | None = None) -> dict:
+        if state not in {"open", "acknowledged", "resolved"}:
+            raise ValueError("unsupported finding state")
+        known = {item.get("finding_id") for item in self.findings()}
+        if finding_id not in known:
+            raise KeyError(finding_id)
+        stamp = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("create table if not exists quality_finding_state "
+                         "(finding_id text primary key, state text not null, updated_at text not null, "
+                         "note text, resolved_by_run_id text)")
+            conn.execute(
+                "insert into quality_finding_state(finding_id, state, updated_at, note, resolved_by_run_id) "
+                "values (?, ?, ?, ?, ?) on conflict(finding_id) do update set "
+                "state=excluded.state, updated_at=excluded.updated_at, note=excluded.note, "
+                "resolved_by_run_id=excluded.resolved_by_run_id",
+                (finding_id, state, stamp, note, resolved_by_run_id),
+            )
+        return {"finding_id": finding_id, "state": state, "updated_at": stamp, "note": note,
+                "resolved_by_run_id": resolved_by_run_id}
+
+    def record_write_audit(self, entry: dict) -> dict:
+        """Append one write-operation audit record and return it.
+
+        The audit trail is additive; it never rewrites a run receipt and never
+        stores credentials, only a non-reversible actor fingerprint.
+        """
+        stamp = entry.get("at") or datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "create table if not exists write_audit (id integer primary key, at text not null, "
+                "action text not null, actor text, request_id text, task_id text, run_ids text, "
+                "run_kind text, run_scope text, dataset_id text, selector text, time_range text, "
+                "outcome text not null, code text, message text)"
+            )
+            cursor = conn.execute(
+                "insert into write_audit(at, action, actor, request_id, task_id, run_ids, run_kind, run_scope, "
+                "dataset_id, selector, time_range, outcome, code, message) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (stamp, entry.get("action"), entry.get("actor"), entry.get("request_id"), entry.get("task_id"),
+                 json.dumps(entry.get("run_ids") or []), entry.get("run_kind"), entry.get("run_scope"),
+                 entry.get("dataset_id"), json.dumps(entry.get("selector") or {}, sort_keys=True),
+                 json.dumps(entry.get("time_range") or {}, sort_keys=True), entry.get("outcome", "unknown"),
+                 entry.get("code"), entry.get("message")),
+            )
+            audit_id = cursor.lastrowid
+        return {**entry, "audit_id": audit_id, "at": stamp}
+
+    def write_audit_entries(self, limit: int = 100) -> builtins.list[dict]:
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "create table if not exists write_audit (id integer primary key, at text not null, "
+                "action text not null, actor text, request_id text, task_id text, run_ids text, "
+                "run_kind text, run_scope text, dataset_id text, selector text, time_range text, "
+                "outcome text not null, code text, message text)"
+            )
+            rows = conn.execute(
+                "select id, at, action, actor, request_id, task_id, run_ids, run_kind, run_scope, dataset_id, "
+                "selector, time_range, outcome, code, message from write_audit order by id desc limit ?",
+                (limit,),
+            ).fetchall()
+        return [{
+            "audit_id": row[0], "at": row[1], "action": row[2], "actor": row[3], "request_id": row[4],
+            "task_id": row[5], "run_ids": json.loads(row[6] or "[]"), "run_kind": row[7], "run_scope": row[8],
+            "dataset_id": row[9], "selector": json.loads(row[10] or "{}"), "time_range": json.loads(row[11] or "{}"),
+            "outcome": row[12], "code": row[13], "message": row[14],
+        } for row in rows]
+
+    def job_queue_state(self) -> dict:
+        """Read-only queue view used by the operations console."""
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute("select status, count(*), min(available_at) from jobs group by status").fetchall()
+        counts = {row[0]: row[1] for row in rows}
+        oldest = min([row[2] for row in rows if row[0] == "queued" and row[2] is not None], default=None)
+        return {"queued": counts.get("queued", 0), "running": counts.get("running", 0),
+                "completed": counts.get("completed", 0), "by_status": counts,
+                "oldest_queued_available_at": None if oldest is None else datetime.fromtimestamp(
+                    oldest, tz=timezone.utc).isoformat()}
 
     def enqueue_provider_bars(self, job_payload: dict) -> str:
         return self.enqueue_job(job_payload)
@@ -101,6 +269,14 @@ class RunLedger:
                        "run_scope": job_payload.get("run_scope", "production"),
                        "run_kind": job_payload.get("run_kind", "ingest"),
                        "execution_plan": job_payload.get("execution_plan"),
+                       # The selector and requested range are part of the run
+                       # record so the console can explain a run without
+                       # re-reading the job queue.
+                       "timeframe": job_payload.get("timeframe"),
+                       "asset_class": job_payload.get("asset_class"),
+                       "series_id": job_payload.get("series_id"),
+                       "price_basis": job_payload.get("price_basis"),
+                       "start": job_payload.get("start"), "end": job_payload.get("end"),
                        "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
         with sqlite3.connect(self.path) as conn:
             conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))

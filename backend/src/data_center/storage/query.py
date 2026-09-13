@@ -425,3 +425,21 @@ def economic_observations_coverage(root: Path, *, provider: str, series_id: str)
     return {"dataset_id": "economic_observations", "provider": provider, "series_id": series_id,
             "row_count": len(rows), "min_date": rows[0]["observation_date"] if rows else None,
             "max_date": rows[-1]["observation_date"] if rows else None}
+
+
+def market_bars_coverage(root: Path, *, provider: str, symbol: str, timeframe: str, price_basis: str,
+                         recipe_id: str, recipe_version: str) -> dict:
+    """Physical coverage of one derived selector; recipe semantics stay explicit.
+
+    Derived rows are only meaningful together with the recipe and price basis
+    that produced them, so both are part of the selector summary instead of
+    being implied by the dataset name.
+    """
+    rows = query_market_bars(root, provider=provider, symbol=symbol, timeframe=timeframe,
+                             price_basis=price_basis, recipe_id=recipe_id, recipe_version=recipe_version)
+    snapshots = sorted({row.get("input_snapshot_id") for row in rows if row.get("input_snapshot_id")})
+    return {"dataset_id": "market_bars", "provider": provider, "symbol": symbol, "timeframe": timeframe,
+            "price_basis": price_basis, "recipe_id": recipe_id, "recipe_version": recipe_version,
+            "row_count": len(rows), "min_ts": rows[0]["bar_ts"] if rows else None,
+            "max_ts": rows[-1]["bar_ts"] if rows else None,
+            "input_snapshot_ids": snapshots, "input_snapshot_count": len(snapshots)}

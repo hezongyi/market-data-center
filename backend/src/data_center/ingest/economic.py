@@ -16,12 +16,30 @@ ECONOMIC_OBSERVATIONS_SCHEMA_VERSION = "economic_observations.v1"
 ECONOMIC_PIT_SCHEMA_VERSION = "economic_observations.v2"
 
 
+def default_fred_connector() -> FredConnector:
+    """Build the configured FRED connector.
+
+    Isolated acceptance runs point the client at a local fixture through the
+    same settings path production uses, so a test never needs a credential or a
+    real provider call.
+    """
+    from data_center.settings import Settings
+
+    settings = Settings()
+    overrides = {}
+    if settings.fred_endpoint:
+        overrides["endpoint"] = settings.fred_endpoint
+    if settings.fred_metadata_endpoint:
+        overrides["metadata_endpoint"] = settings.fred_metadata_endpoint
+    return FredConnector(**overrides)
+
+
 def run_fred_ingest(*, series_id: str, root: Path, connector: FredConnector | None = None, start: str | None = None,
                     end: str | None = None, ledger=None, run_id: str | None = None,
                     schema_version: str = ECONOMIC_PIT_SCHEMA_VERSION, run_kind: str = "ingest",
                     run_scope: str = "production") -> dict:
     run_id = run_id or str(uuid4())
-    resolved_connector = connector or FredConnector()
+    resolved_connector = connector or default_fred_connector()
     rows = resolved_connector.fetch_observations(series_id, start=start, end=end)
     if not rows:
         raise ValueError("FRED returned no observations")

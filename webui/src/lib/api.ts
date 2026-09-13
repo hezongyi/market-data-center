@@ -26,13 +26,53 @@ export type Dataset = {
   partitioning: string[];
 };
 
+export type RunWindowReceipt = {
+  ordinal: number;
+  start: string;
+  end: string;
+  reason?: string;
+  semantics?: string;
+  row_count?: number;
+  min_ts?: string;
+  max_ts?: string;
+};
+
+export type RunAttemptError = {
+  attempt: number;
+  error_type: string;
+  failure_stage: string;
+  error: string;
+  retryable: boolean;
+  at: string;
+};
+
 export type Run = {
   run_id: string;
   dataset_id: string;
   status: string;
+  outcome?: string;
+  stage?: string;
   job_id?: string;
   provider?: string;
   symbol?: string;
+  timeframe?: string;
+  series_id?: string;
+  recipe_id?: string;
+  recipe_version?: string;
+  run_kind?: RunKind;
+  window_count?: number;
+  attempt_count?: number;
+  attempt_errors?: RunAttemptError[];
+  windows?: RunWindowReceipt[];
+  schema_version?: string;
+  output_hash?: string;
+  min_ts?: string;
+  max_ts?: string;
+  min_date?: string;
+  max_date?: string;
+  next_attempt_at?: string | null;
+  manifest_status?: string;
+  finding_count?: number;
   row_count?: number;
   created_at?: string;
   started_at?: string;
@@ -63,11 +103,18 @@ export type IngestJob = {
 
 export type IngestReceipt = {
   status: "queued" | string;
+  state?: string;
   job_id: string;
   run_id: string;
+  run_ids?: string[];
+  window_count?: number;
+  dataset_id?: string;
+  run_kind?: RunKind;
+  run_scope?: RunScope | string;
 };
 
 export type Finding = {
+  finding_id?: string;
   severity: string;
   code: string;
   dataset_id?: string;
@@ -77,6 +124,17 @@ export type Finding = {
   observation_date?: string;
   bar_ts?: string;
   message?: string;
+  // Findings are additive records: identity, handling state and observation
+  // counts stay separate from the run receipt that reported them.
+  state?: FindingState;
+  state_updated_at?: string | null;
+  resolved_by_run_id?: string | null;
+  occurrence_count?: number;
+  first_observed_at?: string;
+  last_observed_at?: string;
+  last_run_id?: string;
+  selector?: Record<string, string>;
+  coverage?: CoverageReport;
 };
 
 export type Bar = {
@@ -171,6 +229,77 @@ export type BarsCoverage = {
   max_ts: string | null;
 };
 
+// Coverage responses carry the governed readiness state when the API can
+// evaluate it; summary-only responses leave those fields absent on purpose.
+export type CoverageReport = BarsCoverage & {
+  coverage_scope?: string;
+  readiness_status?: string;
+  gap_count?: number | null;
+  missing_timestamp_count?: number | null;
+  expected_timestamp_count?: number;
+  duplicate_count?: number;
+  first_missing_ts?: string | null;
+  latest_complete_boundary?: string | null;
+  ready_interval_count?: number;
+  ready_intervals?: Array<{ start: string; end: string; semantics: string }>;
+  timeframe_seconds?: number;
+  calendar_unit?: string;
+  selector?: Record<string, string>;
+  quality_status?: string;
+};
+
+export type MarketBarsCoverage = {
+  dataset_id: "market_bars" | string;
+  provider: string;
+  symbol: string;
+  timeframe: string;
+  price_basis: string;
+  recipe_id: string;
+  recipe_version: string;
+  row_count: number;
+  min_ts: string | null;
+  max_ts: string | null;
+  input_snapshot_ids?: string[];
+  input_snapshot_count?: number;
+  recipe_status?: "registered" | "not_registered";
+  recipe?: RecipeInfo;
+  readiness_status?: string;
+  gap_count?: number | null;
+  ready_intervals?: Array<{ start: string; end: string; semantics: string }>;
+};
+
+// A derived selector is only meaningful together with its recipe and price
+// basis, so the market query carries both explicitly instead of implying them.
+export type MarketBarsQuery = {
+  provider: string;
+  symbol: string;
+  timeframe: string;
+  price_basis: string;
+  recipe_id: string;
+  recipe_version: string;
+  start?: string;
+  end?: string;
+};
+
+// Detailed market coverage adds the governed coverage fields on top of the
+// physical summary.  A summary-only response leaves them absent on purpose, so
+// the console reports "not published" instead of inventing a readiness state.
+export type MarketBarsCoverageReport = MarketBarsCoverage & {
+  coverage_scope?: string;
+  expected_timestamp_count?: number;
+  duplicate_count?: number;
+  latest_complete_boundary?: string | null;
+  ready_interval_count?: number;
+  missing_timestamp_count?: number | null;
+  first_missing_ts?: string | null;
+  timeframe_seconds?: number;
+  calendar_unit?: string;
+  physical_coverage?: string;
+  session_coverage?: string;
+  quality_status?: string;
+  selector?: Record<string, string>;
+};
+
 export type EconomicCoverage = {
   dataset_id: "economic_observations" | string;
   provider: string;
@@ -180,7 +309,276 @@ export type EconomicCoverage = {
   max_date: string | null;
 };
 
-type RequestOptions = { allowStatuses?: readonly number[] };
+export type RequestOptions = { allowStatuses?: readonly number[] };
+
+// -- v0.4 maintenance workbench contracts --------------------------------
+
+export type RunKind = "ingest" | "derive" | "backfill" | "gap_repair" | "quality" | "parity";
+export type WriteStatus = "available" | "protected";
+
+export type MaintenanceTaskRequest = {
+  run_kind: RunKind;
+  run_scope: RunScope;
+  dataset_id?: string | null;
+  provider: string;
+  symbol?: string | null;
+  asset_class?: string | null;
+  timeframe?: string | null;
+  series_id?: string | null;
+  recipe_id?: string | null;
+  recipe_version?: string | null;
+  price_basis?: string | null;
+  start: string;
+  end: string;
+  task_id?: string | null;
+};
+
+export type MaintenanceTask = {
+  task_id: string;
+  run_kind: RunKind;
+  run_scope: RunScope;
+  dataset_id: string;
+  provider: string;
+  symbol: string | null;
+  asset_class: string | null;
+  timeframe: string | null;
+  series_id: string | null;
+  recipe_id: string | null;
+  recipe_version: string | null;
+  price_basis: string | null;
+  start: string;
+  end: string;
+  time_range: { start: string; end: string; semantics: string };
+};
+
+export type ValidationIssue = { field: string; code: string; message: string };
+export type PlanWindow = { ordinal: number; start: string; end: string; reason: string; semantics: string };
+export type MaintenancePlan = {
+  plan_id: string;
+  reason: string;
+  window_count: number;
+  semantics: string;
+  windows: PlanWindow[];
+  truncated: boolean;
+  session_profile?: string | null;
+  config_digest?: string | null;
+};
+
+export type CapacityReport = {
+  status: string;
+  free_ratio: number | null;
+  warning_free_ratio: number;
+  critical_free_ratio: number;
+  requested_days: number;
+  policy: string;
+  estimated_windows: number;
+  write_status: WriteStatus;
+  protected_reason: { code: string; message: string } | null;
+  blocked_by_validation: boolean;
+};
+
+export type RecipeInfo = {
+  recipe_id: string;
+  recipe_version: string;
+  input_dataset: string;
+  output_dataset: string;
+  source_timeframe: string;
+  target_timeframe: string;
+  price_bases: string[];
+  session_profile: string;
+  materialization: string;
+  partial_bucket_policy: string;
+  missing_input_policy: string;
+};
+
+export type ProviderCapability = {
+  provider: string;
+  asset_classes: string[];
+  timeframes: string[];
+  maintenance_timeframes: string[];
+  price_bases: string[];
+  max_window_days: number;
+  session_profile: string;
+  instruments: Array<{
+    provider: string;
+    symbol: string;
+    canonical_symbol: string;
+    asset_class: string;
+    currency: string;
+    session_profile: string;
+    calendar_profile: string;
+    approved: boolean;
+  }>;
+};
+
+export type Capabilities = {
+  datasets: Array<Dataset & { kind: string; quality_profile: string; query_modes: string[]; materialization_policy: string }>;
+  providers: ProviderCapability[];
+  recipes: RecipeInfo[];
+  run_kinds: Array<{ run_kind: RunKind; datasets: string[] }>;
+  economic_series_provider: string;
+  write_status: WriteStatus;
+  capacity: CapacityMetrics;
+  maintenance_policies: Array<{
+    policy_id: string;
+    max_window_days: number;
+    tail_days: number;
+    shard_days: number;
+    shard_minutes: number | null;
+    closed_bar_lag_minutes: number;
+  }>;
+};
+
+export type SnapshotSummary = {
+  input_snapshot_id: string;
+  dataset_id: string;
+  part_count: number;
+  schema_versions: string[];
+};
+
+export type TaskPreview = {
+  task: MaintenanceTask;
+  validation: { status: "valid" | "invalid"; errors: ValidationIssue[]; warnings: Array<{ code: string; message: string }> };
+  plan: MaintenancePlan | null;
+  coverage: CoverageReport | null;
+  snapshot: SnapshotSummary | null;
+  recipe: RecipeInfo | null;
+  capability: ProviderCapability | null;
+  capacity: CapacityReport;
+  submittable: boolean;
+  write_status: WriteStatus;
+  generated_at: string;
+};
+
+export type QueuedEnvelope = {
+  status: "queued" | string;
+  state: string;
+  task_id: string;
+  job_id: string;
+  dataset_id: string;
+  run_kind: RunKind;
+  run_scope: RunScope | string;
+  provider?: string | null;
+  symbol?: string | null;
+  series_id?: string | null;
+  selector: Record<string, string>;
+  time_range: { start: string; end: string; semantics: string };
+  run_id: string | null;
+  run_ids: string[];
+  window_count: number;
+  plan_id: string | null;
+  input_snapshot_id: string | null;
+  capacity: CapacityReport;
+  warnings: Array<{ code: string; message: string }>;
+  submitted_at: string;
+  audit_id: number | null;
+};
+
+export type RunFilters = {
+  status?: string;
+  dataset_id?: string;
+  run_kind?: string;
+  run_scope?: string;
+  provider?: string;
+  symbol?: string;
+  created_from?: string;
+  created_to?: string;
+};
+
+export type PageInfo = { count: number; next_cursor: string | null; page_size: number | null; paginated: boolean; has_more: boolean; order: string };
+
+export type DegradedReason = { code: string; message: string; source: string };
+export type RetryLink = { run_id: string; status: string; created_at?: string; relation: "origin" | "retry"; stage: string; retry_of?: string | null };
+
+export type RunDetail = Run & {
+  stage: string;
+  outcome: string;
+  terminal: boolean;
+  degraded_reasons: DegradedReason[];
+  selector: Record<string, string>;
+  time_range: { start: string; end: string; semantics: string } | null;
+  window_count: number;
+  input_snapshot_id?: string | null;
+  manifest_status: "published" | "missing" | "not_applicable" | "unknown";
+  finding_count: number;
+  retry_chain: RetryLink[];
+  findings?: Finding[];
+  verification?: { kind: string; checked_at: string; publishes_parts: boolean };
+  coverage?: CoverageReport | null;
+};
+
+export type FindingState = "open" | "acknowledged" | "resolved";
+
+export type OperationAuditEntry = {
+  audit_id: number;
+  at: string;
+  action: string;
+  actor: string | null;
+  request_id: string | null;
+  task_id: string | null;
+  run_ids: string[];
+  run_kind: string | null;
+  run_scope: string | null;
+  dataset_id: string | null;
+  selector: Record<string, string>;
+  time_range: { start?: string; end?: string };
+  outcome: string;
+  code: string | null;
+  message: string | null;
+};
+
+export type WorkerActivity = {
+  heartbeat_age_seconds: number | null;
+  heartbeat_status: "fresh" | "stale" | "unknown";
+  heartbeat_limit_seconds: number;
+  worker_heartbeat_age_seconds?: number | null;
+  running_jobs: Array<{ job_id: string; run_id: string; attempts: number }>;
+  running_count: number;
+  queue: QueueState;
+  observed_at: string;
+};
+
+export type CapacityEvent = {
+  event: string;
+  created_at: string | null;
+  status?: string;
+  free_ratio?: number | null;
+  warning_free_ratio?: number;
+  critical_free_ratio?: number;
+};
+
+export type CapacityHistory = {
+  live: CapacityMetrics & { fixed_measurement?: boolean };
+  events: CapacityEvent[];
+  event_count: number;
+  recorded_only: boolean;
+  note: string;
+};
+
+export type OperationsReceipt = {
+  action: string;
+  completed_at: string;
+  deployment_id: string | null;
+  reference: string;
+  result: string;
+  fields: Record<string, unknown>;
+};
+
+export type ReceiptHistory = {
+  available: boolean;
+  receipts: OperationsReceipt[];
+  latest: Record<string, OperationsReceipt | null>;
+  note: string | null;
+};
+
+export type QueueState = {
+  queued: number;
+  running: number;
+  completed: number;
+  by_status: Record<string, number>;
+  oldest_queued_available_at: string | null;
+  runs_by_status: Record<string, number>;
+};
 
 const queryString = (params: Record<string, string | number | null | undefined>) => {
   const search = new URLSearchParams();
@@ -248,12 +646,44 @@ export function createDataCenterClient(apiKey: string) {
       page_size: pageSize,
       cursor,
     })}`),
+    marketBarsPage: (query: MarketBarsQuery, cursor?: string | null, pageSize = 1000) => request<Bar[]>(`/market-bars${queryString({
+      ...query,
+      page_size: pageSize,
+      cursor,
+    })}`),
     coverage: (query: Omit<BarsQuery, "start" | "end">) => request<BarsCoverage>(`/provider-bars/coverage${queryString(query)}`),
     economicCoverage: (query: Pick<EconomicQuery, "provider" | "series_id">) => request<EconomicCoverage>(`/economic/coverage${queryString(query)}`),
     ingest: (job: IngestJob) => request<IngestReceipt>("/ingest/runs", { method: "POST", body: JSON.stringify(job) }),
     retry: (runId: string) => request<Run>(`/runs/${encodeURIComponent(runId)}/retry`, { method: "POST" }),
     acknowledge: (runId: string) => request<Run>(`/runs/${encodeURIComponent(runId)}/acknowledge`, { method: "POST" }),
     run: (runId: string) => request<Run>(`/runs/${encodeURIComponent(runId)}`),
+    runDetail: (runId: string) => request<RunDetail>(`/runs/${encodeURIComponent(runId)}/detail`),
     manifest: (runId: string) => request<Record<string, unknown>>(`/runs/${encodeURIComponent(runId)}/manifest`),
+
+    // Every write goes through the unified maintenance contract, so a caller
+    // never has to know which legacy endpoint a run kind used to use.
+    runsPage: (filters: RunFilters, cursor?: string | null, pageSize = 50) => request<RunDetail[]>(
+      `/runs${queryString({ ...filters, page_size: pageSize, cursor })}`,
+    ),
+    maintenancePlan: (task: MaintenanceTaskRequest) => request<TaskPreview>("/maintenance/plans", {
+      method: "POST", body: JSON.stringify(task),
+    }),
+    submitMaintenance: (task: MaintenanceTaskRequest) => request<QueuedEnvelope>("/maintenance/tasks", {
+      method: "POST", body: JSON.stringify(task),
+    }),
+    capabilities: () => request<Capabilities>("/capabilities"),
+    findingsPage: (query: Record<string, string | number | null | undefined> = {}, cursor?: string | null) =>
+      request<Finding[]>(`/quality/findings${queryString({ ...query, cursor })}`),
+    findingState: (findingId: string, body: { state: FindingState; note?: string; dataset_id?: string; resolved_by_run_id?: string }) =>
+      request<Record<string, unknown>>(`/quality/findings/${encodeURIComponent(findingId)}/state`, {
+        method: "POST", body: JSON.stringify(body),
+      }),
+    marketBarsCoverage: (query: Record<string, string | null | undefined>) =>
+      request<MarketBarsCoverage>(`/market-bars/coverage${queryString(query)}`),
+    queue: () => request<QueueState>("/operations/queue"),
+    audit: (limit = 50) => request<OperationAuditEntry[]>(`/operations/audit${queryString({ limit })}`),
+    capacityHistory: (limit = 50) => request<CapacityHistory>(`/operations/capacity-history${queryString({ limit })}`),
+    worker: () => request<WorkerActivity>("/operations/worker"),
+    receipts: (limit = 5) => request<ReceiptHistory>(`/operations/receipts${queryString({ limit })}`),
   };
 }

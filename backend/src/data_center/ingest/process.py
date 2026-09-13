@@ -10,6 +10,10 @@ from data_center.ingest.economic import run_fred_ingest
 from data_center.ingest.service import run_fixture_ingest
 from data_center.platform_registry import REGISTRY
 from data_center.quality.errors import QualityError
+from data_center.quality.verification import (
+    run_parity_verification,
+    run_quality_verification,
+)
 from data_center.transform import TransformExecutor
 
 
@@ -36,33 +40,43 @@ def main():
     directory = Path(sys.argv[1])
     request = json.loads((directory / "request.json").read_text())
     job = request["payload"]
+    result: dict = {}
     try:
-        if job.get("run_kind") == "derive":
-            derive_job = DeriveJob.model_validate(job)
-            recipe = REGISTRY.recipe(derive_job.recipe_id, derive_job.recipe_version)
-            snapshot = Catalog(Path(request["canonical_root"])).resolve(
-                recipe.input_dataset,
-                {"provider": derive_job.provider, "symbol": derive_job.symbol,
-                 "timeframe": recipe.source_timeframe},
-            )
-            if snapshot.snapshot_id != derive_job.input_snapshot_id:
-                raise ValueError("derive input snapshot changed after submission")
-            receipt = TransformExecutor().derive(
-                recipe=recipe, input_snapshot=snapshot,
-                selector={"provider": derive_job.provider, "symbol": derive_job.symbol},
-                start=derive_job.start, end=derive_job.end, root=directory / "parts",
-                run_id=request["run_id"], run_scope=derive_job.run_scope,
-            )
-            receipt["job_id"] = derive_job.job_id
-        elif job["dataset_id"] == "economic_observations":
-            receipt = run_fred_ingest(series_id=job["series_id"], root=directory / "parts",
-                                      start=job.get("start"), end=job.get("end"), run_id=request["run_id"],
-                                      schema_version=job.get("schema_version", "economic_observations.v2"),
-                                      run_kind=job.get("run_kind", "ingest"), run_scope=job.get("run_scope", "production"))
+        if job.get("run_kind") in {"quality", "parity"}:
+            # Verification runs report findings and publish no canonical part,
+            # so the supervisor must not open the publication path for them.
+            verifier = run_parity_verification if job.get("run_kind") == "parity" else run_quality_verification
+            result = {"verification": verifier(job=job, root=Path(request["canonical_root"]),
+                                               run_id=request["run_id"])}
         else:
-            receipt = run_fixture_ingest(IngestJob.model_validate(job), directory / "parts", run_id=request["run_id"],
-                                         execution_plan=job.get("execution_plan"))
-        result = {"receipt": receipt}
+            if job.get("run_kind") == "derive":
+                derive_job = DeriveJob.model_validate(job)
+                recipe = REGISTRY.recipe(derive_job.recipe_id, derive_job.recipe_version)
+                snapshot = Catalog(Path(request["canonical_root"])).resolve(
+                    recipe.input_dataset,
+                    {"provider": derive_job.provider, "symbol": derive_job.symbol,
+                     "timeframe": recipe.source_timeframe},
+                )
+                if snapshot.snapshot_id != derive_job.input_snapshot_id:
+                    raise ValueError("derive input snapshot changed after submission")
+                receipt = TransformExecutor().derive(
+                    recipe=recipe, input_snapshot=snapshot,
+                    selector={"provider": derive_job.provider, "symbol": derive_job.symbol},
+                    start=derive_job.start, end=derive_job.end, root=directory / "parts",
+                    run_id=request["run_id"], run_scope=derive_job.run_scope,
+                )
+                receipt["job_id"] = derive_job.job_id
+            elif job["dataset_id"] == "economic_observations":
+                receipt = run_fred_ingest(series_id=job["series_id"], root=directory / "parts",
+                                          start=job.get("start"), end=job.get("end"), run_id=request["run_id"],
+                                          schema_version=job.get("schema_version", "economic_observations.v2"),
+                                          run_kind=job.get("run_kind", "ingest"),
+                                          run_scope=job.get("run_scope", "production"))
+            else:
+                receipt = run_fixture_ingest(IngestJob.model_validate(job), directory / "parts",
+                                             run_id=request["run_id"],
+                                             execution_plan=job.get("execution_plan"))
+            result = {"receipt": receipt}
     except Exception as exc:  # noqa: BLE001 - child must convert every failure to a safe result
         # Provider exception URLs can contain API keys. Persist only the category.
         result = safe_failure_result(exc, job)

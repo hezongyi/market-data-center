@@ -86,6 +86,19 @@ class ReceiptIndex:
         return {"completed_at": row[0], "deployment_id": row[1], "reference": row[2],
                 "fields": json.loads(row[3])}
 
+    def history(self, action: str | None = None, *, limit: int = 20) -> list[dict]:
+        """Return recent receipts, optionally for one action, newest first."""
+        if not self.available:
+            raise sqlite3.DatabaseError("receipt index is unavailable")
+        query = ("select action,completed_at,deployment_id,reference,result,fields from receipts "
+                 + ("where action=? " if action else "")
+                 + "order by completed_at desc limit ?")
+        parameters = (action, limit) if action else (limit,)
+        with sqlite3.connect(self.path, timeout=0.2) as database:
+            rows = database.execute(query, parameters).fetchall()
+        return [{"action": row[0], "completed_at": row[1], "deployment_id": row[2], "reference": row[3],
+                 "result": row[4], "fields": json.loads(row[5])} for row in rows]
+
     def rebuild(self) -> dict:
         """Explicit maintenance operation; never called from a request hot path."""
         started = time.monotonic()

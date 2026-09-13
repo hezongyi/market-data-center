@@ -185,3 +185,378 @@
     grid-column: 1;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   v0.4 data workbench: maintenance tasks, run detail and finding states.
+   Status is always expressed with text + icon + colour, never colour alone.
+--------------------------------------------------------------------------- */
+
+.status svg {
+  flex: none;
+}
+
+.spin {
+  animation: spin 1.1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.banner-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 14px;
+}
+
+.capacity-banner .banner-actions button {
+  margin-left: 0;
+}
+
+.run-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.run-kind {
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.run-kind b {
+  font-size: 12px;
+}
+
+.run-kind small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.run-kind span {
+  color: var(--soft);
+}
+
+.run-kind.selected {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 2px #087c7822;
+}
+
+.run-kind:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.form-actions .primary-button,
+.form-actions .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.form-actions .primary-button:disabled,
+.form-actions .secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
+
+.filter-note {
+  color: var(--soft);
+  font-size: 11px;
+}
+
+.inline-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+  font-size: 11px;
+  margin: 0;
+}
+
+.locked-state {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #d8dcf0;
+  background: #f5f6fd;
+  border-radius: 8px;
+  color: #4a4f7a;
+  padding: 14px;
+}
+
+.locked-state b {
+  font-size: 12px;
+}
+
+.locked-state p {
+  margin: 4px 0 0;
+  font-size: 11px;
+}
+
+.preview-panel {
+  margin-top: 16px;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.preview-card {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfdfd;
+}
+
+.preview-card b {
+  font-size: 19px;
+  letter-spacing: -.03em;
+}
+
+.preview-card span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.preview-card small {
+  color: var(--soft);
+  font-size: 10px;
+  word-break: break-word;
+}
+
+.preview-card.protected {
+  border-color: #f0caca;
+  background: #fff6f6;
+}
+
+.issue-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.issue {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  background: #fafcfc;
+}
+
+.issue b {
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 10px;
+}
+
+.issue span {
+  flex: 1;
+}
+
+.issue code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  color: var(--soft);
+}
+
+.issue.error {
+  border-color: #efcaca;
+  background: #fff4f4;
+  color: var(--bad);
+}
+
+.issue.warning {
+  border-color: #f1dfb2;
+  background: #fff9e9;
+  color: var(--warn);
+}
+
+.issue.info {
+  border-color: #cfe0e4;
+  background: #f4fafb;
+  color: #3d6b74;
+}
+
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reason-chip,
+.stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #dbe5e7;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #f6fafa;
+  color: #4c6a72;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.reason-chip {
+  border-color: #f1dfb2;
+  background: #fff9e9;
+  color: var(--warn);
+}
+
+.track-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid #edf2f3;
+  padding-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.detail-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: #647781;
+  margin: 24px 0 12px;
+}
+
+.retry-chain {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.retry-chain li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-left: 2px solid #dbe5e7;
+  padding-left: 10px;
+}
+
+.manifest-view {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7fbfb;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-top: 16px;
+  color: var(--soft);
+  font-size: 11px;
+}
+
+.pager .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pager .secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.detail-list.compact {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+  .run-kind-grid,
+  .preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .run-kind-grid,
+  .preview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .banner-actions {
+    margin-left: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-drawer {
+    width: 100vw;
+    padding: 18px;
+  }
+
+  .track-row {
+    gap: 7px;
+  }
+}

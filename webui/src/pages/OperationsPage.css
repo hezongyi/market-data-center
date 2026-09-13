@@ -1,0 +1,155 @@
+/* Operations workspace layout.
+   Shared surfaces (panel, metric, detail-list, status, chips, table-scroll and
+   the empty/error/locked states) stay global; only the operations-specific
+   composition lives here. */
+
+.operations-page .operations-wide {
+  grid-column: 1 / -1;
+}
+
+.operations-page .link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.operations-page .operations-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.operations-page .operations-count {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfd;
+  min-width: 0;
+}
+
+.operations-page .operations-count > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.operations-page .operations-count b {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.operations-page .operations-count small {
+  color: var(--soft);
+  font-size: 10px;
+}
+
+.operations-page .chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.operations-page .receipt-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.operations-page .receipt-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid #edf2f3;
+  padding-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.operations-page .receipt-list li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.operations-page .receipt-list li b {
+  color: var(--ink);
+  font-size: 11px;
+  text-transform: none;
+}
+
+.operations-page .receipt-list.compact li {
+  padding-top: 6px;
+}
+
+/* Fingerprints, selectors and run ids are long: let them wrap instead of
+   forcing a horizontal scrollbar at 390px. */
+.operations-page .receipt-list .mono,
+.operations-page .detail-list .mono,
+.operations-page td .mono,
+.operations-page td {
+  overflow-wrap: anywhere;
+}
+
+.operations-page td {
+  max-width: 260px;
+}
+
+.operations-page .receipt-unavailable {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid #f1dfb2;
+  background: #fff9e9;
+  border-radius: 8px;
+  color: var(--warn);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.operations-page .receipt-unavailable div {
+  flex: 1;
+  min-width: 0;
+}
+
+.operations-page .receipt-unavailable b {
+  font-size: 12px;
+}
+
+.operations-page .receipt-unavailable p {
+  margin: 4px 0 0;
+  font-size: 11px;
+}
+
+.operations-page .receipt-unavailable .link-button {
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .operations-page .operations-wide,
+  .operations-page .operation-command {
+    grid-column: 1;
+  }
+
+  .operations-page .operations-counts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .operations-page td {
+    max-width: 200px;
+  }
+
+  .operations-page .receipt-unavailable {
+    flex-wrap: wrap;
+  }
+}

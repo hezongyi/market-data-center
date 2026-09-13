@@ -1,0 +1,186 @@
+/* Catalog-specific layout. Shared chrome (panel, filter-bar, table, drawer)
+   keeps coming from the global token sheets. */
+.catalog-page {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.catalog-page .chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catalog-page .catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #dbe5e7;
+  border-radius: 999px;
+  background: #f6fafb;
+  color: #45606a;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.catalog-page .catalog-chip.derived {
+  border-color: #cfe3e1;
+  background: #eaf5f4;
+  color: #0a6a66;
+}
+
+.catalog-page .catalog-chip.raw {
+  border-color: #e2ded1;
+  background: #faf7ef;
+  color: #7a6320;
+}
+
+.catalog-page .catalog-chip.unavailable {
+  border-style: dashed;
+  color: var(--soft);
+  font-weight: 600;
+}
+
+.catalog-page .lineage-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.catalog-page .lineage-row {
+  display: grid;
+  gap: 7px;
+  padding: 14px 0;
+  border-top: 1px solid #edf2f3;
+  min-width: 0;
+}
+
+.catalog-page .lineage-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.catalog-page .lineage-io {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #2b3d45;
+  overflow-wrap: anywhere;
+}
+
+.catalog-page .lineage-meta {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.catalog-page .provider-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid #edf2f3;
+  min-width: 0;
+}
+
+.catalog-page .provider-card:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.catalog-page .provider-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.catalog-page .provider-head b {
+  font-size: 14px;
+}
+
+.catalog-page .provider-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.catalog-page .provider-facts dt {
+  font-size: 10px;
+  color: var(--soft);
+}
+
+.catalog-page .provider-facts dd {
+  margin: 6px 0 0;
+  font-weight: 700;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.catalog-page .probe-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.catalog-page .probe-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.catalog-page .probe-form input,
+.catalog-page .probe-form select {
+  border: 1px solid #cbd7da;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+  min-width: 0;
+  width: 100%;
+}
+
+.catalog-page .drawer-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #edf2f3;
+}
+
+.catalog-page .drawer-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+@media (max-width: 900px) {
+  .catalog-page .provider-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .catalog-page,
+  .catalog-page > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .catalog-page .provider-facts,
+  .catalog-page .probe-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
