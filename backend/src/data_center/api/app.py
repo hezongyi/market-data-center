@@ -471,6 +471,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_tasks() -> dict:
         return api_envelope(ledger.list_maintenance_tasks())
 
+    @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
+    def maintenance_task_status(task_id: str, payload: dict, request: Request,
+                                x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+                                session: str | None = Cookie(default=None, alias="mdc_session")) -> dict:
+        require_api_key(config, x_api_key, session)
+        status = str(payload.get("status", ""))
+        if status not in {"paused", "enabled"}:
+            raise HTTPException(status_code=422, detail="status must be paused or enabled")
+        task = ledger.update_maintenance_task_status(task_id, status)
+        if task is None: raise HTTPException(status_code=404, detail="maintenance task not found")
+        return api_envelope(task)
+
     @app.post(f"{config.api_prefix}/maintenance/tasks", status_code=202)
     def maintenance_task(request: MaintenanceTaskRequest, http_request: Request,
                          x_api_key: str | None = Header(default=None)) -> dict:

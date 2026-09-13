@@ -57,6 +57,7 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/maintenance/plans"): RoutePolicy(
         False, False, TASK_BODY, note="side-effect-free validation preview"),
     ("POST", "/api/v1/maintenance/tasks"): RoutePolicy(True, True, TASK_BODY, audit_action="maintenance.ingest"),
+    ("PATCH", "/api/v1/maintenance/tasks/{task_id}"): RoutePolicy(True, False, {"status": "paused"}, expect_status=404),
     ("POST", "/api/v1/runs/{run_id}/retry"): RoutePolicy(
         True, True, audit_action="runs.retry", expect_status=404),
     ("POST", "/api/v1/runs/{run_id}/acknowledge"): RoutePolicy(
@@ -113,10 +114,11 @@ def test_protected_routes_reject_missing_and_wrong_credentials(route, tmp_path) 
         pytest.skip("route is classified as unauthenticated by design")
     client = TestClient(create_app(settings(tmp_path)))
     path = route_path(route[1])
-    missing = client.post(path, json=policy.body or None, params=policy.params)
+    request_method = getattr(client, route[0].lower())
+    missing = request_method(path, json=policy.body or None, params=policy.params)
     assert missing.status_code == 401, f"{route} accepted a request without a key"
     assert missing.json()["errors"][0] == {"code": "unauthorized", "message": "invalid api key"}
-    wrong = client.post(path, json=policy.body or None, params=policy.params,
+    wrong = request_method(path, json=policy.body or None, params=policy.params,
                         headers={"X-API-Key": "not-the-key"})
     assert wrong.status_code == 401, f"{route} accepted an incorrect key"
 

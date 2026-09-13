@@ -87,6 +87,14 @@ class RunLedger:
             rows = conn.execute("select task_id,payload,status,updated_at from maintenance_tasks order by updated_at desc").fetchall()
         return [{**json.loads(row[1]), "task_id": row[0], "status": row[2], "updated_at": row[3]} for row in rows]
 
+    def update_maintenance_task_status(self, task_id: str, status: str) -> dict | None:
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("select payload from maintenance_tasks where task_id=?", (task_id,)).fetchone()
+            if row is None: return None
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("update maintenance_tasks set status=?, updated_at=? where task_id=?", (status, now, task_id))
+            return {**json.loads(row[0]), "task_id": task_id, "status": status, "updated_at": now}
+
     def findings(self) -> builtins.list[dict]:
         with sqlite3.connect(self.path) as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
