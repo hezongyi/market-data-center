@@ -633,7 +633,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
           {runQuery.data.terminal && <span className="stage-chip"><CheckCircle2 size={12} /> terminal receipt</span>}
         </div>
         <dl className="detail-list">
-          <div><dt>Run id</dt><dd className="mono">{runQuery.data.run_id}</dd></div>
+          <div><dt>Run id</dt><dd><CopyId value={runQuery.data.run_id} /></dd></div>
           <div><dt>Stage</dt><dd>{runQuery.data.stage}</dd></div>
           <div><dt>Outcome</dt><dd>{runQuery.data.outcome}</dd></div>
           <div><dt>Manifest status</dt><dd>{runQuery.data.manifest_status}</dd></div>

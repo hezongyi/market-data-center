@@ -240,7 +240,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
             {runningJobs.length
               ? <ul className="receipt-list" aria-label="In-flight jobs">{runningJobs.map(job => <li key={job.job_id}>
                 <span className="mono">{job.job_id}</span>
-                <span className="mono">run {job.run_id}</span>
+                <span>run <CopyId value={job.run_id} /></span>
                 <span className="stage-chip"><Timer size={11} /> attempt {job.attempts}</span>
               </li>)}</ul>
               : <EmptyState title="No job is running" detail="The ledger reports no in-flight job for this worker right now." />}
@@ -314,7 +314,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
                   <StatusBadge tone={resultTone(receipt.result)}>{receipt.result}</StatusBadge>
                   <span className="filter-note">completed (UTC)</span>
                   <span className="mono">{receipt.completed_at}<small>{utc(receipt.completed_at)}</small></span>
-                  <span className="mono">deployment {receipt.deployment_id ?? "—"}</span>
+                  <span>deployment {receipt.deployment_id ? <CopyId value={receipt.deployment_id} /> : "—"}</span>
                   <span className="filter-note">{receipt.reference}</span>
                   <span className="filter-note">{fieldsText(receipt.fields)}</span>
                 </> : <span className="filter-note">No receipt recorded</span>}

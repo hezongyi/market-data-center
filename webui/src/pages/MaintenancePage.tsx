@@ -191,7 +191,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const protectedWrite = mutation.permission === "protected" || mutation.preview?.write_status === "protected";
 
   const submissionColumns: ColumnDef<QueuedEnvelope>[] = [
-    { accessorKey: "task_id", header: "Task", cell: info => <span className="mono">{String(info.getValue())}</span> },
+    { accessorKey: "task_id", header: "Task", cell: info => <CopyId value={String(info.getValue())} /> },
     { accessorKey: "run_kind", header: "Kind" },
     { accessorKey: "dataset_id", header: "Dataset" },
     { accessorKey: "window_count", header: "Windows" },
@@ -322,7 +322,7 @@ function TrackBadge({ state }: { state: WriteState }) {
 
 function TrackedRun({ run }: { run: RunDetail }) {
   return <li className="track-row">
-    <span className="mono">{run.run_id}</span>
+    <CopyId value={run.run_id} />
     <StatusBadge tone={tone(run.outcome)}>{run.outcome}</StatusBadge>
     <span className="stage-chip"><PlayCircle size={12} /> {run.stage}</span>
     <span>{run.window_count} window(s)</span>
@@ -398,7 +398,7 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
   onClose: () => void;
 }) {
   if (!envelope) return null;
-  return <DetailDrawer title={`Task ${envelope.task_id}`} onClose={onClose}>
+  return <DetailDrawer title="Task details" onClose={onClose}>
     <dl className="detail-list">
       <div><dt>Run kind</dt><dd>{envelope.run_kind}</dd></div>
       <div><dt>Dataset</dt><dd>{envelope.dataset_id}</dd></div>
@@ -408,7 +408,7 @@ export function MaintenanceTaskDrawer({ envelope, detail, loading, onClose }: {
       <div><dt>Plan</dt><dd>{envelope.plan_id ? <CopyId value={envelope.plan_id} /> : "—"}</dd></div>
       <div><dt>Submitted</dt><dd>{utc(envelope.submitted_at)}</dd></div>
       <div><dt>Input snapshot</dt><dd>{envelope.input_snapshot_id ? <CopyId value={envelope.input_snapshot_id} /> : "—"}</dd></div>
-      <div><dt>Audit id</dt><dd>{envelope.audit_id ?? "—"}</dd></div>
+      <div><dt>Audit id</dt><dd>{envelope.audit_id ? <CopyId value={String(envelope.audit_id)} /> : "—"}</dd></div>
     </dl>
     {loading && <LoadingSkeleton rows={3} />}
     {detail && <dl className="detail-list">
