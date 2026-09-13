@@ -94,7 +94,8 @@ def require_api_key(config: Settings, provided: str | None, session: str | None 
     session = session or _session_id.get()
     valid_session = bool(session and session in _sessions and _sessions[session][1] > time.time())
     if session and not valid_session: _sessions.pop(session, None)
-    if (config.auth_password_hash or config.api_key) and not hmac.compare_digest(provided or "", config.api_key or "") and not valid_session:
+    valid_key = bool(config.api_key and hmac.compare_digest(provided or "", config.api_key))
+    if (config.auth_password_hash or config.api_key) and not valid_key and not valid_session:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
@@ -203,7 +204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid credentials")
         token = secrets.token_urlsafe(32); _sessions[token] = (username, time.time() + config.auth_session_ttl_seconds)
         response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
-        return {"data": {"username": username}, "meta": {"schema_version": "v1"}, "errors": []}
+        return api_envelope({"username": username})
 
     @app.post(f"{config.api_prefix}/auth/initialize")
     def auth_initialize(payload: dict, x_api_key: str | None = Header(default=None, alias="X-API-Key")):
