@@ -247,6 +247,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not valid: raise HTTPException(status_code=401, detail="not authenticated")
         return api_envelope({"username": _sessions[session][0], "expires_at": _sessions[session][1]})
 
+    @app.get(f"{config.api_prefix}/auth/status")
+    def auth_status():
+        return api_envelope({"initialized": bool(config.auth_password_hash), "username": config.auth_username})
+
     @app.post(f"{config.api_prefix}/auth/change-password")
     def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session"),
                              x_api_key: str | None = Header(default=None, alias="X-API-Key")):
