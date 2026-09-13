@@ -118,28 +118,28 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
   const recentReceipts = receipts.data?.receipts ?? [];
 
   const auditColumns = useMemo<ColumnDef<OperationAuditEntry>[]>(() => [
-    { accessorKey: "at", header: "Time", cell: info => <span className="mono">{utc(String(info.getValue()))}</span> },
-    { accessorKey: "action", header: "Action" },
+    { accessorKey: "at", header: t("Time"), cell: info => <span className="mono">{utc(String(info.getValue()))}</span> },
+    { accessorKey: "action", header: t("Action") },
     { accessorKey: "actor", header: "Actor", cell: info => <span className="mono" title="Non-reversible actor fingerprint; never a credential.">{String(info.getValue() ?? "—")}</span> },
     { accessorKey: "task_id", header: t("Task"), cell: info => info.getValue() ? <CopyId value={String(info.getValue())} /> : "—" },
-    { accessorKey: "run_ids", header: "Runs", cell: ({ row }) => row.original.run_ids.length ? <>{row.original.run_ids.map(id => <CopyId key={id} value={id} />)}</> : "—" },
-    { accessorKey: "run_kind", header: "Kind", cell: info => String(info.getValue() ?? "—") },
-    { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
-    { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "run_ids", header: t("Runs"), cell: ({ row }) => row.original.run_ids.length ? <>{row.original.run_ids.map(id => <CopyId key={id} value={id} />)}</> : "—" },
+    { accessorKey: "run_kind", header: t("Kind"), cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "run_scope", header: t("Scope"), cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "dataset_id", header: t("Dataset"), cell: info => String(info.getValue() ?? "—") },
     { id: "selector", header: "Selector", cell: ({ row }) => <span className="mono">{selectorText(row.original.selector)}
       {row.original.time_range?.start && <small><TimeDisplay value={row.original.time_range.start} /> → <TimeDisplay value={row.original.time_range.end} /></small>}</span> },
-    { accessorKey: "outcome", header: "Outcome", cell: ({ row }) => <div className="status-cell">
+    { accessorKey: "outcome", header: t("Outcome"), cell: ({ row }) => <div className="status-cell">
       <StatusBadge tone={outcomeTone(row.original.outcome)}>{outcomeIcon(row.original.outcome)}{row.original.outcome}</StatusBadge>
       {row.original.code && <span className="stage-chip">{row.original.code}</span>}
     </div> },
-    { accessorKey: "message", header: "Message", cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "message", header: t("Message"), cell: info => String(info.getValue() ?? "—") },
   ], []);
 
   const eventColumns = useMemo<ColumnDef<CapacityEvent>[]>(() => [
-    { accessorKey: "event", header: "Event", cell: info => <StatusBadge tone={eventTone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
-    { accessorKey: "created_at", header: "Recorded", cell: info => <span className="mono">{utc(info.getValue() as string | null)}</span> },
-    { accessorKey: "free_ratio", header: "Free ratio", cell: info => percent(info.getValue() as number | null) },
-    { accessorKey: "status", header: "Status", cell: info => String(info.getValue() ?? "—") },
+    { accessorKey: "event", header: t("Event"), cell: info => <StatusBadge tone={eventTone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
+    { accessorKey: "created_at", header: t("Recorded"), cell: info => <span className="mono">{utc(info.getValue() as string | null)}</span> },
+    { accessorKey: "free_ratio", header: t("Free ratio"), cell: info => percent(info.getValue() as number | null) },
+    { accessorKey: "status", header: t("Status"), cell: info => String(info.getValue() ?? "—") },
     { id: "thresholds", header: "Thresholds", cell: ({ row }) => `warning ${percent(row.original.warning_free_ratio)} · critical ${percent(row.original.critical_free_ratio)}` },
   ], []);
 

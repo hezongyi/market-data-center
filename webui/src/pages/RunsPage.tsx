@@ -97,8 +97,8 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
   };
 
   const columns = useMemo<ColumnDef<RunDetail>[]>(() => [
-    { accessorKey: "run_id", header: "Run ID", cell: info => <CopyId value={String(info.getValue())} /> },
-    { accessorKey: "dataset_id", header: "Dataset" },
+    { accessorKey: "run_id", header: t("Run ID"), cell: info => <CopyId value={String(info.getValue())} /> },
+    { accessorKey: "dataset_id", header: t("Dataset") },
     { accessorKey: "run_kind", header: t("Kind"), cell: info => String(info.getValue() ?? "ingest") },
     { accessorKey: "run_scope", header: t("Scope"), cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "outcome", header: t("Outcome"), cell: ({ row }) => <div className="status-cell">
@@ -106,33 +106,33 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
       {row.original.degraded_reasons.length > 0 && <span className="reason-chip" title={row.original.degraded_reasons.map(item => item.message).join("; ")}>
         <AlertTriangle size={11} />{row.original.degraded_reasons.length}</span>}
     </div> },
-    { accessorKey: "stage", header: "Stage", cell: info => <span className="stage-chip"><Layers size={11} />{String(info.getValue())}</span> },
+    { accessorKey: "stage", header: t("Stage"), cell: info => <span className="stage-chip"><Layers size={11} />{String(info.getValue())}</span> },
     { accessorKey: "window_count", header: t("Windows"), cell: info => String(info.getValue() ?? 1) },
-    { accessorKey: "manifest_status", header: "Manifest", cell: ({ row }) => row.original.manifest_status === "published"
-      ? <span className="stage-chip"><FileText size={11} />published</span>
+    { accessorKey: "manifest_status", header: t("Manifest"), cell: ({ row }) => row.original.manifest_status === "published"
+      ? <span className="stage-chip"><FileText size={11} />{t("published")}</span>
       : <span className="filter-note">{row.original.manifest_status.replace(/_/g, " ")}</span> },
-    { accessorKey: "finding_count", header: "Findings", cell: info => String(info.getValue() ?? 0) },
-    { accessorKey: "created_at", header: "Created", cell: info => utc(String(info.getValue() ?? "")) },
+    { accessorKey: "finding_count", header: t("Findings"), cell: info => String(info.getValue() ?? 0) },
+    { accessorKey: "created_at", header: t("Created"), cell: info => utc(String(info.getValue() ?? "")) },
     { id: "actions", header: t("Actions"), enableSorting: false, cell: ({ row }) => <div className="row-actions">
       {["failed", "dead_letter"].includes(row.original.status) && <button onClick={event => { event.stopPropagation(); setPending({ action: "retry", run: row.original }); }}>Retry</button>}
-      {row.original.status === "dead_letter" && row.original.dead_letter_state?.state !== "acknowledged" && <button onClick={event => { event.stopPropagation(); setPending({ action: "acknowledge", run: row.original }); }}>Acknowledge</button>}
+      {row.original.status === "dead_letter" && row.original.dead_letter_state?.state !== "acknowledged" && <button onClick={event => { event.stopPropagation(); setPending({ action: "acknowledge", run: row.original }); }}>{t("Acknowledge")}</button>}
     </div> },
   ], []);
 
   return <>
-    <section className="panel" aria-label="Runs">
+    <section className="panel" aria-label={t("Runs")}>
       <PanelHeading eyebrow="Live activity" title="Runs"
         action={<div className="header-actions"><StatusBadge tone={query.permission === "unauthorized" ? "bad" : "neutral"}>
           {page ? `${page.count} on this page` : "—"}</StatusBadge>
           <button className="link-button" onClick={query.reload}>Refresh →</button></div>} />
       <FilterBar>
-        <label>Status<select aria-label="Status" value={filters.status ?? "all"} onChange={event => setFilter("status", event.target.value)}>
+        <label>{t("Status")}<select aria-label={t("Status")} value={filters.status ?? "all"} onChange={event => setFilter("status", event.target.value)}>
           {statuses.map(value => <option key={value}>{value}</option>)}</select></label>
         <label>{t("Run kind")}<select aria-label="Run kind filter" value={filters.run_kind ?? "all"} onChange={event => setFilter("run_kind", event.target.value)}>
           {runKinds.map(value => <option key={value}>{value}</option>)}</select></label>
-        <label>Scope<select aria-label="Run scope filter" value={filters.run_scope ?? "all"} onChange={event => setFilter("run_scope", event.target.value)}>
+        <label>{t("Scope")}<select aria-label={t("Run scope filter")} value={filters.run_scope ?? "all"} onChange={event => setFilter("run_scope", event.target.value)}>
           {runScopes.map(value => <option key={value}>{value}</option>)}</select></label>
-        <label>Dataset<input aria-label="Dataset filter" value={filters.dataset_id ?? ""} placeholder="provider_bars"
+        <label>{t("Dataset")}<input aria-label={t("Dataset filter")} value={filters.dataset_id ?? ""} placeholder="provider_bars"
           onChange={event => setFilter("dataset_id", event.target.value)} /></label>
         <label>From<input aria-label="Runs created from" type="date" onChange={event => setFilter("created_from", dayToIso(event.target.value) ?? "")} /></label>
         <label>Through<input aria-label="Runs created through" type="date" onChange={event => setFilter("created_to", dayToIso(event.target.value, true) ?? "")} /></label>
@@ -148,10 +148,10 @@ export function RunsPage({ services, refreshToken, onMessage, onChanged }: {
 
       <div className="pager">
         <button className="secondary-button" aria-label={t("Previous page")} onClick={previousPage} disabled={!cursors.length}>
-          <ChevronLeft size={14} /> Previous</button>
+          <ChevronLeft size={14} /> {t("Previous")}</button>
         <span>Page {pageIndex + 1}{page ? ` · ${page.count} run(s)` : ""}</span>
         <button className="secondary-button" aria-label={t("Next page")} onClick={nextPage} disabled={!page?.has_more}>
-          <ChevronRight size={14} /> Next page</button>
+          <ChevronRight size={14} /> {t("Next")}</button>
         <span className="filter-note">Cursor paging is bound to these filters; changing a filter restarts at page 1.</span>
       </div>
     </section>
