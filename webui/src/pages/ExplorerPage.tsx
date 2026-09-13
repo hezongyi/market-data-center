@@ -407,13 +407,13 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
         <div><dt>Rows in selector</dt><dd>{view.rowCount == null ? "—" : view.rowCount.toLocaleString()}</dd></div>
         <div><dt>{view.kind === "economic" ? "Observation window" : "Observed window (UTC)"}</dt><dd className="mono">
           {view.kind === "economic"
-            ? `${view.minTs ?? "—"} → ${view.maxTs ?? "—"}`
+            ? view.minTs ? <>{utc(view.minTs)} → {utc(view.maxTs)}</> : "—"
             : view.minTs ? <>{utc(view.minTs)} → {utc(view.maxTs)}</> : "—"}</dd></div>
         {view.kind === "market" && <>
           <div><dt>Recipe</dt><dd className="mono">{view.recipeId ? `${view.recipeId}@${view.recipeVersion}` : "—"}</dd></div>
           <div><dt>Recipe status</dt><dd>{view.recipeStatus ?? <Unavailable label="Not published" />}</dd></div>
           <div><dt>Price basis</dt><dd>{view.priceBasis ?? "—"}</dd></div>
-          <div><dt>Input snapshots</dt><dd className="mono">{view.inputSnapshotIds.length ? view.inputSnapshotIds.join(", ") : "none published"}</dd></div>
+          <div><dt>Input snapshots</dt><dd className="mono">{view.inputSnapshotIds.length ? view.inputSnapshotIds.map(id => <CopyId key={id} value={id} />) : "none published"}</dd></div>
         </>}
         {view.qualityStatus && <div><dt>Quality status</dt><dd>{view.qualityStatus}</dd></div>}
         {view.latestCompleteBoundary && <div><dt>Latest complete boundary</dt><dd className="mono">{utc(view.latestCompleteBoundary)}</dd></div>}
