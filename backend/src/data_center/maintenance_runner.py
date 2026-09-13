@@ -28,6 +28,8 @@ from data_center.settings import Settings
 # Run receipts carry the error type name, so the provider-gap classification is
 # matched by name against this value.
 PROVIDER_GAP_ERROR = ProviderGapError.__name__
+# Window coverage the provider itself cannot satisfy; the platform never synthesizes it.
+PROVIDER_COVERAGE_FINDING = "coverage_not_ready"
 
 
 @dataclass(frozen=True)
@@ -99,9 +101,27 @@ def _coverage_failure(receipt: dict) -> dict | None:
     """Return the structured coverage finding from a failed worker run."""
     findings = (receipt.get("quality_summary") or {}).get("findings") or ()
     for finding in findings:
-        if finding.get("code") == "coverage_not_ready" and isinstance(finding.get("coverage"), dict):
+        if finding.get("code") == PROVIDER_COVERAGE_FINDING and isinstance(finding.get("coverage"), dict):
             return finding["coverage"]
     return None
+
+
+def _is_provider_gap_receipt(receipt: dict) -> bool:
+    """True when a failed window only reflects incomplete provider data.
+
+    The provider either holds no bars for the window at all (``ProviderGapError``)
+    or returns bars with interior minutes it does not have
+    (``coverage_not_ready``).  Neither is synthesized, so both are reported as
+    degraded.  Structural quality failures stay failures.
+    """
+    error_type = receipt.get("error_type")
+    if error_type == PROVIDER_GAP_ERROR:
+        return True
+    if error_type != "QualityError":
+        return False
+    findings = (receipt.get("quality_summary") or {}).get("findings") or ()
+    codes = {finding.get("code") for finding in findings}
+    return bool(codes) and codes <= {PROVIDER_COVERAGE_FINDING}
 
 
 def _isolate_incomplete_window(*, start: datetime, end: datetime,
@@ -174,7 +194,7 @@ def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
                 except (KeyError, TypeError, ValueError):
                     continue
         for finding in (run.get("quality_summary") or {}).get("findings") or ():
-            if finding.get("code") != "coverage_not_ready":
+            if finding.get("code") != PROVIDER_COVERAGE_FINDING:
                 continue
             coverage = finding.get("coverage") or {}
             seconds = int(coverage.get("timeframe_seconds") or 0)
@@ -192,7 +212,7 @@ def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
             recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
         findings = (run.get("quality_summary") or {}).get("findings") or ()
         for finding in findings:
-            if finding.get("code") != "coverage_not_ready":
+            if finding.get("code") != PROVIDER_COVERAGE_FINDING:
                 continue
             coverage = finding.get("coverage") or {}
             seconds = int(coverage.get("timeframe_seconds") or 0)
@@ -388,10 +408,11 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                                       "window": {"start": window_start.isoformat(),
                                                  "end": window_end.isoformat(),
                                                  "semantics": "half-open"}}
-                        if receipt.get("status") != "pass" and receipt.get("error_type") == PROVIDER_GAP_ERROR:
-                            # The provider holds no data for this window.  That is the
-                            # documented provider-gap case and is never synthesized, so it
-                            # is reported as degraded instead of failing the target.
+                        if receipt.get("status") != "pass" and _is_provider_gap_receipt(receipt):
+                            # The provider holds no data for this window, or holds it with
+                            # interior minutes missing.  That is the documented provider-gap
+                            # case and is never synthesized, so it is reported as degraded
+                            # instead of failing the target.
                             run_result["status"] = "degraded"
                         result["runs"].append(run_result)
                         if receipt.get("status") == "pass":

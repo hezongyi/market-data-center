@@ -323,3 +323,78 @@ def test_provider_gap_exception_during_submission_is_degraded(monkeypatch, tmp_p
     # Gap isolation may schedule a recovery window, which is degraded as well.
     assert target["runs"] and all(item["status"] == "degraded" for item in target["runs"])
     assert {item["error_type"] for item in target["runs"]} == {"ProviderGapError"}
+
+
+def _quality_receipt(code, *, coverage=None):
+    finding = {"severity": "error", "code": code}
+    if coverage is not None:
+        finding["coverage"] = coverage
+    return {"status": "failed", "error_type": "QualityError", "quality_summary":
+            {"status": "fail", "finding_count": 1, "findings": [finding]}, "row_count": None}
+
+
+COVERAGE_FINDING = {
+    "dataset_id": "provider_bars",
+    "selector": {"provider": "dukascopy", "symbol": "BTCUSD", "timeframe": "1m"},
+    "row_count": 20, "min_ts": "2026-09-12T02:21:00+00:00", "max_ts": "2026-09-12T02:41:00+00:00",
+    "duplicate_count": 0, "gap_count": 1, "expected_timestamp_count": 21,
+    "first_missing_ts": "2026-09-12T02:22:00+00:00",
+    "latest_complete_boundary": "2026-09-12T02:21:00+00:00", "timeframe_seconds": 60,
+}
+
+
+def _run_with_receipt(monkeypatch, tmp_path, receipt):
+    from data_center import maintenance_runner as module
+
+    start = datetime(2026, 9, 12, 2, 9, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 12, 3, 39, tzinfo=timezone.utc)
+    _gap_harness(monkeypatch, module, start, end)
+
+    def submit(_session, _base_url, method, path, **kwargs):
+        if method == "GET" and path == "/runs":
+            return []
+        return {"run_id": "run-1"}
+
+    monkeypatch.setattr(module, "_request", submit)
+    monkeypatch.setattr(module, "_wait_run", lambda _s, _b, _run_id, _deadline: dict(receipt))
+    return run_maintenance(
+        base_url="http://127.0.0.1:1", root=tmp_path / "lake", evidence_root=tmp_path / "evidence",
+        provider="dukascopy", symbols=["BTCUSD"], start=start, end=end,
+    )
+
+
+def test_incomplete_provider_coverage_is_degraded_not_failed(monkeypatch, tmp_path):
+    """The provider returning bars with interior minutes missing is still a provider gap."""
+    report = _run_with_receipt(
+        monkeypatch, tmp_path, _quality_receipt("coverage_not_ready", coverage=COVERAGE_FINDING))
+
+    assert report["result"] == "pass"
+    assert report["details"]["failed_target_count"] == 0
+    target = report["details"]["targets"][0]
+    assert target["status"] == "degraded"
+    assert target["failed_window_count"] == 0
+    assert target["degraded_window_count"] >= 1
+
+
+def test_structural_quality_failure_is_not_degraded(monkeypatch, tmp_path):
+    """A schema/structural quality failure must stay a failure."""
+    report = _run_with_receipt(monkeypatch, tmp_path, _quality_receipt("ohlc_inconsistent"))
+
+    assert report["result"] == "failed"
+    assert report["details"]["failed_target_count"] == 1
+    target = report["details"]["targets"][0]
+    assert target["status"] == "failed"
+    assert target["failed_window_count"] >= 1
+
+
+def test_mixed_quality_findings_stay_a_failure(monkeypatch, tmp_path):
+    """Coverage plus a structural finding is not an exclusively provider-coverage event."""
+    receipt = {"status": "failed", "error_type": "QualityError", "row_count": None, "quality_summary": {
+        "status": "fail", "finding_count": 2, "findings": [
+            {"severity": "error", "code": "coverage_not_ready", "coverage": COVERAGE_FINDING},
+            {"severity": "error", "code": "negative_volume"},
+        ]}}
+    report = _run_with_receipt(monkeypatch, tmp_path, receipt)
+
+    assert report["result"] == "failed"
+    assert report["details"]["targets"][0]["status"] == "failed"
