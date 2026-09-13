@@ -254,6 +254,70 @@ def test_quality_run_failure_keeps_the_terminal_receipt_immutable(tmp_path) -> N
         ledger.put(run_id, {**receipt, "status": "pass"})
 
 
+def seed_one_minute_bars(root, *, symbol: str = "UI_TEST", hours: int = 24) -> None:
+    """Publish an immutable raw 1m part so derived work has a real input."""
+    from datetime import timedelta
+
+    from data_center.domain.models import ProviderBar
+
+    start = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    rows = [ProviderBar(symbol=symbol, asset_class="test", provider="fixture", timeframe="1m",
+                        bar_ts=start + timedelta(minutes=index), open=100 + index, high=101 + index,
+                        low=99 + index, close=100.5 + index, volume=10 + index,
+                        ingest_ts=start, source_hash=f"seed-{index}")
+            for index in range(hours * 60)]
+    from storage_fixtures import write_provider_bars as publish_provider_bars
+
+    publish_provider_bars(root, rows, part_id="seed-1m")
+
+
+def test_parity_task_queues_a_verification_run_instead_of_a_derive(tmp_path) -> None:
+    root = tmp_path / "lake"
+    seed_one_minute_bars(root)
+    http = client(tmp_path)
+    request = ingest_request(run_kind="parity", recipe_id="utc-24x7-1m-to-1h-ohlcv", recipe_version="1",
+                             start="2026-03-01T00:00:00Z", end="2026-03-02T00:00:00Z")
+    response = http.post("/api/v1/maintenance/tasks", json=request)
+    assert response.status_code == 202, response.json()
+    envelope = response.json()["data"]
+    assert envelope["dataset_id"] == "market_bars"
+    assert envelope["input_snapshot_id"]
+    run = http.get(f"/api/v1/runs/{envelope['run_id']}").json()["data"]
+    assert run["run_kind"] == "parity"
+    assert run["status"] == "queued"
+
+    worker = LocalWorker(root, RunLedger(tmp_path / "runs.sqlite"))
+    assert worker.run_next() is True
+    receipt = http.get(f"/api/v1/runs/{envelope['run_id']}").json()["data"]
+    assert receipt["verification"]["publishes_parts"] is False
+    assert receipt["run_kind"] == "parity"
+
+
+def test_derive_task_queues_a_derive_run_with_its_input_snapshot(tmp_path) -> None:
+    root = tmp_path / "lake"
+    seed_one_minute_bars(root)
+    http = client(tmp_path)
+    response = http.post("/api/v1/maintenance/tasks", json=ingest_request(
+        run_kind="derive", recipe_id="utc-24x7-1m-to-1h-ohlcv", recipe_version="1",
+        start="2026-03-01T00:00:00Z", end="2026-03-02T00:00:00Z",
+    ))
+    assert response.status_code == 202, response.json()
+    envelope = response.json()["data"]
+    assert envelope["input_snapshot_id"]
+    run = http.get(f"/api/v1/runs/{envelope['run_id']}").json()["data"]
+    assert run["run_kind"] == "derive"
+    assert run["input_snapshot_id"] == envelope["input_snapshot_id"]
+
+    worker = LocalWorker(root, RunLedger(tmp_path / "runs.sqlite"))
+    assert worker.run_next() is True
+    receipt = http.get(f"/api/v1/runs/{envelope['run_id']}").json()["data"]
+    assert receipt["status"] == "pass"
+    assert receipt["row_count"] == 24
+    detail = http.get(f"/api/v1/runs/{envelope['run_id']}/detail").json()["data"]
+    assert detail["manifest_status"] == "published"
+    assert detail["selector"]["recipe_id"] == "utc-24x7-1m-to-1h-ohlcv"
+
+
 # -- run read models -----------------------------------------------------
 
 

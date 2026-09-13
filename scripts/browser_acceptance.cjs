@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -15,6 +16,7 @@ const key = "browser-acceptance-key";
 let api;
 let worker;
 let browser;
+let fredEndpoint;
 
 const commit = () => {
   try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(); }
@@ -67,6 +69,19 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
 (async () => {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
+  // Economic ingest is exercised end to end without contacting FRED: the
+  // configured endpoint points at a local fixture that speaks the same shape.
+  fredEndpoint = http.createServer((request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const payload = url.pathname.includes("/series/observations")
+      ? { observations: ["2026-01-01", "2026-01-02", "2026-01-03"].map((date, index) => ({
+          date, value: String(index + 1), realtime_start: date, realtime_end: "9999-12-31",
+        })) }
+      : { seriess: [{ frequency: "Daily", units: "Index" }] };
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(payload));
+  });
+  const fredPort = await new Promise(resolve => fredEndpoint.listen(0, "127.0.0.1", () => resolve(fredEndpoint.address().port)));
   const childEnv = {
     ...process.env,
     PYTHONPATH: path.join(repo, "backend/src"),
@@ -77,6 +92,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     DATACENTER_LEDGER_PATH: path.join(temp, "canonical/audit/data_center.sqlite"),
     DATACENTER_EVIDENCE_ROOT: path.join(temp, "evidence"),
     DATACENTER_WEBUI_DIST: path.join(repo, "webui/dist"),
+    // The local fixture ignores this placeholder credential; no real provider
+    // is contacted and the value is never logged or persisted.
+    FRED_API_KEY: "browser-acceptance-placeholder",
+    DATACENTER_FRED_ENDPOINT: `http://127.0.0.1:${fredPort}/fred/series/observations`,
+    DATACENTER_FRED_METADATA_ENDPOINT: `http://127.0.0.1:${fredPort}/fred/series`,
     // Pin the measured free ratio so the warning state is reproducible on any host.
     // A 0.99 warning threshold only classified as "warning" when the filesystem
     // backing the temporary root happened to be more than 1% full, so on a
@@ -96,6 +116,27 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     "    ledger.fail_job(claimed['job_id'], run_id, 'acceptance dead letter')",
     "print(run_id)",
   ].join("\n"), childEnv.DATACENTER_LEDGER_PATH], { cwd: repo, env: childEnv, encoding: "utf8" }).trim();
+  // Seed a governed 1m raw part so the derive and parity flows have a real
+  // immutable input snapshot instead of a synthetic one.
+  execFileSync(python, ["-c", [
+    "import sys",
+    "from datetime import datetime, timedelta, timezone",
+    "from pathlib import Path",
+    "from data_center.catalog.manifest import build_manifest, write_manifest",
+    "from data_center.domain.models import ProviderBar",
+    "from data_center.storage.parquet import write_provider_bars",
+    "root = Path(sys.argv[1])",
+    "start = datetime(2026, 3, 1, tzinfo=timezone.utc)",
+    "rows = [ProviderBar(symbol='UI_TEST', asset_class='test', provider='fixture', timeframe='1m',",
+    "                    bar_ts=start + timedelta(minutes=index), open=100 + index, high=101 + index,",
+    "                    low=99 + index, close=100.5 + index, volume=10 + index,",
+    "                    ingest_ts=start, source_hash=f'seed-{index}') for index in range(1440)]",
+    "paths = write_provider_bars(root, rows, part_id='seed-1m')",
+    "write_manifest(root, build_manifest(root, run_id='seed-1m', dataset_id='provider_bars',",
+    "    schema_version='provider_bars.v1', paths=paths, row_count=len(rows),",
+    "    quality_summary={'status': 'pass', 'finding_count': 0, 'findings': []}))",
+    "print(len(rows))",
+  ].join("\n"), childEnv.DATACENTER_CANONICAL_ROOT], { cwd: repo, env: childEnv, encoding: "utf8" }).trim();
   api = spawn(python, ["-m", "data_center.api"], { cwd: repo, env: childEnv, stdio: "ignore" });
   worker = spawn(python, ["-m", "data_center.worker_main"], { cwd: repo, env: childEnv, stdio: "ignore" });
 
@@ -107,6 +148,15 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     });
     const payload = await response.json();
     return { response, payload };
+  };
+  // A submission is verified through the API, never through a rendered list
+  // that may still show the previous task.
+  const findNewRun = async (before, kind) => {
+    const known = new Set(before.map(run => run.run_id));
+    return waitFor(async () => {
+      const created = (await call("GET", "/runs")).find(run => !known.has(run.run_id) && run.run_kind === kind);
+      return created ? created.run_id : false;
+    }, `no new ${kind} run was queued`);
   };
   const call = async (method, route, body) => {
     const { response, payload } = await envelope(method, route, body);
@@ -156,7 +206,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(base);
-    await page.locator(".sidebar .status.ok").waitFor();
+    await page.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
     await page.getByText("Capacity warning", { exact: false }).first().waitFor();
 
@@ -229,7 +279,9 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Next page", exact: true }).click();
     await page.getByText(/Page 2 · \d+ rows/, { exact: false }).waitFor();
     await page.getByRole("button", { name: "Economic", exact: true }).click();
-    await page.getByLabel("Series ID").fill("PAYEMS");
+    // A series that is never ingested keeps the empty state deterministic even
+    // after the maintenance flows have published PAYEMS.
+    await page.getByLabel("Series ID").fill("NO_SUCH_SERIES");
     await page.getByRole("button", { name: "Load observations", exact: true }).click();
     await page.getByText("No observations in this page.", { exact: true }).waitFor();
     await page.getByLabel("Query mode").selectOption("pit");
@@ -240,7 +292,16 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "quality", exact: true }).click();
     await page.getByLabel("Finding code").waitFor();
     await page.getByLabel("Finding from date").waitFor();
-    await page.getByText("No quality findings.", { exact: true }).waitFor();
+    // Degraded verifications record findings, so the empty state is only
+    // asserted while no finding exists yet; afterwards the same filters must
+    // surface the recorded coverage finding.
+    const recordedFindings = await call("GET", "/quality/findings");
+    if (recordedFindings.length === 0) {
+      await page.getByText("No quality findings.", { exact: true }).waitFor();
+    } else {
+      await page.getByLabel("Severity").selectOption("warning");
+      await page.locator("table tbody tr").filter({ hasText: "coverage_degraded" }).first().waitFor();
+    }
 
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Capacity and recovery", { exact: true }).waitFor();
@@ -263,6 +324,169 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       return value.status === "pass" ? value : false;
     }, "UI ingest did not reach terminal pass");
 
+    // ---- v0.4 unified maintenance workbench -------------------------------
+    await page.getByRole("button", { name: "maintenance", exact: true }).click();
+    await page.getByRole("radio", { name: "Provider ingest", exact: true }).waitFor();
+    await page.getByLabel("Run scope").selectOption("acceptance");
+
+    // Capacity protection is visible in the preview, before any write.
+    await page.getByRole("radio", { name: "Backfill", exact: true }).click();
+    await page.getByLabel("Task provider").selectOption("fixture");
+    await page.getByLabel("Task symbol").fill("UI_TEST");
+    await page.getByLabel("Asset class").fill("test");
+    await page.getByLabel("Task start date").fill("2026-01-01");
+    await page.getByLabel("Task end date").fill("2026-04-01");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Blocked by capacity", { exact: true }).waitFor();
+    await page.getByText("capacity_warning_backfill", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Confirm and queue" }).isDisabled(), true,
+      "a capacity-protected task must not be submittable");
+
+    // A refused write never queues work: validate, then submit with a bad key.
+    await page.getByRole("radio", { name: "Provider ingest", exact: true }).click();
+    await page.getByLabel("Task start date").fill("2026-01-01");
+    await page.getByLabel("Task end date").fill("2026-01-03");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Ready to submit", { exact: true }).waitFor();
+    const beforeRefused = (await call("GET", "/runs")).length;
+    const keyInput = page.getByLabel("API key");
+    if (!(await keyInput.isVisible().catch(() => false))) {
+      await page.getByRole("button", { name: "Session access", exact: true }).click();
+    }
+    await keyInput.fill("incorrect-key");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.getByText("Not authorized", { exact: true }).waitFor();
+    assert.equal((await call("GET", "/runs")).length, beforeRefused, "a refused write must not queue a run");
+
+    // The authorized path queues one run and tracks it to a terminal receipt.
+    await page.getByLabel("API key").fill(key);
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    const beforeIngest = await call("GET", "/runs");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.locator(".notice").filter({ hasText: "Queued ingest" }).waitFor();
+    const maintenanceRunId = await findNewRun(beforeIngest, "ingest");
+    await page.locator(".track-row .mono").filter({ hasText: maintenanceRunId }).waitFor();
+    const maintenanceRun = await waitFor(async () => {
+      const value = await call("GET", "/runs/" + maintenanceRunId);
+      return value.status === "pass" ? value : false;
+    }, "maintenance ingest did not reach terminal pass");
+    assert.equal(maintenanceRun.run_kind, "ingest");
+    assert.equal(maintenanceRun.run_scope, "acceptance");
+    await page.getByText("Passed", { exact: true }).first().waitFor();
+
+    // Derive follows the same contract and consumes the seeded 1m snapshot.
+    await page.getByRole("radio", { name: "Derive", exact: true }).click();
+    await page.getByLabel("Task symbol").fill("UI_TEST");
+    await page.getByLabel("Recipe", { exact: true }).selectOption("utc-24x7-1m-to-1h-ohlcv");
+    await page.getByLabel("Task start date").fill("2026-03-01");
+    await page.getByLabel("Task end date").fill("2026-03-02");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Ready to submit", { exact: true }).waitFor();
+    await page.getByText("input part(s)", { exact: false }).waitFor();
+    const beforeDerive = await call("GET", "/runs");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.locator(".notice").filter({ hasText: "Queued derive" }).waitFor();
+    const deriveRunId = await findNewRun(beforeDerive, "derive");
+    const deriveRun = await waitFor(async () => {
+      const value = await call("GET", "/runs/" + deriveRunId);
+      return value.status === "pass" ? value : false;
+    }, "derive run did not reach terminal pass");
+    assert.ok(deriveRun.input_snapshot_id, "derive run must record its input snapshot");
+    const marketCoverage = await call("GET", "/market-bars/coverage?provider=fixture&symbol=UI_TEST&timeframe=1h"
+      + "&price_basis=raw&recipe_id=utc-24x7-1m-to-1h-ohlcv&recipe_version=1&start=2026-03-01T00:00:00Z&end=2026-03-02T00:00:00Z");
+    assert.equal(marketCoverage.readiness_status, "ready");
+    assert.equal(marketCoverage.recipe_status, "registered");
+
+    // Parity verifies the derived layer against the raw snapshot it came from.
+    await page.getByRole("radio", { name: "Parity check", exact: true }).click();
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("parity_read_only", { exact: true }).waitFor();
+    const beforeParity = await call("GET", "/runs");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.locator(".notice").filter({ hasText: "Queued parity" }).waitFor();
+    const parityRunId = await findNewRun(beforeParity, "parity");
+    const parityRun = await waitFor(async () => {
+      const value = await call("GET", "/runs/" + parityRunId);
+      return value.status === "pass" ? value : false;
+    }, "parity verification did not reach terminal pass");
+    assert.equal(parityRun.verification.publishes_parts, false);
+    assert.equal(parityRun.manifest_status, undefined);
+
+    // A quality check over the controlled fixture reports a degraded dataset
+    // without failing the verification itself.
+    await page.getByRole("radio", { name: "Quality check", exact: true }).click();
+    await page.getByLabel("Task timeframe").selectOption("1m");
+    await page.getByLabel("Task start date").fill("2026-01-01");
+    await page.getByLabel("Task end date").fill("2026-01-03");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Ready to submit", { exact: true }).waitFor();
+    const beforeQuality = await call("GET", "/runs");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.locator(".notice").filter({ hasText: "Queued quality" }).waitFor();
+    const qualityRunId = await findNewRun(beforeQuality, "quality");
+    const qualityRun = await waitFor(async () => {
+      const value = await call("GET", "/runs/" + qualityRunId);
+      return value.status === "pass" ? value : false;
+    }, "quality verification did not reach terminal pass");
+    assert.equal(qualityRun.verification.publishes_parts, false);
+    const qualityDetail = await call("GET", "/runs/" + qualityRunId + "/detail");
+    assert.equal(qualityDetail.outcome, "degraded");
+    assert.equal(qualityDetail.manifest_status, "not_applicable");
+    assert.ok(qualityDetail.degraded_reasons.length > 0, "a degraded verification must explain itself");
+    assert.ok(qualityDetail.finding_count > 0, "a coverage gap must be recorded as a finding");
+    await page.getByText("Degraded", { exact: true }).first().waitFor();
+
+    // Economic ingest runs through the same contract against the fixture endpoint.
+    await page.getByRole("radio", { name: "Provider ingest", exact: true }).click();
+    await page.getByLabel("Task provider").selectOption("fred");
+    await page.getByLabel("Task series ID").fill("PAYEMS");
+    await page.getByLabel("Task start date").fill("2026-01-01");
+    await page.getByLabel("Task end date").fill("2026-01-05");
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.getByText("Ready to submit", { exact: true }).waitFor();
+    const beforeEconomic = await call("GET", "/runs");
+    await page.getByRole("button", { name: "Confirm and queue" }).click();
+    await page.locator(".notice").filter({ hasText: "Queued ingest" }).waitFor();
+    const economicRunId = await findNewRun(beforeEconomic, "ingest");
+    const economicRun = await waitFor(async () => {
+      const value = await call("GET", "/runs/" + economicRunId);
+      return value.status === "pass" ? value : false;
+    }, "economic ingest did not reach terminal pass");
+    assert.equal(economicRun.dataset_id, "economic_observations");
+    assert.ok(economicRun.row_count > 0);
+
+    // Capacity protection also refuses a direct write and audits the refusal.
+    const runsBeforeProtected = (await call("GET", "/runs")).length;
+    const protectedAttempt = await envelope("POST", "/maintenance/tasks", {
+      run_kind: "backfill", run_scope: "acceptance", provider: "fixture", symbol: "UI_TEST",
+      asset_class: "test", timeframe: "1d", start: "2026-01-01T00:00:00Z", end: "2026-04-01T00:00:00Z",
+    });
+    assert.equal(protectedAttempt.response.status, 507);
+    assert.equal(protectedAttempt.payload.errors[0].code, "capacity_protected");
+    assert.equal((await call("GET", "/runs")).length, runsBeforeProtected,
+      "a capacity-protected write must not queue a run");
+
+    // The write audit trail records actor, selector and outcome.
+    const audit = await call("GET", "/operations/audit?limit=20");
+    assert.ok(audit.some(entry => entry.outcome === "protected"), "capacity refusal must be audited");
+    assert.ok(audit.some(entry => entry.outcome === "queued" && entry.run_kind === "quality"));
+    assert.ok(audit.some(entry => entry.outcome === "queued" && entry.run_kind === "parity"));
+    assert.ok(audit.every(entry => (entry.actor ?? "").startsWith("api-key:")),
+      "the audit trail must never store a raw credential");
+
+    await page.getByRole("button", { name: "runs", exact: true }).click();
+    await page.getByLabel("Run kind filter").selectOption("quality");
+    await page.getByLabel("Run scope filter").selectOption("acceptance");
+    const qualityRow = page.locator("tr").filter({ hasText: qualityRunId });
+    await qualityRow.waitFor();
+    await qualityRow.click();
+    await page.getByRole("complementary", { name: qualityRunId }).waitFor();
+    await page.getByText("Verification runs record findings and publish no canonical manifest.", { exact: true }).waitFor();
+    await page.getByText("Retry chain", { exact: false }).first().waitFor();
+    await page.getByRole("button", { name: "Close details", exact: true }).last().click();
+    await page.getByRole("button", { name: "Next page", exact: true }).isDisabled();
+    await page.getByText(/Page 1 · \d+ run\(s\)/, { exact: false }).waitFor();
+
     const widths = await page.evaluate(() => ({
       body: document.body.scrollWidth, html: document.documentElement.scrollWidth, inner: innerWidth,
       overflow: [...document.querySelectorAll("*")].filter(element => element.scrollWidth > element.clientWidth + 1).slice(0, 10).map(element => ({ tag: element.tagName, className: element.className, scroll: element.scrollWidth, client: element.clientWidth })),
@@ -273,6 +497,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     results.push({ viewport, status: "pass" });
     await page.close();
   }
+
   const loadingPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   await loadingPage.route("**/api/v1/metrics", async route => {
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -280,7 +505,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   });
   await loadingPage.goto(base);
   await loadingPage.getByLabel("Loading").first().waitFor();
-  await loadingPage.locator(".sidebar .status.ok").waitFor();
+  await loadingPage.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
   await loadingPage.close();
 
   const errorPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
@@ -300,7 +525,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "bars_coverage", "explicit_cursor_next_page", "economic_current_query", "economic_pit_validation",
       "bars_date_window_validation", "catalog_explorer_link", "quality_filters", "quality_empty_state",
       "operations_view", "active_alerts", "successful_ingest", "collapsible_sidebar",
-      "loading_state", "api_error_state", "mobile_layout", "no_javascript_errors", "webui_api_deployment_identity"],
+      "loading_state", "api_error_state", "mobile_layout", "no_javascript_errors", "webui_api_deployment_identity",
+      "maintenance_run_kinds", "maintenance_capacity_protection", "maintenance_unauthorized_write",
+      "maintenance_queued_ingest", "maintenance_derive_snapshot", "maintenance_market_coverage",
+      "maintenance_parity_read_only", "maintenance_quality_degraded", "maintenance_economic_ingest",
+      "maintenance_protected_write", "maintenance_write_audit", "run_detail_drawer",
+      "run_kind_scope_filters", "run_cursor_pager", "maintenance_provider_ingest"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
@@ -312,6 +542,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   process.stderr.write(JSON.stringify(report) + "\n");
   process.exitCode = 1;
 }).finally(async () => {
+  if (fredEndpoint) fredEndpoint.close();
   if (browser) await browser.close();
   for (const child of [worker, api]) {
     if (child && child.exitCode === null) child.kill("SIGTERM");

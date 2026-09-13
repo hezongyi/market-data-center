@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { ConfirmDialog, EmptyState, MetricCard, PanelHeading, StatusBadge } from "../components/ui";
 import { createDataCenterClient, type IngestJob, type Metrics, type ReadyState, type RunScope } from "../lib/api";
+import type { Services } from "../services";
 
 const bytes = (value?: number) => value == null ? "—" : `${(value / 1024 ** 3).toFixed(1)} GiB`;
 
@@ -14,9 +15,10 @@ type OperationsPageProps = {
   metrics: Metrics | null;
   onChanged: () => void;
   onMessage: (message: string) => void;
+  services: Services;
 };
 
-export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage }: OperationsPageProps) {
+export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, services }: OperationsPageProps) {
   const [provider, setProvider] = useState("fixture");
   const [symbol, setSymbol] = useState("UI_TEST");
   const [assetClass, setAssetClass] = useState("crypto");

@@ -439,16 +439,28 @@ def submit_task(*, request: MaintenanceTaskRequest, ledger, root: Path, capacity
         })]
     elif dataset_id == DERIVED_DATASET:
         context = _derived_context(task, request, root)
-        job = DeriveJob(
-            job_id=task["task_id"], provider=request.provider, symbol=request.symbol or "",
-            recipe_id=request.recipe_id or "", recipe_version=request.recipe_version or "",
-            start=request.start, end=request.end,
-            input_snapshot_id=context["snapshot"].snapshot_id, run_scope=request.run_scope,
-        )
-        from data_center.ingest.worker import LocalWorker
-
         input_snapshot_id = context["snapshot"].snapshot_id
-        run_ids = [LocalWorker(root, ledger).submit_derive(job)]
+        if request.run_kind == "parity":
+            # A parity check verifies the derived layer and publishes nothing;
+            # it must never be submitted as a derive job.
+            run_ids = [ledger.enqueue_job({
+                "job_id": task["task_id"], "dataset_id": DERIVED_DATASET, "provider": request.provider,
+                "symbol": request.symbol, "timeframe": context["recipe"].target_timeframe,
+                "price_basis": context["price_basis"], "recipe_id": request.recipe_id,
+                "recipe_version": request.recipe_version, "input_snapshot_id": input_snapshot_id,
+                "start": _iso(request.start), "end": _iso(request.end),
+                "run_kind": "parity", "run_scope": request.run_scope, "request_id": request_id,
+            })]
+        else:
+            from data_center.ingest.worker import LocalWorker
+
+            job = DeriveJob(
+                job_id=task["task_id"], provider=request.provider, symbol=request.symbol or "",
+                recipe_id=request.recipe_id or "", recipe_version=request.recipe_version or "",
+                start=request.start, end=request.end,
+                input_snapshot_id=input_snapshot_id, run_scope=request.run_scope,
+            )
+            run_ids = [LocalWorker(root, ledger).submit_derive(job)]
     else:  # pragma: no cover - evaluate_task rejects unknown datasets
         raise MaintenanceTaskError(f"unsupported dataset: {dataset_id}", code="unsupported_dataset")
 
