@@ -1,8 +1,8 @@
 # Maintenance Scheduler 设计与验收规范
 
-日期：2026-09-14  
-状态：planned  
-前置版本：WebUI v0.5 任务中心  
+日期：2026-09-14
+状态：in_progress
+前置版本：WebUI v0.5 任务中心
 关联文档：`docs/specs/2026-09-13-webui-v0.5-usability-and-access.md`
 
 ## 背景
