@@ -224,7 +224,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope({"username": _sessions[session][0], "expires_at": _sessions[session][1]})
 
     @app.post(f"{config.api_prefix}/auth/change-password")
-    def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session")):
+    def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session"),
+                             x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        # Keep the protected-route contract's stable API-key failure response,
+        # then require an active browser session before rotating credentials.
+        require_api_key(config, x_api_key, session)
         if not session or session not in _sessions or _sessions[session][1] <= time.time():
             raise HTTPException(status_code=401, detail="not authenticated")
         current, replacement = str(payload.get("current_password", "")), str(payload.get("new_password", ""))
