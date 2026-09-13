@@ -7,7 +7,8 @@
 3. [WebUI 使用手册](webui-user-guide.md)：控制台各工作区的用途、操作步骤、状态语义与故障排查（面向使用者）。
 4. [现行 specs](specs/)：按日期和状态查看设计规范；`superseded` 文档仅作历史背景。
 5. [API/WebUI contract](api-and-webui-contract.md)、[dataset contract](dataset-contract.md)、[ingest contract](ingest-contract.md)：接口和数据不变量。
-6. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
+6. [Agent 协作约定](agent-collaboration.md)：issue 上报身份标注、`status:*` 标签状态机、认领与租约、agent PR 的合并门槛。
+7. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
 
 ## 状态规则
 

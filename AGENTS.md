@@ -51,6 +51,14 @@ This file applies to the whole repository. Read the referenced release and opera
 - Do not use an older successful run from the same branch as evidence for a newer commit. Confirm workflow `head_sha` matches the commit being merged or released.
 - OAuth tokens, proxy URLs, API keys, and machine-local paths belong in user configuration or ignored files. Never print credentials or commit them.
 
+## Issue Collaboration
+
+- Issues are the unit of work for multiple agents. Follow `docs/agent-collaboration.md`: it defines the provenance block (`agent-report`), the `status:*` labels, the claim protocol with its 24h lease, and the discussion rules.
+- Claim before working, one owner per issue, and release the claim when you stop. Use `python scripts/agent_claim.py list --claimable`, `claim`, `progress`, `release`, and `annotate` instead of hand-rolling the API calls.
+- Report issues with evidence: a `file:line` reference or a reproducible command with its output, plus the baseline (version, commit, deployment id). Never present "not found" as "does not exist".
+- An issue reported by an agent is declared as such (label `agent-reported` plus the invisible `agent-report` metadata block). The GitHub author is the credential owner, not the agent.
+- **Agent-authored pull requests require a human maintainer's approval before merge.** A green `verify` run is necessary but not sufficient.
+
 ## Release Operations
 
 - Follow `docs/release-checklist.md`, `docs/operations-runbook.md`, and `docs/specs/2026-09-10-release-and-operational-sustainability.md`.
