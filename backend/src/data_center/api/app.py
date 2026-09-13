@@ -115,9 +115,9 @@ def _save_auth_state(config: Settings) -> None:
             json.dump(payload, handle)
             handle.flush()
             os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(config.auth_state_path)
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-    temporary.chmod(0o600)
-    temporary.replace(config.auth_state_path)
     config.auth_state_path.chmod(0o600)
 
 
