@@ -598,7 +598,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
       {(coverage.view.ready_intervals ?? []).length > 0
         ? <ul className="issue-list" aria-label="Ready intervals">
           {(coverage.view.ready_intervals ?? []).slice(0, 8).map(interval => <li key={`${interval.start}-${interval.end}`} className="issue info">
-            <Layers size={13} /><span className="mono">{interval.start} → {interval.end}</span>
+            <Layers size={13} /><span className="mono"><TimeDisplay value={interval.start} /> → <TimeDisplay value={interval.end} /></span>
             <code>{interval.semantics ?? "half-open"}</code>
           </li>)}
           {(coverage.view.ready_intervals ?? []).length > 8 && <li className="issue info">

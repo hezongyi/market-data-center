@@ -126,7 +126,7 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
     { accessorKey: "run_scope", header: "Scope", cell: info => String(info.getValue() ?? "—") },
     { accessorKey: "dataset_id", header: "Dataset", cell: info => String(info.getValue() ?? "—") },
     { id: "selector", header: "Selector", cell: ({ row }) => <span className="mono">{selectorText(row.original.selector)}
-      {row.original.time_range?.start && <small>{row.original.time_range.start} → {row.original.time_range.end ?? "—"}</small>}</span> },
+      {row.original.time_range?.start && <small><TimeDisplay value={row.original.time_range.start} /> → <TimeDisplay value={row.original.time_range.end} /></small>}</span> },
     { accessorKey: "outcome", header: "Outcome", cell: ({ row }) => <div className="status-cell">
       <StatusBadge tone={outcomeTone(row.original.outcome)}>{outcomeIcon(row.original.outcome)}{row.original.outcome}</StatusBadge>
       {row.original.code && <span className="stage-chip">{row.original.code}</span>}

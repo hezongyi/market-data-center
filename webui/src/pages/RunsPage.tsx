@@ -219,7 +219,7 @@ function RunDetailBody({ run, services }: { run: RunDetail; services: Services }
       <h3 className="detail-heading"><Layers size={14} /> Windows</h3>
       <ol className="retry-chain">{run.windows?.map(window => <li key={window.ordinal}>
         <span className="stage-chip">#{window.ordinal} {window.reason ?? "window"}</span>
-        <span className="mono">{window.start} → {window.end}</span>
+        <span className="mono"><TimeDisplay value={window.start} /> → <TimeDisplay value={window.end} /></span>
         <span className="filter-note">{window.row_count ?? 0} row(s)</span>
       </li>)}</ol>
     </>}
