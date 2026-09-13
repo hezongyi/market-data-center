@@ -107,13 +107,15 @@ def _save_auth_state(config: Settings) -> None:
     config.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"password_hash": config.auth_password_hash,
                "sessions": {k: [v[0], v[1]] for k, v in _sessions.items() if v[1] > time.time()}}
+    lock_path = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".lock")
     temporary = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        json.dump(payload, handle)
-        handle.flush()
-        os.fsync(handle.fileno())
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
     temporary.chmod(0o600)
     temporary.replace(config.auth_state_path)
     config.auth_state_path.chmod(0o600)
@@ -271,10 +273,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if username != config.auth_username or len(password) < 12:
             raise HTTPException(status_code=422, detail="username or password does not meet requirements")
         with _auth_lock:
-            if config.auth_password_hash:
-                raise HTTPException(status_code=409, detail="authentication is already initialized")
-            config.auth_password_hash = _password_hash(password)
-            _save_auth_state(config)
+            if config.auth_state_path:
+                lock_path = config.auth_state_path.with_suffix(config.auth_state_path.suffix + ".lock")
+                with lock_path.open("a+", encoding="utf-8") as lock_handle:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                    if config.auth_state_path.exists():
+                        try:
+                            if json.loads(config.auth_state_path.read_text()).get("password_hash"):
+                                raise HTTPException(status_code=409, detail="authentication is already initialized")
+                        except ValueError:
+                            pass
+                    config.auth_password_hash = _password_hash(password)
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                _save_auth_state(config)
+            else:
+                config.auth_password_hash = _password_hash(password)
+                _save_auth_state(config)
         return api_envelope({"initialized": True, "username": username})
 
     @app.post(f"{config.api_prefix}/auth/logout")
