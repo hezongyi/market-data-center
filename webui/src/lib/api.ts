@@ -608,7 +608,7 @@ export function createDataCenterClient(apiKey: string) {
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
     if (apiKey) headers.set("X-API-Key", apiKey);
-    const response = await fetch(`/api/v1${path}`, { ...init, headers });
+    const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: "include" });
     let payload: Envelope<T>;
     try {
       payload = await response.json() as Envelope<T>;
@@ -629,6 +629,10 @@ export function createDataCenterClient(apiKey: string) {
   };
 
   return {
+    auth: {
+      login: (username: string, password: string) => request<{ username: string }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+      logout: () => request<{ logged_out: boolean }>("/auth/logout", { method: "POST" }),
+    },
     // Readiness intentionally accepts HTTP 503: the API returns structured degraded state
     // so the console can keep reads visible while protecting writes when necessary.
     ready: () => request<ReadyState>("/health/ready", {}, { allowStatuses: [503] }),
