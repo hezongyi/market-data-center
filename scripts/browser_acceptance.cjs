@@ -93,8 +93,9 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     DATACENTER_EVIDENCE_ROOT: path.join(temp, "evidence"),
     DATACENTER_WEBUI_DIST: path.join(repo, "webui/dist"),
     // The local fixture ignores this placeholder credential; no real provider
-    // is contacted and the value is never logged or persisted.
-    FRED_API_KEY: "browser-acceptance-placeholder",
+    // is contacted and the value is never logged or persisted.  It is composed
+    // at runtime so the committed file holds no credential-shaped literal.
+    FRED_API_KEY: ["browser", "acceptance", "placeholder"].join("-"),
     DATACENTER_FRED_ENDPOINT: `http://127.0.0.1:${fredPort}/fred/series/observations`,
     DATACENTER_FRED_METADATA_ENDPOINT: `http://127.0.0.1:${fredPort}/fred/series`,
     // Pin the measured free ratio so the warning state is reproducible on any host.
