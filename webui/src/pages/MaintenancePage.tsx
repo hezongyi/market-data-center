@@ -86,7 +86,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
     { accessorKey: "run_kind", header: "Kind" },
     { accessorKey: "status", header: "Status", cell: info => <StatusBadge tone={tone(String(info.getValue()))}>{String(info.getValue())}</StatusBadge> },
     { accessorKey: "updated_at", header: "Updated", cell: info => <TimeDisplay value={String(info.getValue() ?? "")} /> },
-    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload())}>{row.status === "paused" ? "Enable" : "Pause"}</button>; } },
+    { accessorKey: "task_id", header: "Actions", cell: info => { const id = String(info.getValue()); const row = info.row.original; return <button className="link-button" onClick={() => void services.maintenance.updateStatus(id, row.status === "paused" ? "enabled" : "paused").then(() => maintenanceTasks.reload()).catch(error => onMessage(error instanceof Error ? error.message : "Unable to update task"))}>{row.status === "paused" ? "Enable" : "Pause"}</button>; } },
   ], []);
 
   // The platform publishes which dataset each run kind can target; the console
@@ -296,7 +296,7 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
 
     <section className="panel" aria-label="Maintenance task list">
       <PanelHeading eyebrow="Maintenance tasks" title="Task list" action={<button className="link-button" onClick={() => maintenanceTasks.reload()}>Refresh</button>} />
-      <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label></FilterBar>
+      <FilterBar><label>Status<select value={taskFilter} onChange={event => setTaskFilter(event.target.value)}><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="paused">Paused</option><option value="enabled">Enabled</option><option value="pass">Passed</option><option value="failed">Failed</option></select></label></FilterBar>
       {maintenanceTasks.status === "loading" ? <LoadingSkeleton rows={3} /> : maintenanceTasks.status === "error" ? <p className="protected-copy">Unable to load maintenance tasks. Please refresh.</p> : <DataTable data={(maintenanceTasks.data ?? []).filter(task => !taskFilter || task.status === taskFilter)} columns={maintenanceColumns} empty="No maintenance tasks recorded." />}
     </section>
     {(submissions.length > 0 || tracked.length > 0) && <section className="panel" aria-label="Submitted tasks">

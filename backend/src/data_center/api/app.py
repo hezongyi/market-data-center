@@ -481,6 +481,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail="status must be paused or enabled")
         task = ledger.update_maintenance_task_status(task_id, status)
         if task is None: raise HTTPException(status_code=404, detail="maintenance task not found")
+        ledger.record_write_audit({"action": f"maintenance.task.{status}", "actor": operator_identity(request, config), "request_id": current_request_id(), "task_id": task_id, "run_ids": task.get("run_ids", []), "run_kind": task.get("run_kind"), "run_scope": task.get("run_scope"), "dataset_id": task.get("dataset_id"), "outcome": "updated", "code": None, "message": status})
         return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/maintenance/tasks", status_code=202)
