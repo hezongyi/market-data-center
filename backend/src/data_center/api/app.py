@@ -27,6 +27,7 @@ from data_center.control_plane import timeframe_delta
 from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.maintenance_tasks import (
+    RUN_SCOPES,
     MaintenanceTaskError,
     MaintenanceTaskRequest,
     evaluate_with_capacity,
@@ -69,12 +70,16 @@ def require_api_key(config: Settings, provided: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
-def api_envelope(data, *, meta: dict | None = None, errors: list[dict] | None = None) -> dict:
-    """Build the versioned response envelope without duplicating its shape."""
+def api_envelope(data, *, meta: dict | None = None) -> dict:
+    """Build the versioned success envelope without duplicating its shape.
+
+    Failure paths keep their own handlers: they answer with distinct status
+    codes and, for capacity protection, a structured ``data`` payload.
+    """
     response_meta = {"request_id": current_request_id(), "schema_version": "v1"}
     if meta:
         response_meta.update(meta)
-    return {"data": data, "meta": response_meta, "errors": errors or []}
+    return {"data": data, "meta": response_meta, "errors": []}
 
 
 def operator_identity(request: Request, config: Settings) -> str:
@@ -256,14 +261,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get(f"{config.api_prefix}/health")
     def health(request: Request) -> dict:
-        return {
-            "data": {"status": "ok"},
-            "meta": {
-                "request_id": current_request_id(),
-                "schema_version": "v1",
-            },
-            "errors": [],
-        }
+        return api_envelope({"status": "ok"})
 
     @app.get(f"{config.api_prefix}/health/live")
     def health_live(request: Request) -> dict:
@@ -294,7 +292,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status = "ready" if ready else "not_ready"
         except (OSError, sqlite3.Error):
             status_code, status, age, capacity, ready, snapshot = 503, "not_ready", None, None, False, None
-        return JSONResponse(status_code=status_code, content={"data": {
+        return JSONResponse(status_code=status_code, content=api_envelope({
             "status": status, "read_status": "available" if storage_ready else "unavailable",
             "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
             "capacity_status": capacity["status"] if capacity else "unknown",
@@ -302,7 +300,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
             "deployment_id": identity["deployment_id"],
-        }, "meta": {"request_id": current_request_id(), "schema_version": "v1"}, "errors": []})
+        }))
 
     @app.get(f"{config.api_prefix}/metrics")
     def metrics() -> dict:
@@ -324,8 +322,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   run_scope=run_scope, provider=provider, symbol=symbol,
                                   created_from=created_from, created_to=created_to,
                                   page_size=page_size, cursor=cursor)
-        meta = {"request_id": current_request_id(), "schema_version": "v1",
-                "count": page["page"]["count"], "page": page["page"], "filters": page["filters"]}
+        meta = {"count": page["page"]["count"], "page": page["page"], "filters": page["filters"]}
         if page["warnings"]:
             meta["warnings"] = page["warnings"]
         return api_envelope(page["runs"], meta=meta)
@@ -396,26 +393,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
-    def retry(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
+    def retry(run_id: str, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        capacity_policy.require_ingest_capacity(config.canonical_root)
+        actor = operator_identity(http_request, config)
         try:
+            capacity_policy.require_ingest_capacity(config.canonical_root)
             new_id = ledger.retry_run(run_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="run not found")
-        except ValueError as exc:
+        except (KeyError, ValueError, CapacityProtectedError) as exc:
+            code = "not_found" if isinstance(exc, KeyError) else (
+                "conflict" if isinstance(exc, ValueError) else "capacity_protected")
+            ledger.record_write_audit({
+                "action": "runs.retry", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": code, "message": str(exc),
+            })
+            if isinstance(exc, KeyError):
+                raise HTTPException(status_code=404, detail="run not found")
+            if isinstance(exc, CapacityProtectedError):
+                raise
             raise HTTPException(status_code=409, detail=str(exc))
+        ledger.record_write_audit({
+            "action": "runs.retry", "actor": actor, "request_id": current_request_id(),
+            "run_ids": [run_id, new_id], "selector": {"run_id": run_id}, "outcome": "queued",
+            "code": None, "message": f"retry queued as {new_id}",
+        })
         return api_envelope(ledger.get(new_id))
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/acknowledge")
-    def acknowledge_dead_letter(run_id: str, x_api_key: str | None = Header(default=None)) -> dict:
+    def acknowledge_dead_letter(run_id: str, http_request: Request,
+                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        actor = operator_identity(http_request, config)
         try:
             payload = ledger.acknowledge_dead_letter(run_id)
         except KeyError:
+            ledger.record_write_audit({
+                "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": "not_found", "message": "run not found",
+            })
             raise HTTPException(status_code=404, detail="run not found")
         except ValueError as exc:
+            ledger.record_write_audit({
+                "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+                "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "rejected",
+                "code": "conflict", "message": str(exc),
+            })
             raise HTTPException(status_code=409, detail=str(exc))
+        ledger.record_write_audit({
+            "action": "runs.acknowledge", "actor": actor, "request_id": current_request_id(),
+            "run_ids": [run_id], "selector": {"run_id": run_id}, "outcome": "acknowledged",
+            "code": None, "message": "dead letter acknowledged",
+        })
         return api_envelope(payload)
 
     @app.get(f"{config.api_prefix}/datasets")
@@ -441,14 +470,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/ingest/runs")
-    def ingest(job: IngestJob, x_api_key: str | None = Header(default=None)) -> dict:
+    def ingest(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        actor = operator_identity(http_request, config)
         requested_days = max(0, math.ceil((job.end - job.start).total_seconds() / 86_400))
         if job.run_kind == "backfill":
             capacity_policy.require_backfill_capacity(config.canonical_root, requested_days=requested_days)
         else:
             capacity_policy.require_ingest_capacity(config.canonical_root)
         run_ids = enqueue_ingest_plan(ledger=ledger, job=job, request_id=current_request_id())
+        ledger.record_write_audit({
+            "action": "maintenance.ingest", "actor": actor, "request_id": current_request_id(),
+            "task_id": job.job_id, "run_ids": run_ids, "run_kind": job.run_kind, "run_scope": job.run_scope,
+            "dataset_id": job.dataset_id,
+            "selector": {"provider": job.provider, "symbol": job.symbol, "timeframe": job.timeframe},
+            "time_range": {"start": job.start.isoformat(), "end": job.end.isoformat()},
+            "outcome": "queued", "code": None, "message": f"{len(run_ids)} run(s) queued",
+        })
         payload = {"status": "queued", "job_id": job.job_id, "run_id": run_ids[0],
                    "run_ids": run_ids, "window_count": len(run_ids)}
         return api_envelope(payload)
@@ -471,9 +509,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "snapshot_id": page.snapshot_id, "query_mode": "current",
                           "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
-                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
-                "next_cursor": page.next_cursor}
+        meta = {"count": page.count, "schema_versions": page.schema_versions,
+                "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
         return api_envelope(page.rows, meta=meta)
@@ -539,9 +576,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "page_size": page_size,
                           "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1", "count": page.count,
-                "schema_versions": page.schema_versions, "snapshot_id": page.snapshot_id,
-                "next_cursor": page.next_cursor}
+        meta = {"count": page.count, "schema_versions": page.schema_versions,
+                "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
             meta["warnings"] = [page.warning]
         return api_envelope(page.rows, meta=meta)
@@ -639,8 +675,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                           "snapshot_id": page.snapshot_id, "query_mode": effective_mode,
                           "page_size": page_size, "duration_seconds": round(time.monotonic() - started, 4)}),
               flush=True)
-        meta = {"request_id": current_request_id(), "schema_version": "v1",
-                "economic_schema_version": economic_schema_version, "query_mode": effective_mode,
+        meta = {"economic_schema_version": economic_schema_version, "query_mode": effective_mode,
                 "count": page.count, "schema_versions": page.schema_versions,
                 "snapshot_id": page.snapshot_id, "next_cursor": page.next_cursor}
         if page.warning:
@@ -657,7 +692,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                      end: str | None = None, run_scope: str = "production",
                                      x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        if run_scope not in {"production", "acceptance", "migration", "maintenance"}:
+        if run_scope not in RUN_SCOPES:
             raise HTTPException(status_code=422, detail="invalid run_scope")
         envelope = submit_maintenance(
             request=MaintenanceTaskRequest(

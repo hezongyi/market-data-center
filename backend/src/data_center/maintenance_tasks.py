@@ -30,10 +30,6 @@ from data_center.platform_registry import (
     resolve_capability,
 )
 
-RUN_KINDS = ("ingest", "derive", "backfill", "gap_repair", "quality", "parity")
-# Runs that only verify existing data.  They publish no canonical part, so they
-# must never be mistaken for a data-producing run by the worker or the console.
-VERIFICATION_RUN_KINDS = ("quality", "parity")
 PROVIDER_DATASET = "provider_bars"
 DERIVED_DATASET = "market_bars"
 ECONOMIC_DATASET = "economic_observations"
@@ -41,16 +37,26 @@ PAGE_OF_WINDOWS = 20
 WINDOW_SEMANTICS = "half-open"
 RunKind: TypeAlias = Literal["ingest", "derive", "backfill", "gap_repair", "quality", "parity"]
 RunScope: TypeAlias = Literal["production", "acceptance", "migration", "maintenance"]
-DatasetId: TypeAlias = Literal["provider_bars", "market_bars", "economic_observations"]
-# Datasets each run kind may target; the console uses this to disable options
-# that the platform cannot serve instead of guessing.
-RUN_KIND_DATASETS = {
-    "ingest": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "backfill": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "gap_repair": [PROVIDER_DATASET],
-    "quality": [PROVIDER_DATASET, ECONOMIC_DATASET],
-    "derive": [DERIVED_DATASET],
-    "parity": [DERIVED_DATASET],
+RUN_SCOPES = ("production", "acceptance", "migration", "maintenance")
+# Datasets each run kind may target.  This matrix is the single authority: the
+# console reads it to disable options the platform cannot serve, the planner
+# rejects anything outside it, and the default dataset per run kind is derived
+# from it instead of being restated.
+RUN_KIND_DATASETS: dict[str, tuple[str, ...]] = {
+    "ingest": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "derive": (DERIVED_DATASET,),
+    "backfill": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "gap_repair": (PROVIDER_DATASET,),
+    "quality": (PROVIDER_DATASET, ECONOMIC_DATASET),
+    "parity": (DERIVED_DATASET,),
+}
+RUN_KINDS = tuple(RUN_KIND_DATASETS)
+# Runs that only verify existing data.  They publish no canonical part, so they
+# must never be mistaken for a data-producing run by the worker or the console.
+VERIFICATION_RUN_KINDS = ("quality", "parity")
+RUN_KIND_DEFAULT_DATASET = {
+    run_kind: DERIVED_DATASET if DERIVED_DATASET in datasets else PROVIDER_DATASET
+    for run_kind, datasets in RUN_KIND_DATASETS.items()
 }
 
 
@@ -59,7 +65,10 @@ class MaintenanceTaskRequest(BaseModel):
 
     run_kind: RunKind = "ingest"
     run_scope: RunScope = "production"
-    dataset_id: DatasetId | None = None
+    # Deliberately free-form: an unknown dataset must reach the planner, which
+    # answers with a stable ``unsupported_dataset`` error, and must not fail
+    # inside pydantic (whose raw message is not part of the API contract).
+    dataset_id: str | None = None
     provider: str = "fixture"
     symbol: str | None = None
     asset_class: str | None = None
@@ -91,14 +100,17 @@ def _error(field: str, code: str, message: str) -> dict:
 
 
 def resolve_dataset(request: MaintenanceTaskRequest) -> str:
-    """Select the dataset a task writes, without guessing beyond the request."""
+    """Select the dataset a task writes, without guessing beyond the request.
+
+    An explicit ``series_id`` means the caller asked for the economic dataset;
+    whether the requested run kind can actually serve it is decided by
+    :data:`RUN_KIND_DATASETS`, so the two rules cannot drift apart.
+    """
     if request.dataset_id:
         return request.dataset_id
-    if request.series_id and request.run_kind in {"ingest", "backfill", "gap_repair", "quality"}:
+    if request.series_id:
         return ECONOMIC_DATASET
-    if request.run_kind in {"derive", "parity"}:
-        return DERIVED_DATASET
-    return PROVIDER_DATASET
+    return RUN_KIND_DEFAULT_DATASET.get(request.run_kind, PROVIDER_DATASET)
 
 
 def _validate_run_kind_dataset(run_kind: str, dataset_id: str) -> list[dict]:

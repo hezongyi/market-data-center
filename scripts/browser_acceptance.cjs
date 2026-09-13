@@ -342,6 +342,19 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("radio", { name: "Provider ingest", exact: true }).waitFor();
     await page.getByLabel("Run scope").selectOption("acceptance");
 
+    // The console disables run kinds the platform cannot serve for the selected
+    // dataset, instead of letting the planner reject the submission later.
+    await page.getByLabel("Task provider").selectOption("fred");
+    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled(), true,
+      "gap repair is not available for the economic dataset");
+    assert.equal(await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled(), true,
+      "derive is not available for the economic dataset");
+    assert.equal(await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(), true,
+      "quality checks are available for the economic dataset");
+    await page.getByLabel("Task provider").selectOption("fixture");
+    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isEnabled(), true,
+      "gap repair stays available for provider bars");
+
     // A saved template only refills parameters; it is re-validated on use.
     await page.getByLabel("Template name").fill("acceptance ingest");
     await page.getByRole("button", { name: "Save template", exact: true }).click();
@@ -624,7 +637,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
-      "operations_write_audit"],
+      "operations_write_audit", "maintenance_run_kind_matrix"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
