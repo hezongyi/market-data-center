@@ -9,6 +9,7 @@
 | 当前 deployment | `3e2362ab0b31-6005b252`（`software_version=0.5.0`，`source_commit=3e2362a`，`tag=v0.5.0`） | `operations/deployment_activate/2026-09-13T234558…json`（`tag` 由 `operations/deployment_stage/2026-09-13T234519…json` 记录） |
 | API/worker | systemd active；readiness=ready | `/api/v1/health/ready` |
 | 容量/队列 | `capacity_status=ok`、queue=0 | `/api/v1/metrics` |
+| 生产配置来源 | API/worker 只从机器级 `$HOME/.config/market-data-center/env`（0600）读取环境；unit 无 drop-in，生产进程不再引用任何仓库 checkout | `systemctl --user show -p DropInPaths`（两服务均为空）+ 进程环境键名 |
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
 | Dukascopy derived | 5m/15m/30m/1h/4h/1d recipes；完整历史受 coverage 约束 | `dukascopy_derived_multiperiod_acceptance_v3` |
 | Dukascopy maintenance | macro-market-lab systemd service 调用 Data Center runner | `macro_market_lab_maintenance_ownership_cutover` |
@@ -23,6 +24,8 @@
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
 生产 deployment 现与 `v0.5.0` 发布基线一致（WebUI v0.5 可用性、访问控制和版本收口）。上一版本 `v0.4.1` 的 stage/activate、回滚路径和 receipt 均保留，可作为回滚目标；本次 `v0.5.0` activation 的 canonical 与 ledger 哈希均未变化。更早版本的 stage/activate、注入候选 readiness 失败后的自动恢复、回滚和 monitor soak receipt 也继续保留在 data-center evidence root。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+
+2026-09-14 收口生产配置来源：host-local drop-in `provider-env.conf` 曾让 API/worker 额外读取 `market-data-center-latest/.env.local`（仓库 checkout）。它与机器级 env 的三个共有键（`DATACENTER_API_KEY`、`DATACENTER_PROXY_URL`、`FRED_API_KEY`）取值一致，另含一个生产不使用的 `GITHUB_TOKEN`，因此两个 drop-in 已移除，机器级 env 成为唯一配置来源；provider 通路不受影响（`DATACENTER_PROXY_URL` 仍在进程环境中）。移除后 `DropInPaths` 为空、进程环境不再含 `GITHUB_TOKEN`，`deployment_id`/`software_version`/`source_commit` 与 `v0.5.0` 基线保持一致（本次不涉及 release）。回滚副本保留在 `$HOME/market-data-center/config-history/2026-09-14/`，receipt 见 evidence root `operations/production_env_source_consolidation/`。约束不变：仍不得手工改动 immutable release 的 unit 或依赖，生产行为变更必须走 approval。
 
 monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（systemd 默认 `AccuracySec=1min` 的合并效应），即告警分辨率实际减半；这是配置事实，不是故障。
 
