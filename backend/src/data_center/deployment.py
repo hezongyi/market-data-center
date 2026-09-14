@@ -435,18 +435,17 @@ def _configured_data_hash(name: str) -> str | None:
 def _sqlite_logical_hash(path: Path) -> str:
     """Hash ledger state while excluding the expected mutable worker heartbeat."""
     digest = hashlib.sha256()
-    tables = ("runs", "jobs", "quality_findings", "dead_letter_state", "dead_letter_audit")
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
-        existing = {row[0] for row in database.execute(
-            "select name from sqlite_master where type='table' and name not like 'sqlite_%'"
-        )}
+        tables = [row[0] for row in database.execute(
+            "select name from sqlite_master where type='table' and name not like 'sqlite_%' "
+            "and name != 'worker_heartbeat' order by name"
+        )]
         for table in tables:
-            if table not in existing:
+            if not table:
                 continue
             digest.update(table.encode())
             columns = [row[1] for row in database.execute(f"pragma table_info({table})")]
-            order = ",".join(f'"{column}"' for column in columns)
-            for row in database.execute(f'select * from "{table}" order by {order}'):
+            for row in database.execute(f'select * from "{table}" order by rowid'):
                 digest.update(json.dumps(row, sort_keys=True, default=str).encode())
     return digest.hexdigest()
 
