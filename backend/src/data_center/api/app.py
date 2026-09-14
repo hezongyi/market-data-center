@@ -664,11 +664,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope(result)
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}/executions")
-    def production_task_executions(task_id: str, limit: int = 100) -> dict:
+    def production_task_executions(task_id: str, page_size: int | None = None,
+                                   cursor: str | None = None) -> dict:
         task = production_tasks_service.read(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail="production task not found")
-        return api_envelope(ledger.list_production_executions(task["task_id"], limit=limit))
+        try:
+            page = production_tasks_service.executions(
+                task["task_id"], page_size=page_size, cursor=cursor)
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(page["executions"], meta={"page": page["page"]})
 
     @app.post(f"{config.api_prefix}/production/executions/{{execution_id}}/retry", status_code=202)
     def production_execution_retry(execution_id: str, request: Request,

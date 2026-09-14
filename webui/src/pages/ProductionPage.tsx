@@ -98,6 +98,7 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   const [preview, setPreview] = useState<ProductionPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [matrix, setMatrix] = useState<CatalogMatrix | null>(null);
+  const [history, setHistory] = useState<{ items: ProductionExecution[]; nextCursor: string | null } | null>(null);
   const [governance, setGovernance] = useState<GovernanceUnits | null>(null);
   const [steps, setSteps] = useState<Array<{ step_id: string; stage: string; state: string; block_reason: string | null; window_start: string | null; window_end: string | null }>>([]);
 
@@ -151,12 +152,28 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   const openSteps = async (plan: ProductionPlan) => {
     setSelected(plan);
     setSteps([]);
+    setHistory(null);
     const execution = plan.current_execution ?? plan.executions?.[0];
     if (!execution) return;
     try {
-      setSteps(await services.production.steps(execution.execution_id));
+      const [steps, history] = await Promise.all([
+        services.production.steps(execution.execution_id),
+        services.production.executions(plan.task_id, 5),
+      ]);
+      setSteps(steps);
+      setHistory(history);
     } catch (reason) {
-      onMessage(`steps unavailable: ${(reason as Error).message}`);
+      onMessage(`round detail unavailable: ${(reason as Error).message}`);
+    }
+  };
+
+  const moreHistory = async () => {
+    if (!selected || !history?.nextCursor) return;
+    try {
+      const next = await services.production.executions(selected.task_id, 5, history.nextCursor);
+      setHistory({ items: [...history.items, ...next.items], nextCursor: next.nextCursor });
+    } catch (reason) {
+      onMessage(`history unavailable: ${(reason as Error).message}`);
     }
   };
 
@@ -465,6 +482,19 @@ export function ProductionPage({ services, onMessage, onChanged }: {
           <button className="secondary-button" onClick={() => setSelected(null)}>{t("Close")}</button>
         </div>
       } />
+      {history && <table>
+        <thead><tr><th>{t("Round")}</th><th>{t("Trigger")}</th><th>{t("State")}</th><th>{t("Version")}</th><th>{t("Finished")}</th></tr></thead>
+        <tbody>
+          {history.items.map(item => <tr key={item.execution_id}>
+            <td>{item.execution_id.slice(0, 8)}</td>
+            <td>{item.trigger_source}{item.retry_of_execution_id ? ` ← ${item.retry_of_execution_id.slice(0, 8)}` : ""}</td>
+            <td><StatusBadge tone={item.outcome === "pass" ? "good" : item.state === "failed" ? "bad" : "warn"}>{item.outcome ?? item.state}</StatusBadge></td>
+            <td>v{item.definition_version}</td>
+            <td>{item.finished_at ? <TimeDisplay value={item.finished_at} /> : <span className="muted">{t("in flight")}</span>}</td>
+          </tr>)}
+        </tbody>
+      </table>}
+      {history?.nextCursor && <button className="secondary-button" onClick={() => void moreHistory()}>{t("More rounds")}</button>}
       <ol className="step-list">
         {steps.map(step => <li key={step.step_id}>
           <StatusBadge tone={step.state === "completed" ? "good" : step.state === "failed" ? "bad" : step.state === "blocked" ? "bad" : "warn"}>{step.state}</StatusBadge>

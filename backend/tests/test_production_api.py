@@ -322,3 +322,31 @@ def test_execution_retry_returns_a_linked_follow_up_round(client, config):
     # The refusal path stays explicit: retrying an unknown round is a 404.
     missing = client.post("/api/v1/production/executions/absent/retry", headers=auth())
     assert missing.status_code == 404
+
+
+def test_execution_history_paginates_with_a_cursor_bound_to_the_plan(client, config):
+    create_plan(client, "p1", desired_state="enabled")
+    create_plan(client, "p2", symbol="GBPUSD", bar_timeframes=[], desired_state="enabled")
+    ledger = RunLedger(config.ledger_path)
+    for _ in range(3):
+        created = client.post("/api/v1/production/tasks/p1/actions", json={"command": "run_now"},
+                              headers=auth()).json()["data"]
+        # A plan may only have one non-terminal round, so each one is closed
+        # before the next is triggered.
+        ledger.finish_production_execution(created["execution_id"], state="completed", outcome="pass")
+    first = client.get("/api/v1/production/tasks/p1/executions",
+                       params={"page_size": 2}, headers=auth())
+    page = first.json()["meta"]["page"]
+    assert len(first.json()["data"]) == 2 and page["next_cursor"]
+    seen = {item["execution_id"] for item in first.json()["data"]}
+    second = client.get("/api/v1/production/tasks/p1/executions",
+                        params={"page_size": 2, "cursor": page["next_cursor"]}, headers=auth())
+    assert seen.isdisjoint({item["execution_id"] for item in second.json()["data"]})
+    # A cursor is bound to the plan it was issued for.
+    mismatched = client.get("/api/v1/production/tasks/p2/executions",
+                            params={"page_size": 2, "cursor": page["next_cursor"]}, headers=auth())
+    assert mismatched.status_code == 422
+    assert mismatched.json()["errors"][0]["code"] == "cursor_error"
+    # The history keeps the trigger source and the configuration version.
+    assert {item["trigger_source"] for item in first.json()["data"]} == {"manual"}
+    assert all(item["definition_version"] == 1 for item in first.json()["data"])

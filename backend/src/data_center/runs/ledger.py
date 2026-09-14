@@ -981,6 +981,25 @@ class RunLedger:
                 "outcome": row[6], "created_at": row[7], "finished_at": row[8],
                 "coalesced_count": row[9], "schedule_revision": row[10]}
 
+    def list_production_executions_page(self, task_id: str, *, page_size: int = 20,
+                                        before: tuple[str, str] | None = None) -> dict:
+        """Keyset-paginated round history; paging and the filter both stay in SQL."""
+        params = [task_id]
+        clause = ""
+        if before is not None:
+            clause = " and (created_at < ? or (created_at = ? and execution_id < ?))"
+            params.extend([before[0], before[0], before[1]])
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,"
+                "created_at,finished_at,coalesced_count,schedule_revision,retry_of_execution_id "
+                "from production_executions where task_id=?" + clause +
+                " order by created_at desc, execution_id desc limit ?",
+                (*params, max(1, page_size) + 1)).fetchall()
+        has_more = len(rows) > page_size
+        return {"items": [{**self._execution_row(row[:11]), "retry_of_execution_id": row[11]}
+                          for row in rows[:page_size]], "has_more": has_more}
+
     def list_production_executions(self, task_id: str, *, limit: int = 100) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(

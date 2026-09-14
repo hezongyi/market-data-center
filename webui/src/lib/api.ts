@@ -812,8 +812,8 @@ export function createDataCenterClient(apiKey: string) {
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({ command, ...options }),
       }),
-    productionExecutions: (taskId: string, limit = 10) =>
-      request<ProductionExecution[]>(`/production/tasks/${encodeURIComponent(taskId)}/executions${queryString({ limit })}`),
+    productionExecutions: (taskId: string, pageSize = 10, cursor?: string | null) =>
+      request<ProductionExecution[]>(`/production/tasks/${encodeURIComponent(taskId)}/executions${queryString({ page_size: pageSize, cursor })}`),
     productionExecutionSteps: (executionId: string, limit = 100) =>
       request<ProductionStep[]>(`/production/executions/${encodeURIComponent(executionId)}/steps${queryString({ limit })}`),
     retryProductionExecution: (executionId: string, idempotencyKey: string) =>

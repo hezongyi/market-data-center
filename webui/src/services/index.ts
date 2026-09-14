@@ -116,7 +116,10 @@ export function createServices(apiKey: string) {
       act: async (taskId: string, command: string, idempotencyKey: string,
                   options: Parameters<typeof client.productionPlanAction>[3] = {}) =>
         (await client.productionPlanAction(taskId, command, idempotencyKey, options)).data,
-      executions: async (taskId: string, limit = 10) => (await client.productionExecutions(taskId, limit)).data,
+      executions: async (taskId: string, pageSize = 10, cursor?: string | null) => {
+        const result = await client.productionExecutions(taskId, pageSize, cursor);
+        return { items: result.data, nextCursor: result.meta.next_cursor ?? null };
+      },
       steps: async (executionId: string, limit = 100) => (await client.productionExecutionSteps(executionId, limit)).data,
       retry: async (executionId: string, idempotencyKey: string) =>
         (await client.retryProductionExecution(executionId, idempotencyKey)).data,

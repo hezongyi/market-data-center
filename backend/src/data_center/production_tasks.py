@@ -32,6 +32,7 @@ OBSERVATION_DATASET = "economic_observations"
 DEFAULT_RAW_TIMEFRAME = "1m"
 PREVIEW_RUNS = 5
 DEFAULT_PAGE_SIZE = 50
+DEFAULT_EXECUTION_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 200
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
@@ -492,6 +493,29 @@ class ProductionTasks:
         if active_execution is not None and active_execution["state"] in {"pausing", "paused"}:
             return "attention"
         return "healthy"
+
+    def executions(self, task_id: str, *, page_size: int | None = None,
+                   cursor: str | None = None) -> dict:
+        """A plan's round history, cursored and bound to that plan (spec 8)."""
+        effective = DEFAULT_EXECUTION_PAGE_SIZE if page_size is None else page_size
+        if effective < 1 or effective > MAX_PAGE_SIZE:
+            raise ProductionConflict("page_size_error", f"page_size must be between 1 and {MAX_PAGE_SIZE}")
+        filters = {"task_id": task_id}
+        before = None
+        if cursor:
+            payload = self._decode_cursor(cursor)
+            if payload.get("filters") != filters:
+                raise ProductionConflict("cursor_error", "cursor does not match the requested plan")
+            before = (payload["created_at"], payload["execution_id"])
+        page = self.ledger.list_production_executions_page(task_id, page_size=effective, before=before)
+        next_cursor = None
+        if page["has_more"] and page["items"]:
+            last = page["items"][-1]
+            next_cursor = self._encode_cursor({"created_at": last["created_at"],
+                                               "execution_id": last["execution_id"], "filters": filters})
+        return {"executions": page["items"],
+                "page": {"count": len(page["items"]), "page_size": effective,
+                         "next_cursor": next_cursor, "filters": filters}}
 
     def list(self, *, provider: str | None = None, symbol: str | None = None,
              desired_state: str | None = None, include_deleted: bool = False,
