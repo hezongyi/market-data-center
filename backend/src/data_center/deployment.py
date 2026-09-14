@@ -211,7 +211,7 @@ class DeploymentService:
         ledger_hash = _configured_data_hash("DATACENTER_LEDGER_PATH", details=ledger_details)
         try:
             self._point_current(target)
-            self._restart_and_verify(identity)
+            services = self._restart_and_verify(identity)
         except Exception as exc:
             if previous is not None:
                 self._point_current(previous)
@@ -249,6 +249,10 @@ class DeploymentService:
             "ledger_hash_table_count": ledger_details.get("table_count"),
             "ledger_hash_row_count": ledger_details.get("row_count"),
             "ledger_hash_seconds": ledger_details.get("hash_seconds"),
+            # Every unit that was restarted is verified active, scheduler
+            # included: a release is not activated while one of its components is
+            # already dead (plan S5.3).
+            "services_active": services,
         }
         return {
             "action": action,
@@ -343,7 +347,13 @@ class DeploymentService:
         link.symlink_to(target, target_is_directory=True)
         os.replace(link, self.release_root / "current")
 
-    def _restart_and_verify(self, identity: dict) -> None:
+    def _restart_and_verify(self, identity: dict) -> list[dict]:
+        """Restart every unit, then verify the API identity *and* each unit's state.
+
+        Readiness alone only proves the API answers; the scheduler and the worker
+        could be dead while the release looked activated, so each restarted unit is
+        asked for its own state before the activation is called successful.
+        """
         subprocess.run([*self.systemctl, "daemon-reload"], check=True)
         for service in self.service_names:
             subprocess.run([*self.systemctl, "restart", service], check=True)
@@ -359,12 +369,26 @@ class DeploymentService:
                     for key in ("deployment_id", "software_version", "source_commit")
                 ):
                     subprocess.run([*self.systemctl, "start", self.monitor_service], check=True)
-                    return
+                    return self._verify_services_active()
                 last_error = RuntimeError("runtime deployment identity mismatch")
             except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
                 last_error = exc
             time.sleep(0.5)
         raise RuntimeError("deployment readiness verification failed") from last_error
+
+    def _verify_services_active(self) -> list[dict]:
+        """Ask systemd about each restarted unit instead of assuming it came up."""
+        active: list[dict] = []
+        for service in self.service_names:
+            # A unit that is not active is an expected answer here, not a crash:
+            # the state is checked explicitly below.
+            result = subprocess.run([*self.systemctl, "is-active", service],
+                                    capture_output=True, text=True, check=False)
+            state = (result.stdout or "").strip() or "unknown"
+            if result.returncode != 0 or state != "active":
+                raise RuntimeError(f"{service} is not active after restart: {state}")
+            active.append({"service": service, "state": state})
+        return active
 
     def _receipt(self, action: str, started: str, result: str, details: dict, exc: Exception | None = None) -> str | None:
         path = write_receipt(self.evidence_root, operation_receipt(
