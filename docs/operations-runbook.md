@@ -198,6 +198,32 @@ a consumer is sending `page_size > 10000`; sustained unbounded query warnings re
 explicit pagination. Query logs include `request_id`, dataset, selector hash, snapshot ID, mode, page size and
 duration, but never include the API key or complete selector.
 
+## Real-provider acceptance (kept out of the CI gate)
+
+`bash scripts/ci.sh all` must never contact a real provider: every gate uses the `fixture` provider and
+isolated roots, so an unreachable upstream can never turn into a red pull request. Real-provider coverage
+therefore lives in the scheduled `market-data-center-provider-acceptance` user timer (and can be started by
+hand), and its receipt is a **pre-release observation**, not a merge gate:
+
+```bash
+systemctl --user list-timers market-data-center-provider-acceptance.timer
+systemctl --user start market-data-center-provider-acceptance.service   # real network calls
+python -m data_center.acceptance --output /home/quant/market_lake/evidence/data-center/acceptance
+```
+
+Read a failing receipt by its recorded facts rather than by the bare error type: each provider entry carries
+`adapter_version`, `attempts[]` and, on failure, `category` (`timeout` / `network` / `http` / `contract` /
+`internal`), `retryable`, `error_type`, `error_message`, and `http_status` plus a redacted
+`response_summary` when the API answered with an error status. Only `timeout`, `network` and 5xx `http`
+failures are retried (three attempts, linear backoff); a `contract` failure is a result, not a transient
+error, and repeating it only adds noise. `interpretation`:
+
+- `timeout` / `network` with all attempts failing → upstream or proxy reachability, re-run before escalating.
+- `http` with 4xx/507 → the platform refused the request (auth, validation, capacity protection); fix the
+  request or the environment, a retry will not help.
+- `contract` → the provider answered but the result failed an acceptance assertion (non-pass receipt,
+  incomplete readback, non-BID Dukascopy rows); this is the class that needs a code investigation.
+
 ## Query scalability acceptance
 
 Run the governed benchmark on the acceptance host. It creates an isolated 1,000-part/1,000,000-row publication,
