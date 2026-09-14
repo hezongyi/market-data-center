@@ -272,6 +272,28 @@ def test_operations_scheduler_reports_state_and_due_plans(client, config):
     assert payload["oldest_due_at"] == "2020-01-01T00:00:00+00:00"
 
 
+def test_scheduler_view_reports_the_capacity_gate_and_provider_backoff(client, config):
+    """Spec 5.6/9.1: capacity protection and provider backoff are observed values."""
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    assert set(payload) >= {"capacity", "publishing_allowed", "provider_backoff", "blocked"}
+    # The gate is the measurement, not a promise: critical is what refuses work.
+    assert payload["publishing_allowed"] is (payload["capacity"]["status"] != "critical")
+    assert payload["provider_backoff"] == []
+
+    # A queued job whose own retry delay has not elapsed is a provider backoff,
+    # and it is reported per provider.
+    ledger = RunLedger(config.ledger_path)
+    ledger.enqueue_job({"job_id": "backoff-1", "dataset_id": "provider_bars",
+                        "provider": "fixture", "symbol": "UI_TEST", "timeframe": "1d",
+                        "start": "2026-09-14T00:00:00Z", "end": "2026-09-14T01:00:00Z",
+                        "run_scope": "production"})
+    claim = ledger.claim_next_job()
+    ledger.fail_job(claim["job_id"], claim["run_id"], "transient", retryable=True,
+                    delay_seconds=600.0)
+    backoff = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]["provider_backoff"]
+    assert [item["provider"] for item in backoff] == ["fixture"] and backoff[0]["waiting"] == 1
+
+
 def test_global_pause_action_stops_dispatch_and_is_audited(client, config):
     create_plan(client, "p1", desired_state="enabled")
     ledger = RunLedger(config.ledger_path)
