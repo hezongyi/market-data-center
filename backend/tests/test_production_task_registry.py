@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from data_center.scheduler import MIN_INTERVAL_SECONDS
 from data_center.production_tasks import (
     DefinitionError,
     ProductionConflict,
@@ -344,3 +345,30 @@ def test_next_runs_aligns_to_the_anchor_after_a_late_tick():
     late = datetime(2026, 9, 14, 12, 47, tzinfo=timezone.utc)
     assert next_runs(normalized, now=late, count=2) == ["2026-09-14T13:00:00+00:00",
                                                         "2026-09-14T13:15:00+00:00"]
+
+
+def test_config_drift_stops_dispatch_until_it_is_acknowledged(ledger, service):
+    service.create(definition=definition(), name="first", task_id="p1", now=NOW,
+                   desired_state="enabled")
+    # The registry facts moved after the plan was resolved: the persisted digest
+    # no longer matches what the plan was approved against.
+    ledger.set_config_digest("p1", 1, "stale-digest")
+    report = service.reconcile_config_digest()
+    assert report["config_drift"] == ["p1"]
+    assert ledger.get_production_task("p1")["health"] == "config_drift"
+    # A drifting plan is invisible to the due scan and to the claim.
+    assert ledger.list_due_production_tasks(now=NOW.isoformat()) == []
+    assert ledger.claim_due_execution(task_id="p1", owner_id="one",
+                                      scheduled_for=NOW.isoformat(), definition_version=1,
+                                      fencing_token=1) is None
+    # An explicit confirmation re-baselines the plan and dispatch resumes.
+    acknowledged = service.change("p1", "acknowledge_drift", now=NOW)
+    assert acknowledged["health"] == "healthy" and acknowledged["config_digest"]
+    assert service.reconcile_config_digest()["config_drift"] == []
+    assert ledger.get_production_task("p1")["health"] is None
+
+
+def test_preview_reports_the_plan_contract(service):
+    found = service.preview(definition(), now=NOW)
+    assert found["minimum_interval_seconds"] == MIN_INTERVAL_SECONDS
+    assert set(found["schedule"]) >= {"kind", "next_runs", "rule"}

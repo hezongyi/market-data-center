@@ -301,14 +301,14 @@ class RunLedger:
                 "provider": provider, "symbol": symbol, "next_run_at": next_run_at}
 
     _TASK_COLUMNS = ("task_id,alias,name,desired_state,definition_version,payload,created_at,updated_at,"
-                     "deleted_at,provider,symbol,next_run_at,deleted_digest")
+                     "deleted_at,provider,symbol,next_run_at,deleted_digest,health")
 
     @classmethod
     def _task_document(cls, row) -> dict:
         return {"task_id": row[0], "alias": row[1], "name": row[2], "desired_state": row[3],
                 "definition_version": row[4], "payload": json.loads(row[5]), "created_at": row[6],
                 "updated_at": row[7], "deleted_at": row[8], "provider": row[9], "symbol": row[10],
-                "next_run_at": row[11], "deleted_digest": row[12]}
+                "next_run_at": row[11], "deleted_digest": row[12], "health": row[13]}
 
     def list_production_tasks(self, *, include_deleted: bool = False) -> list[dict]:
         with self._connect() as conn:
@@ -420,8 +420,9 @@ class RunLedger:
             (task_id, *self.ACTIVE_EXECUTION_STATES)).fetchone()
         return None if row is None else self._execution_row(row)
 
-    def acknowledge_config_drift(self, conn, task_id: str, *, expected_version: int | None = None) -> dict:
-        """Clear a config-drift hold after an explicit confirmation (spec 5.3)."""
+    def acknowledge_config_drift(self, conn, task_id: str, *, expected_version: int | None = None,
+                                 digest: str | None = None) -> dict:
+        """Accept the registry's current facts and clear the drift hold (spec 5.3)."""
         row = self._task_row(conn, task_id)
         if row is None or row[7] is not None:
             raise KeyError(task_id)
@@ -430,8 +431,29 @@ class RunLedger:
         stamp = self._now()
         conn.execute("update production_tasks set health=NULL, updated_at=? where task_id=?",
                      (stamp, task_id))
+        if digest:
+            # Re-baseline, otherwise the next reconciliation would report the
+            # same drift and the plan could never be confirmed.
+            self.record_config_digest(conn, task_id, row[3], digest)
         return {"task_id": task_id, "health": "healthy", "definition_version": row[3],
-                "acknowledged_at": stamp}
+                "acknowledged_at": stamp, "config_digest": digest}
+
+    def config_digest_for(self, task_id: str, definition_version: int) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("select config_digest from production_task_versions "
+                               "where task_id=? and definition_version=?",
+                               (task_id, definition_version)).fetchone()
+        return None if row is None else row[0]
+
+    def record_config_digest(self, conn, task_id: str, definition_version: int, digest: str) -> None:
+        """Re-baseline one version's registry facts after an explicit acknowledgement."""
+        conn.execute("update production_task_versions set config_digest=? "
+                     "where task_id=? and definition_version=?",
+                     (digest, task_id, definition_version))
+
+    def set_config_digest(self, task_id: str, definition_version: int, digest: str) -> None:
+        with self._transaction() as conn:
+            self.record_config_digest(conn, task_id, definition_version, digest)
 
     def set_task_health(self, task_id: str, health: str | None) -> None:
         with self._transaction() as conn:
@@ -744,6 +766,7 @@ class RunLedger:
             rows = conn.execute(
                 f"select {self._TASK_COLUMNS} from production_tasks "
                 "where desired_state='enabled' and deleted_at is null and next_run_at is not null "
+                "and coalesce(health,'') <> 'config_drift' "
                 "and next_run_at <= ? order by next_run_at, task_id limit ?",
                 (str(now), max(1, limit))).fetchall()
         return [self._task_document(row) for row in rows]
@@ -799,6 +822,11 @@ class RunLedger:
             task = conn.execute("select desired_state,definition_version,deleted_at,next_run_at "
                                 "from production_tasks where task_id=?", (task_id,)).fetchone()
             if task is None or task[2] is not None or task[0] != "enabled" or task[1] != definition_version:
+                return None
+            if conn.execute("select 1 from production_tasks where task_id=? and health='config_drift'",
+                            (task_id,)).fetchone():
+                # A plan whose registry facts moved under it must be confirmed
+                # before it produces anything again (spec 5.3, AC21).
                 return None
             if task[3] != scheduled_for:
                 return None

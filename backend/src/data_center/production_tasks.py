@@ -629,9 +629,12 @@ class ProductionTasks:
                                audit_action=audit_action, request_id=request_id)
 
         if command == "acknowledge_drift":
+            current = self._resolve(task_id)
+            digest = config_digest(config_facts(normalize_definition(current.get("payload") or {},
+                                                                    now=now)))
             return self._apply(task_id, command,
                                lambda conn: self.ledger.acknowledge_config_drift(
-                                   conn, task_id, expected_version=expected_version),
+                                   conn, task_id, expected_version=expected_version, digest=digest),
                                request=request, idempotency_key=idempotency_key, actor=actor,
                                audit_action=audit_action, request_id=request_id)
 
@@ -659,9 +662,42 @@ class ProductionTasks:
         return {**accepted, "plan": {key: value for key, value in plan.items() if key != "steps"},
                 "planned_steps": len(plan["steps"])}
 
+    def reconcile_config_digest(self, *, limit: int = 50) -> dict:
+        """Compare each enabled plan with the registry facts it was resolved against.
+
+        A difference means recipe, instrument or policy metadata changed outside
+        the plan; the plan stops dispatching and waits for an explicit
+        acknowledgement instead of quietly producing under new semantics.
+        """
+        drifted, healthy = [], []
+        for task in self.ledger.list_production_tasks():
+            if task["desired_state"] != "enabled" or task["deleted_at"]:
+                continue
+            if len(drifted) + len(healthy) >= max(1, limit):
+                break
+            definition = task.get("payload") or {}
+            try:
+                facts = config_facts(normalize_definition(definition, now=datetime.now(timezone.utc)))
+            except (DefinitionError, ValueError):
+                # A definition the registry no longer accepts is drift by
+                # definition: it cannot be produced as written any more.
+                self.ledger.set_task_health(task["task_id"], "config_drift")
+                drifted.append(task["task_id"])
+                continue
+            digest = config_digest(facts)
+            stored = self.ledger.config_digest_for(task["task_id"], task["definition_version"])
+            if stored is not None and stored != digest:
+                self.ledger.set_task_health(task["task_id"], "config_drift")
+                drifted.append(task["task_id"])
+            else:
+                if task.get("health") == "config_drift":
+                    healthy.append(task["task_id"])
+        return {"config_drift": drifted, "config_ok": healthy}
+
     def reconcile(self, *, now: datetime | None = None, limit: int = 50) -> dict:
         """Close finished executions and advance the schedules their outcome decides."""
         now = now or datetime.now(timezone.utc)
+        drift = self.reconcile_config_digest(limit=limit)
         closed = self.ledger.close_finished_executions(limit=limit)
         advanced = []
         for execution in closed:
@@ -682,7 +718,8 @@ class ProductionTasks:
                 "last_finished_at": execution.get("finished_at"),
                 "last_execution_id": execution["execution_id"],
             })
-        return {"closed": closed, "advanced": advanced, "reconciled_at": now.isoformat()}
+        return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
+                "reconciled_at": now.isoformat()}
 
     def _run_now(self, conn, task_id: str, *, now: datetime) -> dict:
         """Trigger one manual execution, or locate the execution already in flight."""

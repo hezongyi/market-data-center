@@ -211,10 +211,20 @@ def test_deleted_plan_stays_resolvable_through_its_alias(client):
     assert listed.json()["data"] == []
 
 
-def test_capabilities_route_still_answers_with_a_plan_aware_payload(client):
+def test_capabilities_route_reports_the_plan_contract(client):
+    """A console enables a plan option only because this read model says it can."""
     response = client.get("/api/v1/capabilities", headers=auth())
     assert response.status_code == 200
-    assert response.json()["data"]["providers"]
+    data = response.json()["data"]
+    assert data["providers"]
+    production = data["production"]
+    assert production["schedule_kinds"] == ["daily", "fixed_delay", "fixed_rate", "manual", "once"]
+    assert production["minimum_interval_seconds"] == 300
+    assert production["plan_states"] == ["enabled", "paused", "archived"]
+    assert "config_drift" in production["plan_health"]
+    assert {"paused", "global_pause", "config_drift"} <= set(production["block_reasons"])
+    assert production["scheduler_enabled"] is True
+    assert {item["dataset_id"] for item in production["outputs"]} == {"provider_bars", "market_bars"}
 
 
 def test_operations_scheduler_reports_state_and_due_plans(client, config):

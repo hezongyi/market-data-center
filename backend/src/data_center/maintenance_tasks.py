@@ -29,6 +29,7 @@ from data_center.platform_registry import (
     maintenance_policy_for,
     resolve_capability,
 )
+from data_center.scheduler import MIN_INTERVAL_SECONDS, SUPPORTED_SCHEDULES
 
 PROVIDER_DATASET = "provider_bars"
 DERIVED_DATASET = "market_bars"
@@ -550,9 +551,25 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
         entry["retention_policy"] = definition.retention_policy
         entry["materialization_policy"] = definition.materialization_policy
         datasets.append(entry)
+    production = {
+        # A form disables an option only because this read model says it is
+        # unavailable; the browser never guesses (spec 8, AC01).
+        "schedule_kinds": sorted(SUPPORTED_SCHEDULES),
+        "minimum_interval_seconds": MIN_INTERVAL_SECONDS,
+        "plan_states": ["enabled", "paused", "archived"],
+        "plan_health": ["healthy", "lagging", "blocked", "attention", "config_drift"],
+        "block_reasons": ["provider_backoff", "capacity", "dependency", "backlog", "input_unavailable",
+                          "paused", "global_pause", "execution_in_progress", "config_drift"],
+        "outputs": [{"dataset_id": "provider_bars", "timeframes": sorted({
+            timeframe for item in providers for timeframe in item["maintenance_timeframes"]})},
+            {"dataset_id": "market_bars", "timeframes": sorted({
+                recipe["target_timeframe"] for recipe in recipes})}],
+        "scheduler_enabled": ledger.dispatch_enabled(),
+    }
     return {
         "datasets": sorted(datasets, key=lambda item: item["dataset_id"]),
         "providers": providers,
+        "production": production,
         "recipes": sorted(recipes, key=lambda item: (item["recipe_id"], item["recipe_version"])),
         "run_kinds": [{"run_kind": kind, "datasets": RUN_KIND_DATASETS[kind]} for kind in RUN_KINDS],
         "economic_series_provider": "fred",
