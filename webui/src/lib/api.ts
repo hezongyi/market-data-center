@@ -825,7 +825,8 @@ export function createDataCenterClient(apiKey: string) {
     productionPreview: (definition: Record<string, unknown>) =>
       request<ProductionPreview>("/production/plans", { method: "POST", body: JSON.stringify({ definition }) }),
     productionPlanAction: (taskId: string, command: string, idempotencyKey: string,
-                           options: { expected_version?: number; definition?: Record<string, unknown> } = {}) =>
+                           options: { expected_version?: number; definition?: Record<string, unknown>;
+                                      name?: string; alias?: string } = {}) =>
       request<Record<string, unknown>>(`/production/tasks/${encodeURIComponent(taskId)}/actions`, {
         method: "POST",
         headers: { "Idempotency-Key": idempotencyKey },

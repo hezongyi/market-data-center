@@ -624,6 +624,39 @@ class RunLedger:
                 "created_at": row[5], "updated_at": stamp, "provider": payload.get("provider") or row[8],
                 "symbol": payload.get("symbol") or row[9]}
 
+    def rename_production_task(self, task_id: str, *, name: str | None = None,
+                               alias: str | None = None, expected_version: int | None = None,
+                               conn=None, audit: dict | None = None) -> dict:
+        """Update the display fields of a plan without forming a definition version.
+
+        A name or alias is not part of the produced data, so it takes effect
+        immediately; schedule, outputs and window policy are what create a new
+        version (spec 3.3).
+        """
+
+        def apply(tx) -> dict:
+            stamp = self._now()
+            row = self._task_row(tx, task_id)
+            if row is None or row[7] is not None:
+                raise KeyError(task_id)
+            if expected_version is not None and row[3] != expected_version:
+                raise ProductionConflict("version_conflict", "definition version conflict")
+            if alias is not None and alias != row[1]:
+                holder = tx.execute("select task_id from production_tasks where alias=? and task_id<>?",
+                                    (alias, task_id)).fetchone()
+                if holder is not None:
+                    raise ProductionConflict("alias_exists", "production task alias already exists")
+            tx.execute("update production_tasks set name=coalesce(?,name), alias=coalesce(?,alias), "
+                       "updated_at=? where task_id=?", (name, alias, stamp, task_id))
+            self._write_audit(tx, audit, outcome="updated", task_id=task_id)
+            return {"task_id": task_id, "alias": alias or row[1], "name": name or row[0],
+                    "desired_state": row[2], "definition_version": row[3], "updated_at": stamp}
+
+        if conn is not None:
+            return apply(conn)
+        with self._transaction() as own_conn:
+            return apply(own_conn)
+
     def _delete_task(self, conn, task_id: str) -> dict:
         row = self._task_row(conn, task_id)
         if row is None or row[7] is not None:

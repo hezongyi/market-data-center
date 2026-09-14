@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarClock, CirclePause, CirclePlay, RefreshCw, Trash2, Archive, Zap } from "lucide-react";
+import { CalendarClock, CirclePause, CirclePlay, Pencil, RefreshCw, Trash2, Archive, Zap } from "lucide-react";
 import {
   ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingSkeleton, PageHeader, PanelHeading, StatusBadge,
 } from "../components/ui";
@@ -55,6 +55,28 @@ const seedFromRegistry = (registry: Capabilities): DefinitionDraft => {
   };
 };
 
+/** Seed the wizard from a saved plan, so an edit changes exactly what it shows. */
+const seedFromPlan = (plan: ProductionPlan): DefinitionDraft => {
+  const payload = (plan.payload ?? {}) as Record<string, unknown>;
+  const windowPolicy = (payload.window_policy ?? {}) as Record<string, string>;
+  const schedule = (payload.schedule ?? {}) as Record<string, unknown>;
+  const kind = String(schedule.schedule ?? "manual");
+  const seconds = Number(schedule.interval_seconds ?? 900);
+  return {
+    provider: String(payload.provider ?? ""),
+    symbol: String(payload.symbol ?? ""),
+    raw_timeframe: String(payload.raw_timeframe ?? "1m"),
+    price_basis: String(payload.price_basis ?? ""),
+    bar_timeframes: Array.isArray(payload.bar_timeframes) ? payload.bar_timeframes.map(String) : [],
+    history_start: windowPolicy.history_start
+      ? localDateTime(new Date(String(windowPolicy.history_start))) : "",
+    schedule: kind,
+    interval_minutes: Number.isFinite(seconds) ? Math.max(1, Math.round(seconds / 60)) : 15,
+    timezone: String(schedule.timezone ?? "UTC"),
+    local_time: String(schedule.local_time ?? "08:00"),
+  };
+};
+
 /** Render the wizard draft as the definition the API validates. */
 const definitionBody = (draft: DefinitionDraft) => ({
   provider: draft.provider,
@@ -102,6 +124,10 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   // Read-model filters the API already supports: the console offers only the
   // values the capabilities read model advertises.
   const [healthFilter, setHealthFilter] = useState("");
+  // Editing an existing plan is an optimistic-locked write: the version the
+  // console loaded is sent back, and a conflict is reported, never retried
+  // silently against whatever the row has become (spec 3.3).
+  const [editing, setEditing] = useState<{ task_id: string; name: string; expected_version: number } | null>(null);
   const [governance, setGovernance] = useState<GovernanceUnits | null>(null);
   const [steps, setSteps] = useState<Array<{ step_id: string; stage: string; state: string; block_reason: string | null; window_start: string | null; window_end: string | null }>>([]);
 
@@ -237,6 +263,10 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   };
 
   const save = async (desiredState: "paused" | "enabled") => {
+    if (editing) {
+      await saveEdit();
+      return;
+    }
     setBusy(`create:${desiredState}`);
     onMessage("");
     try {
@@ -253,6 +283,48 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       onChanged();
     } catch (reason) {
       onMessage(`save refused: ${(reason as Error).message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const beginEdit = (plan: ProductionPlan) => {
+    setEditing({ task_id: plan.task_id, name: plan.name, expected_version: plan.definition_version });
+    setDefinition(seedFromPlan(plan));
+    setPlanName(plan.name);
+    setPreview(null);
+    onMessage(`Editing ${plan.name} at version ${plan.definition_version}.`);
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setDefinition(blankDefinition());
+    setPlanName("");
+    setPreview(null);
+    onMessage("Edit cancelled.");
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setBusy("edit");
+    onMessage("");
+    try {
+      // Editing never changes desired_state: a paused plan stays paused, and
+      // resuming stays an explicit action (spec 3.3).
+      await services.production.act(editing.task_id, "update", idempotencyKey("update", editing.task_id), {
+        expected_version: editing.expected_version,
+        definition: definitionBody(definition),
+        name: planName || editing.name,
+      });
+      onMessage(`Plan updated from version ${editing.expected_version}; later rounds use the new definition.`);
+      setEditing(null);
+      setDefinition(blankDefinition());
+      setPlanName("");
+      setPreview(null);
+      await load();
+      onChanged();
+    } catch (reason) {
+      onMessage(`edit refused: ${(reason as Error).message} — reload and re-apply your change.`);
     } finally {
       setBusy("");
     }
@@ -302,6 +374,7 @@ export function ProductionPage({ services, onMessage, onChanged }: {
           {plan.desired_state === "enabled"
             ? <button className="icon-button" title={t("Pause")} aria-label={`${t("Pause")} ${plan.name}`} disabled={busy === `${key}pause`} onClick={() => void act(plan, "pause")}><CirclePause size={16} /></button>
             : <button className="icon-button" title={t("Resume")} aria-label={`${t("Resume")} ${plan.name}`} disabled={busy === `${key}resume`} onClick={() => void act(plan, "resume")}><CirclePlay size={16} /></button>}
+          <button className="icon-button" title={t("Edit")} aria-label={`${t("Edit")} ${plan.name}`} onClick={() => beginEdit(plan)}><Pencil size={16} /></button>
           <button className="icon-button" title={t("Run now")} aria-label={`${t("Run now")} ${plan.name}`} disabled={busy === `${key}run_now`} onClick={() => void act(plan, "run_now")}><Zap size={16} /></button>
           <button className="icon-button" title={t("Archive")} aria-label={`${t("Archive")} ${plan.name}`} disabled={busy === `${key}archive`} onClick={() => setConfirming({ plan, command: "archive" })}><Archive size={16} /></button>
           <button className="icon-button danger" title={t("Delete")} aria-label={`${t("Delete")} ${plan.name}`} disabled={busy === `${key}delete`} onClick={() => setConfirming({ plan, command: "delete" })}><Trash2 size={16} /></button>
@@ -350,13 +423,20 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       </ul>}
     </section>
     <section className="panel">
-      <PanelHeading eyebrow="Wizard" title="New plan" action={
+      <PanelHeading eyebrow="Wizard" title={editing ? `Edit ${editing.name}` : "New plan"} action={
         <div className="row-actions">
           <button className="secondary-button" onClick={() => void runPreview()} disabled={previewing}>
             {previewing ? t("Previewing…") : t("Preview")}
           </button>
-          <button className="secondary-button" disabled={busy === "create:paused"} onClick={() => void save("paused")}>{t("Save as paused")}</button>
-          <button className="primary-button" disabled={busy === "create:enabled"} onClick={() => void save("enabled")}>{t("Save and enable")}</button>
+          {editing
+            ? <>
+              <button className="primary-button" disabled={busy === "edit"} onClick={() => void saveEdit()}>{t("Save changes")}</button>
+              <button className="secondary-button" onClick={cancelEdit}>{t("Cancel edit")}</button>
+            </>
+            : <>
+              <button className="secondary-button" disabled={busy === "create:paused"} onClick={() => void save("paused")}>{t("Save as paused")}</button>
+              <button className="primary-button" disabled={busy === "create:enabled"} onClick={() => void save("enabled")}>{t("Save and enable")}</button>
+            </>}
         </div>
       } />
       <div className="form-grid">

@@ -775,11 +775,20 @@ class ProductionTasks:
 
         audit = {"action": audit_action, "actor": actor, "request_id": request_id}
         if command == "update":
+            if definition is None:
+                # Display information is not part of the produced data, so it is
+                # updated in place instead of forming a definition version.
+                if name is None and alias is None:
+                    raise DefinitionError([{"field": "definition", "message": "definition is required"}])
+                return self._apply(task_id, command,
+                                   lambda conn: self.ledger.rename_production_task(
+                                       task_id, name=name, alias=alias,
+                                       expected_version=expected_version, conn=conn, audit=audit),
+                                   request=request, idempotency_key=idempotency_key, actor=actor,
+                                   audit_action=audit_action, request_id=request_id)
             if expected_version is None:
                 raise ProductionConflict("expected_version_required",
                                          "editing a definition requires expected_version")
-            if definition is None:
-                raise DefinitionError([{"field": "definition", "message": "definition is required"}])
             current = self._resolve(task_id)
             merged = {**(current.get("payload") or {}), **definition}
             normalized = normalize_definition(merged, now=now)

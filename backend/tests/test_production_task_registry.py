@@ -466,3 +466,21 @@ def test_plan_list_filters_by_health_and_phase(ledger, service):
     with pytest.raises(ProductionConflict) as invalid:
         service.list(health="glowing")
     assert invalid.value.code == "filter_error"
+
+
+def test_display_fields_update_without_forming_a_definition_version(ledger, service):
+    """Spec 3.3: name and alias take effect immediately; definitions version."""
+    created = service.create(definition=definition(), name="first", task_id="p1", now=NOW,
+                             desired_state="paused")
+    renamed = service.change("p1", "update", name="renamed", now=NOW)
+    assert renamed["name"] == "renamed" and renamed["definition_version"] == created["definition_version"]
+    assert service.read("p1")["payload"] == created["payload"]
+    # A stale version is still a conflict: the lock covers the display update too.
+    with pytest.raises(ProductionConflict) as caught:
+        service.change("p1", "update", name="later", expected_version=99, now=NOW)
+    assert caught.value.code == "version_conflict"
+    # Only a definition change forms a new version.
+    updated = service.change("p1", "update", expected_version=created["definition_version"],
+                             definition=definition(symbol="GBPUSD"), now=NOW)
+    assert updated["definition_version"] == created["definition_version"] + 1
+    assert service.read("p1")["payload"]["symbol"] == "GBPUSD"

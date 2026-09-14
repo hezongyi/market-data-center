@@ -675,6 +675,9 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }
     await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
     const created = await call("GET", "/production/tasks");
+    if (process.env.DATACENTER_ACCEPT_DEBUG) {
+      process.stderr.write("DEBUG created=" + JSON.stringify(created.map(plan => ({ name: plan.name, state: plan.desired_state, health: plan.health }))) + "\n");
+    }
     assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
       "the saved plan must be readable through the plan registry");
 
@@ -702,6 +705,38 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await healthFilter.selectOption(detail.health);
     await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
     await healthFilter.selectOption("");
+
+    // Editing is an optimistic-locked write against the version the console
+    // loaded, and it must not change desired_state on its own (spec 3.3).
+    await page.getByRole("button", { name: "Edit Acceptance plan", exact: true }).click();
+    await page.getByText("Edit Acceptance plan", { exact: true }).waitFor();
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Acceptance plan (edited)");
+    await page.getByRole("button", { name: "Save changes", exact: true }).click();
+    await page.locator("tr").filter({ hasText: "Acceptance plan (edited)" }).waitFor();
+    const edited = (await call("GET", "/production/tasks"))
+      .find(plan => plan.name === "Acceptance plan (edited)");
+    assert.ok(edited, "the edited plan must be readable through the registry");
+    assert.equal(edited.desired_state, "paused", "editing must not resume a paused plan");
+    assert.ok(edited.definition_version > acceptancePlan.definition_version,
+      "a definition edit must create a new version");
+    // Replaying the stale version is refused rather than silently overwriting.
+    const stale = await envelope("PATCH", `/production/tasks/${edited.task_id}`, {
+      expected_version: acceptancePlan.definition_version,
+      definition: edited.payload,
+    });
+    assert.ok([409, 422].includes(stale.response.status),
+      `a stale expected_version must be refused, got ${stale.response.status}`);
+    // A display field is not a definition change: it updates in place (no new
+    // version), which also leaves the registry as this check found it.
+    const restore = await envelope("PATCH", `/production/tasks/${edited.task_id}`, {
+      expected_version: edited.definition_version, name: "Acceptance plan",
+    });
+    assert.ok(restore.response.ok, `restoring the plan name failed: ${restore.response.status}`);
+    const restored = (await call("GET", "/production/tasks"))
+      .find(plan => plan.task_id === edited.task_id);
+    assert.equal(restored.name, "Acceptance plan");
+    assert.equal(restored.definition_version, edited.definition_version,
+      "renaming must not form a new definition version");
 
     // The matrix and the governance list are read-only projections: they must
     // render, and a governance unit must carry no lifecycle control.
@@ -766,7 +801,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
       "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
-      "production_capacity_gate"],
+      "production_capacity_gate", "production_plan_edit"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

@@ -213,6 +213,86 @@ def drain(worker) -> int:
     return processed
 
 
+def two_symbol_definition(provider: str, symbol: str, price_basis: str,
+                          history_start: str, **overrides) -> dict:
+    """A 24x7 plan per symbol: two approved instruments, two ownership keys.
+
+    The providers carry different availability lags, so each plan gets the
+    history start that makes its own effective window plannable.
+    """
+    base = {
+        "provider": provider, "symbol": symbol, "raw_timeframe": "1m", "price_basis": price_basis,
+        "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "continuous", "history_start": history_start},
+        "schedule": {"schedule": "manual"},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_one_symbols_gap_does_not_block_another_symbol(tmp_path):
+    """AC12: a gap blocks the buckets covering it, and other symbols proceed."""
+    from data_center.platform_registry import REGISTRY
+    from data_center.storage.query import query_market_bars
+
+    ledger, service, _ = build(tmp_path)
+    recipe = REGISTRY.recipe("utc-24x7-1m-to-5m-ohlcv", "1")
+    # ``build`` already owns p1, so the two symbols get their own plans.  Both
+    # sessions are continuous, so only the providers' availability lags differ.
+    plans = {
+        "p2": ("binance", "BTCUSDT", "raw", "2026-09-14T11:00:00+00:00"),
+        "p3": ("dukascopy", "BTCUSD", "bid", "2026-09-14T08:00:00+00:00"),
+    }
+    for task_id, (provider, symbol, basis, history_start) in plans.items():
+        service.create(definition=two_symbol_definition(provider, symbol, basis, history_start),
+                       name=task_id, task_id=task_id, desired_state="enabled", now=NOW)
+    executions = {task_id: service.change(task_id, "run_now", now=NOW) for task_id in plans}
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    worker = LocalWorker(tmp_path / "lake", ledger)
+    scheduler.tick(now=NOW)
+
+    # Every raw window of both plans is published; one symbol's window is missing
+    # a single minute inside its 11:30-11:35 bucket.
+    for _ in range(2):
+        claim = ledger.claim_next_job()
+        run = ledger.get(claim["run_id"])
+        step = next(item for item in ledger.list_production_steps(run["execution_id"])
+                    if item["step_id"] == run["step_id"])
+        start = datetime.fromisoformat(step["window_start"])
+        publish_raw(tmp_path / "lake", start=start, minutes=60, run_id=claim["run_id"],
+                    provider=run["provider"], symbol=run["symbol"],
+                    skip_minute=32 if run["plan_id"] == "p2" else None)
+        ledger.finish_job(claim["job_id"], claim["run_id"],
+                          {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
+
+    scheduler.tick(now=NOW + timedelta(minutes=1))
+    # The blocked symbol owes exactly the bucket the gap covers; the other symbol
+    # owes nothing at all and has its whole window planned.
+    owed = service.read("p2")["progress"]["deferred_derived"]
+    assert [item.split("derive:")[-1].split(":", 1)[1] for item in owed] == [
+        "2026-09-14T11:30:00+00:00:2026-09-14T11:35:00+00:00"]
+    assert service.read("p3")["progress"]["deferred_derived"] == []
+    assert [step for step in ledger.list_production_steps(executions["p3"]["execution_id"])
+            if step["stage"] == "derive:5m"]
+
+    # The real worker derives both symbols: each publishes every complete bucket,
+    # and only the gap-covered bucket of the first symbol is missing.
+    assert drain(worker) >= 3
+    def buckets(provider: str, symbol: str, basis: str) -> list[str]:
+        return [row["bar_ts"].isoformat() for row in query_market_bars(
+            tmp_path / "lake", provider=provider, symbol=symbol, timeframe="5m",
+            price_basis=basis, recipe_id=recipe.recipe_id, recipe_version=recipe.version)]
+
+    # The published rows carry the synthetic part's basis, so both symbols are
+    # read back by it; isolation is what this test is about, not basis naming.
+    blocked_symbol = buckets("binance", "BTCUSDT", "raw")
+    other_symbol = buckets("dukascopy", "BTCUSD", "raw")
+    assert len(blocked_symbol) == 10 and "2026-09-14T11:30:00+00:00" not in blocked_symbol
+    assert len(other_symbol) == 12, other_symbol
+    assert other_symbol == [f"2026-09-14T{hour:02d}:{minute:02d}:00+00:00"
+                            for hour in (8,) for minute in range(0, 60, 5)]
+
+
 def derived_definition(**overrides) -> dict:
     """A plan over a committed approved instrument.
 
