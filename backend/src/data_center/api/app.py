@@ -602,6 +602,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   "outcome": "updated", "message": command})
         return api_envelope(result)
 
+    @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}/executions")
+    def production_task_executions(task_id: str, limit: int = 100) -> dict:
+        return api_envelope(ledger.list_production_executions(task_id, limit=limit))
+
+    @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}/steps")
+    def production_execution_steps(execution_id: str, limit: int = 100) -> dict:
+        return api_envelope(ledger.list_production_steps(execution_id, limit=limit))
+
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
     def maintenance_task_status(task_id: str, payload: dict, request: Request,
                                 x_api_key: str | None = Header(default=None, alias="X-API-Key"),

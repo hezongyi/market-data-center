@@ -40,6 +40,11 @@ class RunLedger:
             conn.execute("create table if not exists production_idempotency (idempotency_key text primary key, task_id text, command text not null, response text not null, created_at text not null)")
             conn.execute("create table if not exists scheduler_state (id integer primary key check(id=1), dispatch_enabled integer not null, heartbeat_at text not null, instance_id text, last_tick_at text)")
             conn.execute("create table if not exists scheduler_leases (lease_key text primary key, owner_id text not null, fencing_token integer not null, expires_at real not null)")
+            conn.execute("create table if not exists production_executions (execution_id text primary key, task_id text not null, definition_version integer not null, trigger_source text not null, scheduled_for text, state text not null, outcome text, created_at text not null, finished_at text, coalesced_count integer not null default 0)")
+            conn.execute("create unique index if not exists production_one_active_execution on production_executions(task_id) where state in ('pending','running','pausing')")
+            conn.execute("create table if not exists production_steps (step_id text primary key, execution_id text not null, stage text not null, window_start text, window_end text, state text not null, block_reason text, run_id text, created_at text not null)")
+            conn.execute("create index if not exists production_steps_execution on production_steps(execution_id, created_at)")
+            conn.execute("create table if not exists production_progress (task_id text primary key, payload text not null, updated_at text not null)")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -185,6 +190,42 @@ class RunLedger:
             conn.execute("insert into scheduler_state(id,dispatch_enabled,heartbeat_at,instance_id,last_tick_at) values (1,?,?,?,?) on conflict(id) do update set dispatch_enabled=excluded.dispatch_enabled,heartbeat_at=excluded.heartbeat_at,instance_id=excluded.instance_id,last_tick_at=excluded.last_tick_at",
                          (int(dispatch_enabled), stamp, instance_id, stamp))
         return stamp
+
+    def create_production_execution(self, *, execution_id: str, task_id: str,
+                                    definition_version: int, trigger_source: str,
+                                    scheduled_for: str | None = None) -> dict:
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            try:
+                conn.execute("insert into production_executions(execution_id,task_id,definition_version,trigger_source,scheduled_for,state,created_at) values (?,?,?,?,?,?,?)",
+                             (execution_id, task_id, definition_version, trigger_source, scheduled_for, "pending", stamp))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("task already has an active execution") from exc
+        return {"execution_id": execution_id, "task_id": task_id, "definition_version": definition_version,
+                "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending", "created_at": stamp}
+
+    def list_production_executions(self, task_id: str, *, limit: int = 100) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,created_at,finished_at,coalesced_count from production_executions where task_id=? order by created_at desc limit ?", (task_id, max(1, min(limit, 500)))).fetchall()
+        return [{"execution_id": r[0], "task_id": r[1], "definition_version": r[2], "trigger_source": r[3],
+                 "scheduled_for": r[4], "state": r[5], "outcome": r[6], "created_at": r[7],
+                 "finished_at": r[8], "coalesced_count": r[9]} for r in rows]
+
+    def add_production_step(self, *, step_id: str, execution_id: str, stage: str,
+                            window_start: str | None = None, window_end: str | None = None) -> dict:
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("insert into production_steps(step_id,execution_id,stage,window_start,window_end,state,created_at) values (?,?,?,?,?,?,?)",
+                         (step_id, execution_id, stage, window_start, window_end, "pending", stamp))
+        return {"step_id": step_id, "execution_id": execution_id, "stage": stage,
+                "window_start": window_start, "window_end": window_end, "state": "pending", "created_at": stamp}
+
+    def list_production_steps(self, execution_id: str, *, limit: int = 100) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("select step_id,execution_id,stage,window_start,window_end,state,block_reason,run_id,created_at from production_steps where execution_id=? order by created_at limit ?", (execution_id, max(1, min(limit, 500)))).fetchall()
+        return [{"step_id": r[0], "execution_id": r[1], "stage": r[2], "window_start": r[3],
+                 "window_end": r[4], "state": r[5], "block_reason": r[6], "run_id": r[7], "created_at": r[8]} for r in rows]
 
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:

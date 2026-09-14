@@ -81,3 +81,12 @@ def test_production_task_update_uses_optimistic_version(tmp_path):
         pass
     else:
         raise AssertionError("stale definition version must be rejected")
+
+
+def test_execution_and_steps_are_durable(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.create_production_task(task_id="p", name="A", payload={}, ownership_keys=["k"])
+    execution = ledger.create_production_execution(execution_id="e", task_id="p", definition_version=1, trigger_source="manual")
+    ledger.add_production_step(step_id="s", execution_id="e", stage="raw", window_start="a", window_end="b")
+    assert ledger.list_production_executions("p")[0]["execution_id"] == execution["execution_id"]
+    assert ledger.list_production_steps("e")[0]["stage"] == "raw"
