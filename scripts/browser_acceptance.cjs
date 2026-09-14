@@ -283,11 +283,14 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByLabel("Query start date").fill("2026-01-03");
     await page.getByLabel("Query end date").fill("2026-01-01");
     await page.getByLabel("Page size").selectOption("2");
-    await page.getByRole("button", { name: "Load coverage", exact: true }).click();
+    // Issue #84: bars mode loads bars and coverage in one submit, so the label must name both and
+    // stay distinguishable from the market/economic labels asserted below and further down.
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).click();
     await page.getByText("Start date must not be after end date.", { exact: true }).waitFor();
     await page.getByLabel("Query start date").fill("");
     await page.getByLabel("Query end date").fill("");
-    await page.getByRole("button", { name: "Load coverage", exact: true }).click();
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).click();
     await page.locator(".coverage-strip").waitFor();
     await page.getByText("Page 1 · 2 rows", { exact: true }).waitFor();
     // Issue #85: this selector gets a summary response, so the console must name the reason instead of
@@ -511,6 +514,16 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByText("raw · provider feed", { exact: false }).first().waitFor();
     await page.getByText("utc-24x7-1m-to-1h-ohlcv", { exact: false }).first().waitFor();
 
+    // Issue #82: the catalog hand-off locks the run kind that writes the dataset it was opened for and
+    // says the window was not carried, instead of dropping the operator on the workspace defaults.
+    await page.getByLabel("Search datasets").fill("provider_bars");
+    await page.locator("table tbody tr").first()
+      .getByRole("button", { name: "Create maintenance task", exact: true }).click();
+    await page.getByText(/Prefilled .*from Data catalog\./).waitFor();
+    await page.getByText(/The window was not carried/).waitFor();
+    await page.getByRole("button", { name: "Validate and preview" }).click();
+    await page.locator(".preview-card").filter({ hasText: "provider_bars" }).waitFor();
+
     recordStep("explorer_market");
     await page.getByRole("button", { name: "explorer", exact: true }).click();
     await page.getByRole("button", { name: "Market bars", exact: true }).click();
@@ -559,12 +572,37 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Close details", exact: true }).last().click();
     await page.getByLabel("Finding state").selectOption("open");
 
+    // Issue #83: the drawer hands its assessed task to the workspace instead of dropping it. The fixture
+    // finding is bounded, so the carriage is asserted on the values the workspace then shows.
+    await page.getByLabel("Finding code").selectOption("coverage_degraded");
+    await page.getByLabel("Finding state").selectOption("acknowledged");
+    await page.locator("table tbody tr").first().click();
+    await page.getByRole("button", { name: "Open maintenance workspace", exact: true }).click();
+    await page.getByText(/Prefilled [^.]*dataset[^.]* from Quality\./).waitFor();
+    await page.getByText(/Validate before queueing\./).waitFor();
+    assert.equal(await page.getByLabel("Task provider").inputValue(), "fixture",
+      "the drawer hand-off must carry the provider the finding recorded");
+    assert.equal(await page.getByLabel("Task symbol").inputValue(), "UI_TEST",
+      "the drawer hand-off must carry the symbol the finding recorded");
+    await page.getByRole("button", { name: "quality", exact: true }).click();
+    await page.getByLabel("Finding state").selectOption("open");
+
     // ---- v0.4 operations and audit (Phase 4) ------------------------------
     recordStep("operations_v04");
     await page.getByRole("button", { name: "operations", exact: true }).click();
     await page.getByText("Maintenance queue", { exact: true }).waitFor();
     await page.getByText("Worker activity", { exact: true }).waitFor();
     await page.getByText("Capacity history", { exact: true }).waitFor();
+    // Issue #86: the acceptance harness pins the free-space ratio, so the console must say the value is
+    // a pinned acceptance measurement instead of presenting it as a live production disk reading.
+    await page.getByText("Pinned acceptance measurement", { exact: true }).waitFor();
+    await page.getByText("fixed_acceptance", { exact: false }).first().waitFor();
+    const capacityHistory = await call("GET", "/operations/capacity-history");
+    assert.equal(capacityHistory.live.measurement_source, "fixed_acceptance");
+    assert.equal(capacityHistory.live.recorded_only, false);
+    assert.equal(capacityHistory.measurement_source, "fixed_acceptance");
+    const readiness = await call("GET", "/health/ready");
+    assert.equal(readiness.capacity_measurement_source, "fixed_acceptance");
     await page.getByText("Write audit trail", { exact: true }).waitFor();
     await page.getByText("Recorded transitions", { exact: false }).first().waitFor();
     // The receipts panel renders the actions the API reports.  A name the

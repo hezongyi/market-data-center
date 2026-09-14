@@ -452,6 +452,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "write_status": "protected" if capacity and capacity["status"] == "critical" else "available",
             "capacity_status": capacity["status"] if capacity else "unknown",
             "capacity_free_ratio": capacity.get("free_ratio") if capacity else None,
+            "capacity_measurement_source": capacity.get("measurement_source") if capacity else None,
             "operational_snapshot_status": snapshot.status if snapshot else "unknown",
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
@@ -550,7 +551,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/operations/capacity-history")
     def operations_capacity_history(limit: int = 50) -> dict:
         live = capacity_policy.inspect(config.canonical_root).as_dict()
-        live["fixed_measurement"] = config.capacity_fixed_free_ratio is not None
+        # `fixed_measurement` stays for consumers that already read it; `measurement_source` is the
+        # unified field and it also travels inside every capacity receipt.
+        live["fixed_measurement"] = live["measurement_source"] == "fixed_acceptance"
         payload = capacity_history(alert_sink, live, limit=max(1, min(limit, 500)))
         return api_envelope(payload)
 
