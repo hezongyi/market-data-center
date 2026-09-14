@@ -774,6 +774,30 @@ class RunLedger:
                 "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending",
                 "created_at": stamp, "schedule_revision": schedule_revision}
 
+    def refresh_task_steps(self, task_id: str, *, limit: int = 5) -> None:
+        """Refresh the step states of a plan's most recent rounds, in bounded number."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select execution_id from production_executions where task_id=? "
+                "order by created_at desc limit ?", (task_id, max(1, limit))).fetchall()
+        for (execution_id,) in rows:
+            self.refresh_execution_steps(execution_id)
+
+    def completed_raw_boundary(self, task_id: str) -> str | None:
+        """The end of the last raw window whose runs actually passed.
+
+        This is the publication boundary the derivation cursor may advance to:
+        a planned window is not a published one, and deriving from a planned
+        window would submit steps whose inputs cannot exist yet.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "select max(s.window_end) from production_steps s "
+                "join production_executions e on e.execution_id = s.execution_id "
+                "where e.task_id=? and s.stage='raw' and s.state='completed'",
+                (task_id,)).fetchone()
+        return None if row is None else row[0]
+
     def list_running_executions(self, *, limit: int = 50) -> builtins.list[dict]:
         """Accepted rounds that are still being advanced (dependency closure)."""
         with self._connect() as conn:
@@ -1252,7 +1276,10 @@ class RunLedger:
             return [self._insert_run_and_job(conn, job_payload, stamp) for job_payload in job_payloads]
 
     def accept_execution_plan(self, *, execution_id: str, steps: builtins.list[dict],
-                              audit: dict | None = None, conn=None) -> dict:
+                              audit: dict | None = None, conn=None, task_id: str | None = None,
+                              definition_version: int | None = None,
+                              trigger_source: str = "reconcile",
+                              scheduled_for: str | None = None) -> dict:
         """Persist planned steps and enqueue their runs in one transaction.
 
         Acceptance, the steps a run belongs to, the runs, the jobs and the audit
@@ -1265,7 +1292,17 @@ class RunLedger:
             row = tx.execute("select task_id, state from production_executions where execution_id=?",
                              (execution_id,)).fetchone()
             if row is None:
-                raise KeyError(execution_id)
+                # Reconciliation can have work to plan without a round in
+                # flight; the round is then created here, in the same
+                # transaction as its steps, so it can never exist empty.
+                if task_id is None or definition_version is None:
+                    raise KeyError(execution_id)
+                tx.execute("insert into production_executions(execution_id,task_id,definition_version,"
+                           "trigger_source,scheduled_for,state,created_at,updated_at) "
+                           "values (?,?,?,?,?,'pending',?,?)",
+                           (execution_id, task_id, definition_version, trigger_source, scheduled_for,
+                            stamp, stamp))
+                row = (task_id, "pending")
             if row[1] not in {"pending", "running"}:
                 raise ProductionConflict("execution_closed",
                                          f"execution {execution_id} is already {row[1]}")

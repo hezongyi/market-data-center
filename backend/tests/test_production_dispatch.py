@@ -344,3 +344,82 @@ def test_a_derived_output_waits_until_its_window_holds_a_complete_bucket(tmp_pat
     # A wider window that does hold complete days can plan the daily hop.
     assert _bucket_window("2026-09-08T00:00:00Z", "2026-09-14T11:59:00Z", "1d") == (
         "2026-09-08T00:00:00+00:00", "2026-09-14T00:00:00+00:00")
+
+
+def test_reconciliation_derives_what_a_crashed_round_never_planned(tmp_path):
+    """AC10: raw published, process died, the next tick still produces the derived output.
+
+    The round is closed without its derived layer ever being planned, exactly as
+    a crash between publication and planning would leave it.
+    """
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    raw_steps = ledger.list_production_steps(execution["execution_id"])
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    # The round terminates with no derived plan at all.
+    ledger.refresh_execution_steps(execution["execution_id"])
+    assert ledger.close_finished_executions()
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "completed"
+    assert ledger.list_production_steps(execution["execution_id"])[0]["stage"] == "raw"
+
+    # Restart: a fresh scheduler reconciles the publication cursor and plans the
+    # derived step into a round of its own.
+    # The restarted process keeps its instance identity, so it renews its own
+    # lease instead of waiting for the previous one to expire.
+    restarted = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    result = restarted.tick(now=NOW + timedelta(minutes=5))
+    # The identity names the raw window the work came from; the step itself is
+    # clipped to whole 5m buckets.
+    assert result["reconcile"]["derived_planned"] == [
+        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:00:00+00:00:2026-09-14T11:59:00+00:00"]
+    reconciled = ledger.list_production_executions("p1")
+    derived = [step for step in ledger.list_production_steps(reconciled[0]["execution_id"])
+               if step["stage"] == "derive:5m"]
+    assert len(derived) == 1
+    assert reconciled[0]["trigger_source"] == "reconcile"
+    assert service.read("p1")["current_execution"]["execution_id"] == reconciled[0]["execution_id"]
+
+
+def test_the_derivation_cursor_stops_the_work_being_planned_twice(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    raw_steps = ledger.list_production_steps(execution["execution_id"])
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    first = service.reconcile_publications(limit=5, step_budget=4)
+    assert len(first["planned"]) == 1
+    assert ledger.production_progress("p1")["derived_cursor"] == "2026-09-14T11:55:00+00:00"
+    # Nothing new was published, so no new step is planned.  The residue past
+    # the last complete bucket stays deferred rather than being dropped or
+    # planned against a partial bucket.
+    second = service.reconcile_publications(limit=5, step_budget=4)
+    assert second["planned"] == []
+    assert second["deferred"] == [
+        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:55:00+00:00:2026-09-14T11:59:00+00:00"]
+    assert len([step for step in ledger.list_production_steps(
+        ledger.active_execution_for_task("p1")["execution_id"]) if step["stage"] == "derive:5m"]) == 1
+
+
+def test_raw_progress_without_a_derivation_is_repaired_without_new_raw(tmp_path):
+    """AC10: raw needs no update, but a missing derived output is still produced."""
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    raw_steps = ledger.list_production_steps(execution["execution_id"])
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    # Two ticks with no new raw: the second must not duplicate the derived work.
+    scheduler.tick(now=NOW + timedelta(minutes=1))
+    before = len(ledger.list())
+    second = scheduler.tick(now=NOW + timedelta(minutes=2))
+    assert second["reconcile"]["derived_planned"] == []
+    assert len(ledger.list()) == before

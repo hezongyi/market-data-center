@@ -647,6 +647,152 @@ class ProductionTasks:
 
         raise ProductionConflict("unsupported_command", f"{command} is not available in this phase")
 
+    def reconcile_publications(self, *, limit: int = 20, step_budget: int = 8) -> dict:
+        """Derive what the published raw layer has made possible, from a cursor.
+
+        A round that crashes after its raw windows publish, or raw published by
+        another governed entry point, still has to produce its derived outputs:
+        the cursor records how far derivation has been reconciled, the boundary
+        records how far raw has actually been published, and the gap between
+        them is planned here on the next tick (spec 6.2, AC10).
+        """
+        planned, deferred = [], []
+        if self.canonical_root is None:
+            return {"planned": planned, "deferred": deferred}
+        checked = 0
+        for task in self.ledger.list_production_tasks():
+            if checked >= max(1, limit):
+                break
+            definition = task.get("payload") or {}
+            if task["desired_state"] != "enabled" or task["deleted_at"]:
+                continue
+            if not definition.get("bar_timeframes"):
+                continue
+            checked += 1
+            # The boundary is read from step rows, so they must reflect the run
+            # outcomes first.
+            self.ledger.refresh_task_steps(task["task_id"])
+            boundary = self.ledger.completed_raw_boundary(task["task_id"])
+            if boundary is None:
+                continue
+            progress = self.ledger.production_progress(task["task_id"]) or {}
+            cursor = progress.get("derived_cursor") or _default_cursor(definition)
+            if cursor is None:
+                continue
+            window_start = _as_utc(cursor, "derived_cursor")
+            window_end = _as_utc(boundary, "publication_boundary")
+            if window_end <= window_start:
+                continue
+            # Attach to the round already in flight when there is one: a plan
+            # may only ever have a single non-terminal execution.
+            active = self.ledger.active_execution_for_task(task["task_id"])
+            execution_id = active["execution_id"] if active else str(uuid4())
+            steps, deferred_here = self._plan_derived_windows(
+                task=task, definition=definition, execution_id=execution_id,
+                windows=[(window_start.isoformat(), window_end.isoformat())],
+                step_budget=step_budget)
+            deferred.extend(deferred_here)
+            if steps:
+                try:
+                    self.ledger.accept_execution_plan(
+                        execution_id=execution_id, steps=steps, task_id=task["task_id"],
+                        definition_version=task["definition_version"], trigger_source="reconcile",
+                        audit={"action": "production.execution.reconcile", "actor": "system:scheduler",
+                               "request_id": None})
+                except ProductionConflict:
+                    # The round closed or paused between planning and acceptance:
+                    # the work stays owed and is planned again on the next tick.
+                    deferred.extend(step["dedupe_key"] for step in steps)
+                    continue
+                planned.extend(step["dedupe_key"] for step in steps)
+            # The cursor advances over windows that are covered by a persisted
+            # step, whether this pass planned it or an earlier one did; a
+            # deferred window is never skipped.
+            covered = [step for step in self.ledger.refresh_execution_steps(execution_id)
+                       if step["stage"].startswith("derive:") and step["window_end"]
+                       and _as_utc(step["window_end"], "window_end") <= window_end]
+            reached = max([_as_utc(step["window_end"], "window_end") for step in covered],
+                          default=window_start)
+            if reached > window_start:
+                self.ledger.record_progress(task["task_id"], {
+                    "derived_cursor": reached.isoformat(),
+                    "derived_reconciled_at": datetime.now(timezone.utc).isoformat(),
+                })
+        return {"planned": planned, "deferred": deferred}
+
+    def _plan_derived_windows(self, *, task: dict, definition: dict, execution_id: str,
+                              windows: list[tuple[str, str]], step_budget: int) -> tuple[list[dict], list[str]]:
+        """Plan the derive steps for explicit windows, in recipe dependency order."""
+        targets = definition.get("bar_timeframes") or []
+        planned: list[dict] = []
+        deferred: list[str] = []
+        existing = self.ledger.list_production_steps(execution_id)
+        for window_start, window_end in windows:
+            chain_documents = []
+            for target in targets:
+                try:
+                    chain = _recipe_chain(target, raw_timeframe=definition.get("raw_timeframe")
+                                          or DEFAULT_RAW_TIMEFRAME,
+                                          provider=definition["provider"],
+                                          price_basis=definition.get("price_basis") or "bid")
+                except DefinitionError:
+                    chain = None
+                for item in chain or []:
+                    if item not in chain_documents:
+                        chain_documents.append(item)
+            for recipe_document in chain_documents:
+                identity = (f"derive:{recipe_document['recipe_id']}:"
+                            f"{_as_utc(window_start, 'window_start').isoformat()}:"
+                            f"{_as_utc(window_end, 'window_end').isoformat()}")
+                if any(item["dedupe_key"] == identity for item in planned) or \
+                        any(item.get("dedupe_key") == identity for item in existing):
+                    continue
+                if len(planned) >= max(1, step_budget):
+                    break
+                step = self._derive_step(task=task, definition=definition,
+                                         execution_id=execution_id,
+                                         recipe_document=recipe_document,
+                                         window_start=window_start, window_end=window_end,
+                                         identity=identity, deferred=deferred)
+                if step is not None:
+                    planned.append(step)
+        return planned, deferred
+
+    def _derive_step(self, *, task: dict, definition: dict, execution_id: str, recipe_document: dict,
+                     window_start: str, window_end: str, identity: str,
+                     deferred: list[str]) -> dict | None:
+        """Build one derive step with its fixed input, or defer it."""
+        try:
+            snapshot = Catalog(self.canonical_root).resolve(
+                recipe_document["input_dataset"],
+                {"provider": definition["provider"], "symbol": definition["symbol"],
+                 "timeframe": recipe_document["source_timeframe"]})
+        except (PublicationError, ValueError):
+            deferred.append(identity)
+            return None
+        if not snapshot.parts:
+            deferred.append(identity)
+            return None
+        bounds = _bucket_window(window_start, window_end, recipe_document["target_timeframe"])
+        if bounds is None:
+            deferred.append(identity)
+            return None
+        aligned_start, aligned_end = bounds
+        input_id = self.ledger.store_production_input(
+            snapshot_reference(self.canonical_root, snapshot))
+        job = DeriveJob(
+            job_id=f"{task['task_id']}:{execution_id[:8]}:{recipe_document['target_timeframe']}:"
+                   f"{aligned_start[:10]}",
+            provider=definition["provider"], symbol=definition["symbol"],
+            recipe_id=recipe_document["recipe_id"], recipe_version=recipe_document["recipe_version"],
+            start=aligned_start, end=aligned_end, run_scope="production")
+        payload = {**job.model_dump(mode="json"),
+                   "input_snapshot_id": snapshot.snapshot_id, "input_id": input_id}
+        return {"stage": f"derive:{recipe_document['target_timeframe']}",
+                "window_start": aligned_start, "window_end": aligned_end,
+                "dedupe_key": identity, "recipe_id": recipe_document["recipe_id"],
+                "timeframe": recipe_document["target_timeframe"], "payloads": [payload]}
+
     def plan_derived(self, *, task: dict, definition: dict, execution: dict,
                      step_budget: int = 8) -> dict:
         """Plan derive steps for raw windows that are already published.
@@ -660,82 +806,13 @@ class ProductionTasks:
         targets = definition.get("bar_timeframes") or []
         if not targets or self.canonical_root is None:
             return {"steps": [], "deferred": [], "reason": "no_derived_outputs"}
-        # Read the current run outcomes first: a layer may only be planned once
-        # the previous one genuinely finished.
         current = self.ledger.refresh_execution_steps(execution["execution_id"])
-        pending = [step for step in current if step["stage"] != "raw"]
-        planned: list[dict] = []
-        deferred: list[str] = []
         published = [step for step in current if step["stage"] == "raw" and step["state"] == "completed"]
-        for step in published:
-            # Walk every requested output's chain in dependency order: a weekly
-            # output needs its daily intermediate produced first, and the
-            # intermediate is planned here rather than being left to the user.
-            chain_documents = []
-            for target in targets:
-                # Resolve from the registry, not from a stored copy: the
-                # registry is authoritative, and the digest check above already
-                # guarantees it still matches what the plan was approved for.
-                try:
-                    chain = _recipe_chain(target, raw_timeframe=definition.get("raw_timeframe")
-                                          or DEFAULT_RAW_TIMEFRAME,
-                                          provider=definition["provider"],
-                                          price_basis=definition.get("price_basis") or "bid")
-                except DefinitionError:
-                    chain = None
-                for item in chain or []:
-                    if item not in chain_documents:
-                        chain_documents.append(item)
-            for recipe_document in chain_documents:
-                # The identity is built from normalised UTC strings: the same
-                # window can arrive spelled "Z" or "+00:00" from different
-                # producers, and it must still dedupe.
-                identity = (f"derive:{recipe_document['recipe_id']}:"
-                            f"{_as_utc(step['window_start'], 'window_start').isoformat()}:"
-                            f"{_as_utc(step['window_end'], 'window_end').isoformat()}")
-                if any(item["dedupe_key"] == identity for item in planned) or \
-                        any(item.get("dedupe_key") == identity for item in pending):
-                    continue
-                if len(planned) >= max(1, step_budget):
-                    break
-                try:
-                    snapshot = Catalog(self.canonical_root).resolve(
-                        recipe_document["input_dataset"],
-                        {"provider": definition["provider"], "symbol": definition["symbol"],
-                         "timeframe": recipe_document["source_timeframe"]})
-                except (PublicationError, ValueError):
-                    deferred.append(identity)
-                    continue
-                if not snapshot.parts:
-                    # The upstream step is done but its layer has no published
-                    # part for this selector yet: wait for the next tick.
-                    deferred.append(identity)
-                    continue
-                # A derived window must contain whole target buckets: a bucket
-                # that runs past the window end is an incomplete input, and the
-                # recipe is configured to fail rather than drop it silently.
-                bounds = _bucket_window(step["window_start"], step["window_end"],
-                                        recipe_document["target_timeframe"])
-                if bounds is None:
-                    deferred.append(identity)
-                    continue
-                window_start, window_end = bounds
-                input_id = self.ledger.store_production_input(
-                    snapshot_reference(self.canonical_root, snapshot))
-                job = DeriveJob(
-                    job_id=f"{task['task_id']}:{execution['execution_id'][:8]}:"
-                           f"{recipe_document['target_timeframe']}:{window_start[:10]}",
-                    provider=definition["provider"], symbol=definition["symbol"],
-                    recipe_id=recipe_document["recipe_id"],
-                    recipe_version=recipe_document["recipe_version"],
-                    start=window_start, end=window_end, run_scope="production")
-                payload = {**job.model_dump(mode="json"),
-                           "input_snapshot_id": snapshot.snapshot_id, "input_id": input_id}
-                planned.append({"stage": f"derive:{recipe_document['target_timeframe']}",
-                                "window_start": window_start, "window_end": window_end,
-                                "dedupe_key": identity, "recipe_id": recipe_document["recipe_id"],
-                                "timeframe": recipe_document["target_timeframe"], "payloads": [payload]})
-        return {"steps": planned, "deferred": deferred}
+        steps, deferred = self._plan_derived_windows(
+            task=task, definition=definition, execution_id=execution["execution_id"],
+            windows=[(step["window_start"], step["window_end"]) for step in published],
+            step_budget=step_budget)
+        return {"steps": steps, "deferred": deferred}
 
     # -- dispatch and closure -------------------------------------------
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
@@ -796,6 +873,9 @@ class ProductionTasks:
         now = now or datetime.now(timezone.utc)
         drift = self.reconcile_config_digest(limit=limit)
         closure = self._advance_dependency_closure(limit=limit, step_budget=8)
+        # A round that died after publishing, or raw published outside a round,
+        # is still owed its derived outputs (spec 6.2, AC10).
+        publications = self.reconcile_publications(limit=limit, step_budget=8)
         closed = self.ledger.close_finished_executions(limit=limit)
         advanced = []
         for execution in closed:
@@ -817,7 +897,8 @@ class ProductionTasks:
                 "last_execution_id": execution["execution_id"],
             })
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
-                "derived_planned": closure["planned"], "derived_deferred": closure["deferred"],
+                "derived_planned": closure["planned"] + publications["planned"],
+                "derived_deferred": closure["deferred"] + publications["deferred"],
                 "reconciled_at": now.isoformat()}
 
     def _advance_dependency_closure(self, *, limit: int, step_budget: int) -> dict:
@@ -862,6 +943,12 @@ class ProductionTasks:
         return self.ledger.create_production_execution(
             execution_id=str(uuid4()), task_id=task_id,
             definition_version=task["definition_version"], trigger_source="manual", conn=conn)
+
+
+def _default_cursor(definition: dict) -> str | None:
+    """Where derivation starts when a plan has never been reconciled."""
+    window = definition.get("window_policy") or {}
+    return window.get("history_start") or window.get("start")
 
 
 def _bucket_window(start: str, end: str, timeframe: str) -> tuple[str, str] | None:
