@@ -358,12 +358,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     // The console disables run kinds the platform cannot serve for the selected
     // dataset, instead of letting the planner reject the submission later.
     await page.getByLabel("Task provider").selectOption("fred");
-    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled(), true,
-      "gap repair is not available for the economic dataset");
-    assert.equal(await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled(), true,
-      "derive is not available for the economic dataset");
-    assert.equal(await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(), true,
-      "quality checks are available for the economic dataset");
+    // The run-kind availability follows the selected provider, so wait for the
+    // radios to settle instead of reading them mid-render.
+    await waitFor(async () => await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled()
+      && await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled()
+      && await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(),
+      "run kinds must follow the selected dataset (gap repair/derive off, quality on)");
     await page.getByLabel("Task provider").selectOption("fixture");
     assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isEnabled(), true,
       "gap repair stays available for provider bars");
@@ -644,9 +644,10 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "production", exact: true }).click();
     await page.getByText("Unified dispatch", { exact: true }).waitFor();
     await page.getByText("Registered plans", { exact: true }).waitFor();
-    const planRows = await page.locator("table tbody tr").count();
-    const planEmpty = await page.getByText("No production plans yet", { exact: false }).count();
-    assert.ok(planRows > 0 || planEmpty > 0,
+    // The registry renders after its own load, so wait for whichever of the two
+    // honest states appears instead of sampling the table mid-load.
+    await waitFor(async () => (await page.locator("table tbody tr").count()) > 0
+      || (await page.getByText("No production plans yet", { exact: false }).count()) > 0,
       "the plan registry must list plans or state that there are none");
     const schedulerView = await call("GET", "/operations/scheduler");
     assert.equal(typeof schedulerView.dispatch_enabled, "boolean");
@@ -735,6 +736,37 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     assert.equal(restored.definition_version, edited.definition_version,
       "renaming must not form a new definition version");
 
+    // Lifecycle controls are the operator's daily path, so the acceptance clicks
+    // them instead of only creating plans (AC15): trigger, resume, trigger, pause.
+    const planRow = () => page.locator("tr").filter({ hasText: "Acceptance plan" });
+    // ``call`` already unwraps the response envelope.
+    const readPlan = async () => call("GET", `/production/tasks/${edited.task_id}`);
+    assert.equal((await readPlan()).desired_state, "paused");
+
+    // A paused plan refuses "run now" with a conflict rather than producing.
+    await planRow().getByRole("button", { name: /^Run now/ }).click();
+    await page.getByText("resume the plan before triggering it", { exact: false }).waitFor();
+    assert.equal((await readPlan()).desired_state, "paused");
+
+    await planRow().getByRole("button", { name: /^Resume/ }).click();
+    await planRow().getByRole("button", { name: /^Pause/ }).waitFor();
+    assert.equal((await readPlan()).desired_state, "enabled");
+
+    await planRow().getByRole("button", { name: /^Run now/ }).click();
+    await waitFor(async () => (await readPlan()).current_execution !== null,
+      "triggering an enabled plan must open a round");
+    const triggered = await readPlan();
+    const firstExecution = triggered.current_execution.execution_id;
+
+    // Pausing lets the round in flight finish instead of cancelling it.
+    await planRow().getByRole("button", { name: /^Pause/ }).click();
+    await waitFor(async () => (await readPlan()).desired_state === "paused",
+      "pausing must be recorded on the plan");
+    const paused = await readPlan();
+    assert.ok(["pending", "running", "pausing", "paused"].includes(paused.current_execution.state),
+      `unexpected round state after pause: ${paused.current_execution.state}`);
+    assert.equal(paused.current_execution.execution_id, firstExecution);
+
     // The matrix and the governance list are read-only projections: they must
     // render, and a governance unit must carry no lifecycle control.
     await page.getByText("Registered × planned", { exact: true }).waitFor();
@@ -798,7 +830,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
       "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
-      "production_capacity_gate", "production_plan_edit"],
+      "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
