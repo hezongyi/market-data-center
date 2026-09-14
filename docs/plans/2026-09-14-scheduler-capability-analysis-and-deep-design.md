@@ -6,20 +6,20 @@
 关系说明：
 
 - 本文是**独立评审 + 深化设计**，不替代 [生产任务与统一调度管理设计与验收规范](../specs/2026-09-14-maintenance-scheduler.md)（下称 spec）与 [实施计划](2026-09-14-production-task-scheduler.md)（下称 plan）。
-- 第 2 节回答"这个仓库需要哪些调度能力"，第 3 节列出 spec 尚未覆盖或需要修订的点（G 编号），第 4 节给出可落地的模块接口与数据模型，第 8 节是需要维护者拍板的决策。
+- 第 2 节回答"这个仓库需要哪些调度能力"，第 3 节列出 spec 尚未覆盖或需要修订的点（G 编号），第 4 节给出可落地的模块接口与数据模型，第 8 节记录已确认决策与仍待确认项。
 - 冲突处理建议：需求以 spec 为准；若采纳本文 G 编号中的条目，先修订 spec 再实施，避免两份文档各自表述。
 
 调研基线（只读核对，未改动任何文件、未启停任何单元）：
 
 - 源码：`main` @ `5333394`（= `origin/main`，工作区已有他人未提交的 spec/plan 改动）。
 - 生产：deployment `3e2362ab0b31-6005b252`（`software_version=0.5.0`，`source_commit=3e2362a`），API/worker systemd active，`/health/ready` = `ready`、capacity `ok`、queue 0。
-- 主机：`quant-server`；ledger `/home/quant/market_lake/canonical/audit/data_center.sqlite`（6.5 MB、1117 runs、1117 jobs、`journal_mode=delete`、`user_version=0`、全库仅 1 个非主键索引）。
+- 主机：`quant-server`；ledger `/home/quant/market_lake/canonical/audit/data_center.sqlite`（6.5 MB；核对时 1117 runs、1117 jobs，本文定稿时约 1,136；`journal_mode=delete`、`user_version=0`、全库仅 1 个非主键索引）。
 
 ## 0. 结论摘要
 
 1. **调度确实是这个仓库当前最大的能力缺口。** 数据生产链路（connector、coverage、window planner、transform、staging/publication、质量与 receipt）已经完整且有测试；缺的不是"怎么生产一个窗口"，而是"**谁决定现在生产哪些窗口、按什么节奏、生产到什么程度算完成**"。今天这个决定分散在三处：代码里的 registry（品种/recipe/policy）、机器级 env（`DATACENTER_MAINTENANCE_SYMBOLS` 8 个品种）、systemd timer（节奏）。改一个品种或换一个节奏要动 systemd + env + 部署，且没有任何地方能看到"当前一共有哪些生产计划"。
 2. **"管理所有注册的生产维护计划"目前没有数据模型支撑。** 生产里实际在跑的行情生产计划只有两条：Dukascopy 1m 原始维护（`OnUnitInactiveSec=15min`）与 Dukascopy 1m→5m 派生（macro-market-lab 每天 06:30 UTC 调 Data Center runner）。registry 里注册的 6 个一阶 recipe + 2 个二阶 recipe 中，15m/30m/1h/4h/1d/1w/1mo **没有任何周期性生产者**——不是"配置得不好"，而是从来没被调度过。
-3. **spec 的方向是对的，但它把最难的部分当成了实现细节。** spec 用了很大篇幅规定语义（暂停边界、misfire、依赖、固定输入、幂等、验收 AC01–AC18），这很好；但真正决定成败的三件事只在 spec 里各占一句话：① SQLite 基座（三进程写入、无 WAL、无索引、无 schema 版本）；② 计划所有权与唯一性键（谁拥有哪个 selector）；③ 派发预算与公平性如何落库。本文把这三件事展开（4.4/4.8、G2、G7）。
+3. **spec 的方向是对的，但它把最难的部分当成了实现细节。** spec 用了很大篇幅规定语义（暂停边界、misfire、依赖、固定输入、幂等、验收 AC01–AC24），这很好；但真正决定成败的三件事只在 spec 里各占一句话：① SQLite 基座（三进程写入、无 WAL、无索引、无 schema 版本）；② 计划所有权与唯一性键（谁拥有哪个 selector）；③ 派发预算与公平性如何落库。本文把这三件事展开（4.4/4.8、G2、G7）。
 4. **今天的调度器候选接口已经存在，但要"变深"。** `evaluate_task()`（无副作用预览）、`build_ingest_plan()`/`plan_maintenance()`（纯窗口规划）、`ingest_window_payloads()`（展开成可重试 run）、`TransformExecutor.derive()`（已接受 snapshot 对象）都是干净的内部 seam；缺的是把它们收进一个拥有状态机与事务边界的模块，而不是让 HTTP adapter、CLI runner、systemd timer 各自拼 payload。
 5. **有一个正在流血的生产缺陷与调度直接相关**：派生执行时用"重新解析当前 catalog 并与提交时的 snapshot_id 比较"来保证输入一致，一旦比较失败就是 `ValueError` → `retryable=False` → 该 run **永久 failed**（`backend/src/data_center/ingest/process.py:35,55-61`）。而原始层每 15 分钟推进一次。只要派生工作开始排队，这个竞争就会变成系统性失败。spec 的"持久化固定输入"要求正是解药，但需要新增"由持久化 part 引用重建 `CatalogSnapshot`"的能力（4.6）。
 
@@ -33,7 +33,7 @@
 | 可维护产物 | 代码注册的 recipe（`utc-24x7-1m-to-{5m,15m,30m,1h,4h,1d}-ohlcv@1`、`utc-24x7-1d-to-{1w,1mo}-ohlcv@1`） | `platform_registry.py:104-123` | 与品种的组合是笛卡尔积，但实际只有 5m 有生产者 |
 | 节奏 | systemd timer | `deploy/systemd/market-data-center-1m-maintenance.timer:5-7`（`OnBootSec=5min` + `OnUnitInactiveSec=15min`） | "上一轮结束后 15 分钟"，不是固定相位；改节奏要走部署 |
 | 治理参数 | 代码 policy（`dukascopy_1m`: tail 2 天、shard 60 分钟、lag 180 分钟、gap cooldown 180 分钟、max_window 31 天） | `platform_registry.py:43-45` | 所有品种/任务共用一套，无法按任务调 |
-| 派生范围 | macro-market-lab 桥接脚本写死 `--symbols <8> --recipes utc-24x7-1m-to-5m-ohlcv@1 --start now-2d --end now-1d` | `/home/quant/repos/macro-market-lab/scripts/marketlab-maintain-market-bars-data-center.sh:9-11,25-30` | 派生只覆盖 5m 且滞后一天 |
+| 派生范围 | macro-market-lab 桥接脚本把 `--symbols <8> --recipes utc-24x7-1m-to-5m-ohlcv@1 --start now-2d --end now-1d` 作为默认值（可用环境变量覆盖） | `/home/quant/repos/macro-market-lab/scripts/marketlab-maintain-market-bars-data-center.sh:9-11,25-30` | 派生只覆盖 5m 且滞后一天 |
 
 ### 1.2 实际在跑的周期性生产计划（主机实测）
 
@@ -49,7 +49,7 @@
 两个直接结论：
 
 - 真实 provider 验收变红后，`retention-audit` 作为 `ExecStartPost` 一起停了（最近一份 `operations/capacity_check/` 是 2026-09-11T03:58）。这是"计划的健康度与依赖关系没有被统一管理"的现实后果，调度器接管时必须把保留审计与验收解耦。
-- macro-market-lab 的桥接脚本用仓库 checkout 的 `.venv` 与 `PYTHONPATH`（脚本 `:6-7,23`），与 `docs/current-state.md:32` 记录的"生产进程不引用任何仓库 checkout"相矛盾。接管派生调度是修掉它的自然时机。
+- macro-market-lab 的桥接脚本用仓库 checkout 的 `.venv` 与 `PYTHONPATH`（脚本 `:6-7,23`），与 `docs/current-state.md:12` 记录的"生产进程不再引用任何仓库 checkout"相矛盾。接管派生调度是修掉它的自然时机。
 
 ### 1.3 底层基座现状（决定实施顺序的硬事实）
 
@@ -59,7 +59,7 @@
 | `jobs` 无 `(status, available_at)` 索引，`claim_next_job()` 每次拉全部 queued 行到 Python 过滤 | `runs/ledger.py:317-335` | 到期扫描与领取都是有界性风险；AC14 的"扫描有界"无法在现有 schema 上达成 |
 | 任务+多 run+审计不是原子写：`enqueue_ingest_plan()` 逐窗口 `enqueue_job()`，随后 `upsert_maintenance_task()` 与 `record_write_audit()` 又各开一次连接 | `platform.py:128-134`、`maintenance_tasks.py:499-506` | "接受一轮执行"没有事务边界，中途崩溃会留下半个执行 |
 | 暂停是字符串前缀匹配：`payload["job_id"].startswith(task_id)` | `runs/ledger.py:323-325` | 相邻命名会误伤；没有全局暂停、没有优先级、暂停后重新提交会被 upsert 重置为 queued（`ledger.py:83`） |
-| run 读模型把全部 runs 读进内存再过滤分页 | `run_views.py:148,181,186,303`；实测 1117 runs 读取 + 解析 ≈ 400 ms | 计划历史与"每个计划的 run 列表"不能建在这个读模型上 |
+| run 读模型把全部 runs 读进内存再过滤分页 | `run_views.py:148,181,186,303`；实测约 1,100 runs 时读取 + 解析 ≈ 400 ms | 计划历史与"每个计划的 run 列表"不能建在这个读模型上 |
 | deployment 逻辑哈希写死了要审计的表清单 `("runs","jobs","quality_findings","dead_letter_state","dead_letter_audit")` | `deployment.py:438` | 新表默认**不进**部署身份哈希；不改这里，scheduler 状态的变化对 deployment 校验不可见 |
 | 无 `user_version`、无迁移框架，DDL 由每个进程在构造时执行 | `runs/ledger.py:17-31` | 新表/新列必须补"可重复、可验证"的迁移机制，否则多进程同时 DDL 是隐患 |
 | 派生执行对输入的快照校验失败即永久失败 | `ingest/process.py:35,55-61` | 见 0.5；这是调度器必须解决的正确性问题，不是优化项 |
@@ -199,7 +199,7 @@ reconcile(now, *, budget) -> TickReport                # 调度器唯一写入�
 
 ```text
 production_plans(plan_id PK, alias, name, desired_state, phase, current_version,
-                 owner_key UNIQUE(owner_key) WHERE desired_state IN ('enabled','paused'),
+                 owner_key,
                  created_by, created_at, updated_by, updated_at, deleted_at)
 production_plan_versions(plan_id, version, definition_json, config_digests_json,
                          created_by, created_at, PK(plan_id, version))
@@ -221,7 +221,6 @@ production_input_refs(input_ref_id PK, dataset_id, selector_json, digest,
 production_progress(plan_id, output_key, frontier_end, published_ranges_json,
                     open_gaps_json, pending_ranges_json, publication_cursor,
                     PK(plan_id, output_key))
-production_owners(owner_key PK, plan_id, updated_at)           -- 唯一所有权的落库点
 scheduler_state(id=1, dispatch_enabled, instance_id, heartbeat, last_tick_at, last_error)
 scheduler_leases(plan_id PK, owner, fencing_token, expires_at)
 ```
@@ -333,9 +332,9 @@ WebUI 的具体落点（现状窄且清楚，改动面可控）：
 - `schedule` 在 UI 与线上类型里都被钉死为 `"manual"`（`pages/MaintenancePage.tsx:135`、`lib/api.ts:340`），任务抽屉无条件显示 `t("Manual")`（`MaintenancePage.tsx:329`）——这是要替换的**唯一**单点断言。
 - 任务列表服务端无分页无筛选（`lib/api.ts:700`），过滤在前端做（`MaintenancePage.tsx:325-326`）；AC14 的规模必须走新的 `GET /production/tasks`（cursor 分页），不要扩展旧接口。
 - 进度今天只有状态徽章 + 1500ms 轮询 run detail（`hooks/index.ts:204`）：新视图需要"已完成窗口 / 当前已规划窗口 + 每个产物的完整边界"，并显式禁止合成百分比。
-- 时间与时长：所有时间戳必须走 `<TimeDisplay>`（`preferences.tsx:12`），`TimeMode = Asia/Shanghai | UTC | dual`；**目前没有时长格式化器**（`OperationsPage.tsx:196,240,298` 各自拼字符串），"距下次运行 / availability lag / 到期延迟 / backlog 年龄"应共用一个新 helper；日期输入→ISO-UTC 的转换已经在 4 个页面各写一遍，计划表单不应成为第 5 份。
+- 时间与时长：所有时间戳必须走 `<TimeDisplay>`（`preferences.tsx:12`），`TimeMode = Asia/Shanghai | UTC | dual`；**目前没有时长格式化器**（`OperationsPage.tsx` 多处各自拼字符串（如时长与能力展示）），"距下次运行 / availability lag / 到期延迟 / backlog 年龄"应共用一个新 helper；日期输入→ISO-UTC 的转换已经在 4 个页面各写一遍，计划表单不应成为第 5 份。
 - 认证实际来自 `mdc_session` cookie（`lib/api.ts:629` + auth 面板），`apiKey` prop 形同废弃；写操作失败以 401/403/507 呈现——计划操作按钮的可用性要由后端能力 + 计划状态共同决定，而不是前端猜测。
-- 刷新目前是手动 + 少量轮询（`main.tsx:22-24`、`shell.tsx:22`）；调度心跳/到期延迟视图需要新增独立轮询，且不能复用"任务抽屉 90 次上限"的轮询语义。
+- 刷新目前以手动为主（`main.tsx:22-24`），页面内只有 header 时钟（`shell.tsx:22`）与运行跟踪器两处轮询；调度心跳/到期延迟视图需要新增独立轮询，且不能复用"任务抽屉 90 次上限"的轮询语义。
 - 中文化：新增文本必须进 resources 并保持 key parity（`docs/specs/2026-09-15-webui-deep-chinese-localization.md`）。
 
 产品上必须能回答的四个问题（计划详情的信息架构）：
@@ -349,16 +348,16 @@ WebUI 的具体落点（现状窄且清楚，改动面可控）：
 
 ## 5. 实施路线（S0–S5）
 
-与 plan 的 P1–P5 不冲突，但把顺序按"风险最小的可独立合并单元"重排，并新增**影子模式**：在真正入队之前，先把调度决策写成可核对的 receipt。
+阶段编号与实施计划一致（S0–S5）；本文的贡献是按"风险最小的可独立合并单元"给出排序理由，并新增**影子模式**（S2）：在真正入队之前，先把调度决策写成可核对的 receipt。
 
 | 阶段 | 交付 | 关键点 | 可独立合并 | 对应 AC |
 | --- | --- | --- | --- | --- |
-| **S0 基座** | 迁移框架（`user_version`）、WAL/busy_timeout、批量原子入队、时钟注入、`jobs` 归属列、`runs` 列 + 索引、deployment 哈希表清单 | 不改任何外部行为；对现有 1117 runs 的库做升级演练与备份/恢复回归 | 是 | AC05 基础、AC17 |
-| **S1 计划注册表（只读+写入但 scheduler 关闭）** | `production_plans/versions`、所有权键、`preview/create/read/change`、WebUI 计划列表与详情、`/capabilities` 增补 | 用户能创建/查看/暂停/编辑/归档/删除计划，但**不会自动跑**；这是"管理所有计划"的第一步价值 | 是 | AC01、AC07、AC16 |
+| **S0 基座** | 迁移框架（`user_version`）、WAL/busy_timeout、批量原子入队、时钟注入、`jobs` 归属列、`runs` 列 + 索引、deployment 哈希表清单 | 不改任何外部行为；对现有生产库做升级演练与备份/恢复回归 | 是 | AC05 基础、AC22、AC24 的基础部分 |
+| **S1 计划注册表（只读+写入但 scheduler 关闭）** | `production_plans/versions`、所有权键、`preview/create/read/change`、WebUI 计划列表与详情、`/capabilities` 增补 | 用户能创建/查看/暂停/编辑/归档/删除计划，但**不会自动跑**；这是"管理所有计划"的第一步价值 | 是 | AC01、AC07、AC16、AC19、AC20、AC23 |
 | **S2 时间与影子调度** | `ScheduleSpec`、`reconcile()` 的决策路径、`/operations/scheduler`、tick receipt | scheduler 运行但 `dispatch_enabled=false`：只记录"此刻会派发哪些计划/窗口/步骤"，不写 jobs。用真实 coverage 核对决策正确性 | 是 | AC02、AC03、AC14 |
 | **S3 真实派发与执行** | `production_executions/steps/progress`、lease + fencing、暂停/继续/run_now/retry、backlog、预算与公平 | 先以 1 个 canary 品种 + 单产物接管；`jobs.owner_plan_id` 让暂停真正生效 | 是 | AC04、AC06、AC08、AC13 |
-| **S4 依赖闭环** | `OutputGraph`、`production_input_refs`、publication 游标、重算集合 | 先只做 raw；再接 5m；最后接 1d→1w/1mo；每步都用隔离 worker 做真实发布/readback | 是 | AC09–AC12 |
-| **S5 接管与默认启用** | 1m raw timer → 计划；macro-market-lab 派生桥接 → 计划（改为 release venv）；`retention-audit` 与 provider acceptance 解耦；回滚演练 | 切换前阻止旧入口新提交、收口在途窗口、核对 ledger；保留 `MARKETLAB_MARKET_BARS_BACKEND=legacy` 回退 | 否（需要审批窗口） | AC17、AC18 |
+| **S4 依赖闭环** | `OutputGraph`、`production_input_refs`、publication 游标、重算集合 | 先只做 raw；再接 5m；最后接 1d→1w/1mo；每步都用隔离 worker 做真实发布/readback | 是 | AC09–AC12、AC15 的部分、AC18 的跨 provider 部分 |
+| **S5 接管与默认启用** | 1m raw timer → 计划；macro-market-lab 派生桥接 → 计划（改为 release venv）；`retention-audit` 与 provider acceptance 解耦；回滚演练 | 切换前阻止旧入口新提交、收口在途窗口、核对 ledger；保留 `MARKETLAB_MARKET_BARS_BACKEND=legacy` 回退 | 否（需要审批窗口） | AC15、AC17、AC18、AC21、AC24 |
 
 顺序理由：S0/S1 不改变生产行为却能先交付"能看见、能管理计划"的用户价值；S2 用影子模式把调度决策的正确性证据拿到手再动数据；S4 的依赖闭环放在真实派发之后，避免一上来就同时调试调度与派生正确性。
 
@@ -369,7 +368,7 @@ WebUI 的具体落点（现状窄且清楚，改动面可控）：
 | 时间模型 | 注入时钟 + DST 用例（缺失/重复时刻）、跨月/跨年 daily | 预览与实际一致；执行耗时不影响 fixed_rate 锚点 |
 | 并发与故障 | 多进程（不是线程）竞争、lease 过期接管、事务中断、响应丢失、pause×claim 两种顺序 | 只接受一次逻辑执行；旧 owner 迟到提交被拒；暂停后无新 claim |
 | 数据集成 | 隔离 canonical/ledger/evidence + 真实 worker 子进程 + fixture provider | raw 与所选 derived 可查询；gap 修复触发下游重算；固定输入在新增 part 后仍可重建 |
-| 性能 | 1000 个计划 / 100k runs 的合成库 | 到期扫描与派发 DB 段 P95 < 5 秒；无长写锁；单计划失败不影响他者 |
+| 性能 | 100 个混合计划 + 多年历史的合成库（并按 1,000 计划 / 100k runs 做超出规格的压力探针） | 到期扫描与派发 DB 段 P95 < 5 秒；无长写锁；单计划失败不影响他者 |
 | 浏览器 | pinned Playwright，隔离根 | 创建→预览→暂停→重启→继续→删除 全流程；按钮集合随状态变化 |
 | 统一门禁 | `bash scripts/ci.sh all`（Python 3.10/3.11/3.12、Node 22） | 与现有 CI 一致；新路由进 `MUTATING_ROUTES` |
 | 生产接管 | S5 的切换/回滚演练 | 新旧入口无双写；回滚不领取暂停作业；receipt 绑定 commit/部署身份 |
@@ -396,11 +395,11 @@ WebUI 的具体落点（现状窄且清楚，改动面可控）：
 | 治理型 timer 是否进统一视图 | 纳入，但只读；清单是观测投影而非配置来源，须报告"仓库声明 vs 主机已安装"差异 | spec 3.4 |
 | 首版并行度 | 每 ledger 一个数据 worker；并行度作为计划与全局的策略字段，默认 1；重新评估的触发条件写入 spec | spec 7.3 |
 | 新建周期计划默认节奏 | `fixed_rate` 15 分钟；旧 timer 导入保留 `fixed_delay=15m`；单轮常超周期时可改回 | spec 5.1 |
-| `retention-audit` 解耦 | 作为接管前的先行独立小发布，带独立 receipt，不得并入接管批次 | spec 9.3 |
+| `retention-audit` 解耦 | 作为接管前的先行独立小发布，带独立 receipt（并登记到运维 receipt 视图的 action 列表），不得并入接管批次 | spec §9 第 3 条 |
 
 仍待确认：
 
-1. **实施计划对齐**：AC19–AC24 与 S0–S5 尚未映射到 plan 的 P1–P5，需要一次 plan 修订后才能开工（本次未做，维护者只选择了"把建议定稿进 spec"）。
+1. **开工时间与范围**：计划对齐已在同一次修订中完成（plan 使用 S0–S5 并映射 AC19–AC24）；何时开始 S0、以及是否先单独发布 `retention-audit` 解耦，仍由维护者安排。
 
 ## 9. 附：本文与现有 spec/plan 的对照
 
@@ -414,4 +413,4 @@ WebUI 的具体落点（现状窄且清楚，改动面可控）：
 | 可靠性 | §7 完整 | 4.5 tick 事务边界 + 4.8 substrate 前置（G5/G6） |
 | HTTP 契约 | §8 完整 | 4.9 仓库强制门禁（MUTATING_ROUTES、EnvironmentFile） |
 | 接管 | §9 完整 | §1.2 实测清单 + G11/G12 |
-| 验收 | §11 AC01–AC18 | §6 补齐性能/故障注入的具体断言 |
+| 验收 | §11 AC01–AC24 | §6 补齐性能/故障注入的具体断言 |

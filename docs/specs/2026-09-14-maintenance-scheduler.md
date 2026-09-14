@@ -46,7 +46,7 @@ v0.5 已提供维护任务注册、手动提交、状态展示和有限的暂停
 1. **统一视图纳入治理型单元，但只读**（3.4）：清单同时显示生产计划与治理型单元（monitor、smoke、provider acceptance、backup/restore、release），后者只有所有者、节奏与最近 receipt，调度器对其无启停、改写或重排权限。纳入的理由是视图可信度与缺陷可见性：只显示生产计划而主机还跑着其它定时任务，等于向运维隐瞒事实；反之，“某个治理单元最近 receipt 已是数天前”这类缺陷会自然浮出。若将来出现“顺手启停治理单元”的需求，属于范围变更，必须回到本节重新决策。
 2. **首个交付批次保持每 ledger 一个数据 worker，并行度是可配置策略而非硬编码**（7.3）：串行吞吐量级可接受（8 品种 × 31 天 × 60 分钟分片约 5,950 个窗口，按每窗口 3–10 秒估算约 5–17 小时的一次性回补），而并行的真实瓶颈是 SQLite 写竞争、provider 限流与唯一发布路径，必须在幂等与所有权经过真实并发验证之后才引入。重新评估并行的触发条件：需要多年历史、需要同时维护多个高周期产物，或影子与灰度数据证明串行无法满足新鲜度。
 3. **新建周期计划默认 `fixed_rate`，只有旧 timer 导入使用 `fixed_delay`**（5.1）：可预览的确定时刻、可度量的到期延迟与可定义的合并语义都要求锚点式计划；防重叠由“每计划至多一个非终态 execution + provider 延迟 + 合并触发”保证，不依赖相对时间。若观察数据表明单轮耗时经常超过周期，可把原始层默认改为 `fixed_delay`——这是按计划可调的字段，不是架构决策。
-4. **`retention-audit` 与 provider acceptance 的解耦作为先行独立修复**（9）：它不属于本功能交付，但在接管前必须完成并以独立 receipt 留证；不得等到调度器接管时才处理。
+4. **`retention-audit` 与 provider acceptance 的解耦作为先行独立修复**（9 第 3 条）：它不属于本功能交付，但在接管前必须完成并以独立 receipt 留证；不得等到调度器接管时才处理。
 
 ## 2. 当前基线与差距
 
@@ -54,16 +54,16 @@ v0.5 已提供维护任务注册、手动提交、状态展示和有限的暂停
 
 | 现有能力 | 源码或文档证据 | 需要补齐 |
 | --- | --- | --- |
-| 手动请求必须带固定 start/end，schedule 只接受 manual | `backend/src/data_center/maintenance_tasks.py:73` | 长期任务需要“数据窗口策略”，不能周期性重放旧请求中的固定日期 |
-| 任务提交先逐个 enqueue，再 upsert 一份任务 payload，保存本次 run_ids | `backend/src/data_center/maintenance_tasks.py:433`；`backend/src/data_center/platform.py:128` | 长期定义、每次执行和历史运行需要独立记录；现有逐次提交不能直接充当原子调度事务 |
-| 任务表只有 task_id、payload、status、updated_at；展示状态由关联 run 再推导 | `backend/src/data_center/runs/ledger.py:21`、`:81` | 需要分开“用户是否启用”和“本轮是否成功”，不能共用一个 status |
+| 手动请求必须带固定 start/end，schedule 只接受 manual | `backend/src/data_center/maintenance_tasks.py:80-83` | 长期任务需要“数据窗口策略”，不能周期性重放旧请求中的固定日期 |
+| 任务提交先逐个 enqueue，再 upsert 一份任务 payload，保存本次 run_ids | `backend/src/data_center/maintenance_tasks.py:433`、`:499-506`；`backend/src/data_center/platform.py:128-134` | 长期定义、每次执行和历史运行需要独立记录；现有逐次提交不能直接充当原子调度事务 |
+| 任务表只有 task_id、payload、status、updated_at；展示状态由关联 run 再推导 | `backend/src/data_center/runs/ledger.py:21`、`:92-96` | 需要分开“用户是否启用”和“本轮是否成功”，不能共用一个 status |
 | 暂停通过 job_id 字符串前缀阻止 queued 作业领取 | `backend/src/data_center/runs/ledger.py:317`；`backend/tests/test_ledger_reliability.py:20` | 已有有限的暂停基础，但需要精确 task_id 关联，避免相似名称误匹配，覆盖分片和 retry |
-| 原始维护由 systemd 触发 maintenance_runner，经 API 提交并等待 worker | `deploy/systemd/market-data-center-1m-maintenance.timer:6`；`backend/src/data_center/maintenance_runner.py:292` | 现有周期是“上轮结束后 15 分钟”，不是固定每刻钟；任务 registry 尚未成为它的控制入口 |
+| 原始维护由 systemd 触发 maintenance_runner，经 API 提交并等待 worker | `deploy/systemd/market-data-center-1m-maintenance.timer:5-7`；`backend/src/data_center/maintenance_runner.py:399-401` | 现有周期是“上轮结束后 15 分钟”，不是固定每刻钟；任务 registry 尚未成为它的控制入口 |
 | Dukascopy policy 为 2 天 tail、60 分钟分片、180 分钟可用延迟与 gap cooldown | `backend/src/data_center/platform_registry.py:43` | 新任务默认继承这些治理参数，WebUI 显示有效参数和预计数据时效 |
 | 已有 snapshot-aware 派生 runner，逐层解析 recipe、提交 derive、记录 receipt | `backend/src/data_center/derived_maintenance_runner.py:132`、`:200` | 提取、复用其规划逻辑，补持久化步骤和自动依赖推进 |
 | 运维记录指出派生曾由 macro-market-lab 的 systemd service 调用 Data Center runner | `docs/specs/2026-09-11-market-bars-derivation-and-macro-cutover.md` 末尾 | 接管时必须盘点两个项目的旧入口，不能只停本仓库原始层 timer |
-| worker 以每 ledger 的 flock 保证单 supervisor，并恢复 staging/publication | `backend/src/data_center/ingest/worker.py:26`、`:141` | scheduler 多实例去重与数据 worker 并行是两件事；首版保留单 worker |
-| derive 入队及执行时都要求 snapshot 与当前 catalog 一致；snapshot 缓存有进程内 TTL | `backend/src/data_center/ingest/worker.py:54`；`backend/src/data_center/ingest/process.py:52`；`backend/src/data_center/catalog/snapshot.py:85` | 长时间排队和暂停恢复需要持久化输入引用，不能只存一个可能无法重建的 snapshot_id |
+| worker 以每 ledger 的 flock 保证单 supervisor，并恢复 staging/publication | `backend/src/data_center/ingest/worker.py:70-78`、`:141-164` | scheduler 多实例去重与数据 worker 并行是两件事；首版保留单 worker |
+| derive 入队及执行时都要求 snapshot 与当前 catalog 一致；snapshot 缓存有进程内 TTL | `backend/src/data_center/ingest/worker.py:54-68`；`backend/src/data_center/ingest/process.py:55-61`；`backend/src/data_center/catalog/snapshot.py:41,121-124` | 长时间排队和暂停恢复需要持久化输入引用，不能只存一个可能无法重建的 snapshot_id |
 | recipes、approved instruments、session/calendar、coverage 和容量策略已经存在 | `backend/src/data_center/platform_registry.py`；`docs/operations-runbook.md` | scheduler 复用这些事实，不重新解释交易时段、BID 或质量规则 |
 | 生产计划定义分散在三处：代码 registry（品种/recipe/policy）、机器级 env `DATACENTER_MAINTENANCE_SYMBOLS`、systemd timer（节奏） | `backend/src/data_center/platform_registry.py:41-45,103-123`；`backend/src/data_center/settings.py:41,82-89`；`deploy/systemd/market-data-center-1m-maintenance.timer:5-7` | 需要单一计划注册表：品种范围、产物、范围、节奏、治理参数都是计划数据，不靠部署改动 |
 | 生产实际在跑的行情周期计划只有两条：原始 1m 维护、1m→5m 派生；15m/30m/1h/4h/1d/1w/1mo 已注册但无任何周期生产者 | `deploy/systemd/market-data-center-1m-maintenance.timer`；`/home/quant/repos/macro-market-lab/scripts/marketlab-maintain-market-bars-data-center.sh:9-11,25-30` | 接管首版只覆盖这两条；其余 recipe 是按需创建的能力，不随接管默认启用 |
@@ -72,7 +72,7 @@ v0.5 已提供维护任务注册、手动提交、状态展示和有限的暂停
 | deployment 逻辑哈希写死了审计表清单 | `backend/src/data_center/deployment.py:438` | 新增的调度状态表必须进入该清单，否则部署身份看不见调度状态 |
 | 派生执行以“重新解析当前 catalog 并与提交时 snapshot_id 比较”保证输入一致，失败为 `ValueError` 且 `retryable=False` | `backend/src/data_center/ingest/process.py:35,55-61` | 需要持久化 part 引用并能重建执行输入，否则派生排队期间 raw 推进一次即永久失败（见 6.3） |
 | 真实 provider 验收自 2026-09-11T03:39 起连续失败，其 `ExecStartPost` 的 `operations retention-audit` 随之停跑（最近 receipt 2026-09-11T03:58） | `deploy/systemd/market-data-center-provider-acceptance.service:12`；`acceptance/receipt-*.json` | 计划的健康度与依赖需要被显式管理；接管清单中必须把保留审计与验收解耦（见 9） |
-| macro-market-lab 的派生桥接使用仓库 checkout 的 `.venv` 与 `PYTHONPATH` | `/home/quant/repos/macro-market-lab/scripts/marketlab-maintain-market-bars-data-center.sh:6-7,23` | 与 `docs/current-state.md:32` 的“生产进程不引用仓库 checkout”冲突，接管派生调度时必须改为 release venv + deployment manifest |
+| macro-market-lab 的派生桥接使用仓库 checkout 的 `.venv` 与 `PYTHONPATH` | `/home/quant/repos/macro-market-lab/scripts/marketlab-maintain-market-bars-data-center.sh:6-7,23` | 与 `docs/current-state.md:12` 的“生产进程不再引用任何仓库 checkout”冲突，接管派生调度时必须改为 release venv + deployment manifest |
 
 因此当前缺少的是生产目标的持久化控制及调度闭环，以及支撑它的持久化基座（事务、索引、迁移、身份）。底层数据生产和有界维护能力可以继续使用。
 
@@ -101,7 +101,7 @@ v0.5 已提供维护任务注册、手动提交、状态展示和有限的暂停
 
 统一调度视图放在任务中心，展示 scheduler 心跳、是否允许派发、执行积压、最老到期延迟、待补数据跨度、容量阻塞、按 provider 的退避、正在占用的任务和 worker。Operations 保留系统健康入口，并链接到这份视图。
 
-支持：暂停、继续、立即执行、重试失败步骤、编辑未来配置、复制、归档、删除。暂停任务的“立即执行”返回明确冲突并提示先继续；如果已有执行尚未完成，“立即执行”定位到该执行，不再新建一轮。归档要求已暂停且没有非终态 execution；暂停中的未完成执行需先继续并收口。归档只停止任务使用，保留历史与数据；删除的语义与前置条件见 5.4。编辑配置不改变 `desired_state`：编辑一个暂停中的任务不会顺带恢复生产，恢复必须是一次显式动作。
+支持：暂停、继续、立即执行、重试失败步骤、编辑未来配置、复制、归档、删除。暂停任务的“立即执行”返回明确冲突并提示先继续；如果已有执行尚未完成，“立即执行”定位到该执行，不再新建一轮。归档要求没有非终态 execution；对处于 enabled 的计划，归档必须在同一次操作内先暂停再归档，不得让在途执行失去归属。归档只停止任务使用，保留历史与数据；删除的语义与前置条件见 5.4。编辑配置不改变 `desired_state`：编辑一个暂停中的任务不会顺带恢复生产，恢复必须是一次显式动作。
 
 全局暂停作用于新 scheduler 管理的全部生产任务，采用窗口边界暂停；保持其他手动维护的既有语义，并在界面明确范围。全局继续不能解除用户单独暂停的任务。完整停机仍由运维流程处理。
 
@@ -192,13 +192,13 @@ ProductionTask（长期生产定义，含不可变配置版本）
 
 任务编辑使用 definition_version 乐观锁。名称等展示信息可即时更新；schedule/outputs/window policy 形成新版本，仅影响后续 execution。已有 paused execution 继续使用原版本。provider/symbol 变更通过复制新任务完成，避免旧进度绑定到不同数据。
 
-配置版本必须持久化解析当时得到的配置摘要（dataset、capability、instrument、session、calendar、quality profile、maintenance policy 的 digest，由现有 planner 产出）。每次 reconciliation 比对当前 registry：摘要变化意味着 recipe、品种元数据或治理参数在计划之外被改动，此时该计划进入 `health=config_drift`、停止新派发、保留已发布数据与在途收口，并明确要求用户确认后再启用；不得静默按新语义继续生产。
+配置版本必须持久化解析当时得到的配置摘要（dataset、capability、instrument、session、calendar、quality profile、maintenance policy 的 digest，由现有 planner 产出）。每次 reconciliation 比对当前 registry：摘要变化意味着 recipe、品种元数据或治理参数在计划之外被改动，此时该计划进入 `health=config_drift`、停止新派发、保留已发布数据与在途收口，并要求显式确认（`acknowledge_drift`）后才能恢复派发；已处于 enabled 的计划在漂移后也必须先确认，不得靠重新启停绕过。不得静默按新语义继续生产。
 
 ### 5.4 归档与删除
 
 | 动作 | 语义 | 前置条件 | 保留 |
 | --- | --- | --- | --- |
-| archive | 停止使用，可恢复 | 无在途 execution | 计划定义、执行历史、数据 |
+| archive | 停止使用，可恢复 | 无非终态 execution（enabled 计划在同一次操作内先暂停再归档） | 计划定义、执行历史、数据 |
 | delete | 删除计划**定义**（墓碑） | 已 archive 或 paused；无非终态 execution；所有权已释放 | canonical part、manifest、run、terminal receipt、`write_audit`、墓碑行 |
 
 规则：
@@ -336,7 +336,7 @@ readiness 分开报告读可用、写可用、worker 状态和 scheduler 状态�
 
 `/runs` 与详情投影增补 task_id/execution_id/step_id 的查询关系。terminal receipts 通过独立关联读模型增强，不原地修改旧 JSON。`/capabilities` 增补可用任务类型、计划类型、最小周期、生产输出、计划 `health` 与 `block_reason` 枚举及 scheduler 是否启用；前端依实际能力显示。
 
-管理动作沿用既有约定：`POST /production/tasks/{id}/actions` 的 command 集合为 `pause | resume | run_now | retry | archive | delete | enable | disable`，全部支持幂等键与 `expected_version`；删除按 5.4 的规则返回墓碑结果。列表与历史复用既有 envelope、错误码与 HMAC cursor 约定（cursor 绑定筛选条件集，越界返回 422）。
+管理动作沿用既有约定：`POST /production/tasks/{id}/actions` 的 command 集合为 `update | pause | resume | run_now | retry | archive | copy | delete | acknowledge_drift`（启停由 `resume`/`pause` 表达，不另设 enable/disable；`copy` 对应 3.2 的复制），全部支持幂等键与 `expected_version`；删除按 5.4 的规则返回墓碑结果。列表与历史复用既有 envelope、错误码与 HMAC cursor 约定（cursor 绑定筛选条件集，越界返回 422）。
 
 实施时必须同时满足仓库既有的强制门禁：任何新增写路由都要登记进 `backend/tests/test_api_surface_contract.py` 的 `MUTATING_ROUTES`（含鉴权与审计决策），新增 systemd 单元的 `EnvironmentFile` 必须位于机器级配置目录下（`scripts/production_env_check.py` 校验），否则统一门禁直接失败。
 
@@ -352,7 +352,7 @@ readiness 分开报告读可用、写可用、worker 状态和 scheduler 状态�
 
 1. **原始层**：`market-data-center-1m-maintenance`（启动后 5 分钟 + 上轮结束后 15 分钟；导入为 `fixed_delay=15m`，不得静默改成 fixed_rate）。
 2. **派生层**：macro-market-lab 的 `marketlab-market-bars-maintenance`（每天 06:30 UTC，调用 Data Center runner，当前只生产 5m）。首版接管只覆盖它实际生产的产物；其它 recipe 按需创建。接管时该入口必须改为使用 release venv 与 deployment manifest，禁止继续引用仓库 checkout。
-3. **先行独立修复（不属于本功能交付，但必须在接管前完成）**：`market-data-center-provider-acceptance` 的 `ExecStartPost` 承担了 `operations retention-audit`；该验收自 2026-09-11 起连续失败，保留审计随之停跑。必须把保留审计拆成独立单元（自己的 service/timer，具备自己的 `EnvironmentFile`、证据目录与 receipt），使其不依赖验收结果。它以独立的小发布交付并留痕，不得并入调度器接管批次，也不得因为“接管时会一起处理”而继续推迟；provider 验收本身的失败按独立缺陷处理，不与本解耦混为一谈。
+3. **先行独立修复（不属于本功能交付，但必须在接管前完成）**：`market-data-center-provider-acceptance` 的 `ExecStartPost` 承担了 `operations retention-audit`；该验收自 2026-09-11 起连续失败，保留审计随之停跑。必须把保留审计拆成独立单元（自己的 service/timer，具备自己的 `EnvironmentFile`、证据目录与 receipt），使其不依赖验收结果。它以独立的小发布交付并留痕，不得并入调度器接管批次，也不得因为“接管时会一起处理”而继续推迟；provider 验收本身的失败按独立缺陷处理，不与本解耦混为一谈。新的保留审计单元必须有自己的 receipt action，并登记到运维 receipt 视图的 action 列表，否则运维页面看不到它。
 4. **只读清单**：monitor、smoke、provider acceptance、backup/restore 与 release 定时任务不接管，但按 3.4 进入统一视图的清单，显示所有者、节奏与最近 receipt。
 5. **仓库模板与主机现实**：以主机实际安装的单元为准（例如 macro-market-lab 仓库模板中的经济/事件日历 timer 并未安装），差异必须记录在接管 receipt 中，不得据仓库文件推断生产现状。
 
@@ -421,6 +421,6 @@ scheduler 必须纳入 immutable deployment 的身份、启动、健康检查与
 
 2026-09-14（第二次修订，并入独立评审结论）：新增所有权键与目录同步（3.3）、统一视图的只读清单范围（3.4）、归档与删除语义（5.4）、配置漂移校验（5.3）、基座前置条件（7.4）、固定输入的可重建要求（6.3）、接管清单的实测条目与副作用解耦（9），以及 AC19–AC24；不变量增加第 11–13 条。三项已确认的决策：删除只删计划定义并保留数据与历史；接管首版只覆盖当前已有周期生产者的产物（原始 1m 与 1m→5m 派生），其余已注册 recipe 按需创建、不默认回补；治理型 timer 只进入只读清单、不被接管。评审证据与缺口编号见[调度能力分析与深化设计](../plans/2026-09-14-scheduler-capability-analysis-and-deep-design.md)。
 
-本次新增的 AC19–AC24 尚未映射到[实施计划](../plans/2026-09-14-production-task-scheduler.md)的 P1–P5；计划的阶段划分与基座前置（迁移、WAL、批量原子提交、归属列、部署身份）需要在下一次修订中对齐，评审文档第 5 节给出的 S0–S5 顺序可作为输入。
+AC19–AC24 已在同一次修订中映射到[实施计划](../plans/2026-09-14-production-task-scheduler.md)的阶段（S0–S5）；该计划此前只以未提交草稿形式存在，本修订是它第一次进入版本控制，因此以 S0–S5 为唯一阶段编号。
 
-2026-09-14（第三次修订，决策定稿）：把维护者确认的四项决策写入本文——统一视图只读纳入治理型单元（§1 决策 1、3.4）、首版单数据 worker 但并行度作为策略字段（决策 2、7.3）、新建周期计划默认 fixed_rate 而旧 timer 导入保留 fixed_delay（决策 3、5.1）、`retention-audit` 解耦作为接管前的先行独立修复（决策 4、9.3）。同时明确只读清单是观测投影而非配置来源，须报告“仓库声明 vs 主机已安装”的差异。实施计划仍需一次对齐修订，把该先行修复列为独立工作项。
+2026-09-14（第三次修订，决策定稿）：把维护者确认的四项决策写入本文——统一视图只读纳入治理型单元（§1 决策 1、3.4）、首版单数据 worker 但并行度作为策略字段（决策 2、7.3）、新建周期计划默认 fixed_rate 而旧 timer 导入保留 fixed_delay（决策 3、5.1）、`retention-audit` 解耦作为接管前的先行独立修复（决策 4、9.3）。同时明确只读清单是观测投影而非配置来源，须报告“仓库声明 vs 主机已安装”的差异。实施计划已把该先行修复列为接管前必须完成的独立工作项。
