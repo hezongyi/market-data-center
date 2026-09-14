@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
 from data_center.control_plane import InstrumentMetadata
 from data_center.ingest.worker import LocalWorker
 from data_center.platform_registry import REGISTRY
