@@ -277,14 +277,14 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
     if (!draft) {
       setTaskNotice(plan.window
         ? `No bounded window is on screen, so ${plan.kind || "a maintenance"} task cannot be prefilled for ${plan.selector}. Set Query start date and Query end date, or load coverage that publishes an observed window.`
-        : `No selector is on screen yet. Load coverage or run a query before planning a maintenance task.`);
+        : `No selector is on screen yet. Load bars and coverage or run a query before planning a maintenance task.`);
       return;
     }
     if (onMaintenance) { onMaintenance(draft); return; }
     setTaskNotice(`Maintenance is not wired into this view. Open the Maintenance workspace and plan ${plan.kind} for ${plan.selector} over ${plan.window}.`);
   };
 
-  const submitLabel = mode === "bars" ? "Load coverage" : mode === "market" ? "Load market bars" : "Load observations";
+  const submitLabel = mode === "bars" ? "Load bars and coverage" : mode === "market" ? "Load market bars" : "Load observations";
 
   return <div className="explorer-page">
     <section className="panel" aria-label="Query">
