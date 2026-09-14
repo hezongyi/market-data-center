@@ -99,11 +99,12 @@ def _daily_candidate(*, now: datetime, zone: ZoneInfo, local_time: str, day_offs
     return candidate.astimezone(UTC)
 
 
-def _daily_next(*, now: datetime, zone: ZoneInfo, local_time: str) -> datetime:
+def _daily_next(*, now: datetime, zone: ZoneInfo, local_time: str, strict: bool = False) -> datetime:
     candidate = _daily_candidate(now=now, zone=zone, local_time=local_time)
     # A repeated (ambiguous) local time resolves to its first occurrence; once
     # that instant has passed the second one is skipped in favour of tomorrow.
-    if candidate <= now:
+    passed = candidate <= now if strict else candidate < now
+    if passed:
         candidate = _daily_candidate(now=now, zone=zone, local_time=local_time, day_offset=1)
     return candidate
 
@@ -111,12 +112,17 @@ def _daily_next(*, now: datetime, zone: ZoneInfo, local_time: str) -> datetime:
 def next_run_at(*, schedule: str, now: datetime, anchor: datetime | None = None,
                 interval_seconds: int | None = None, run_at: datetime | None = None,
                 completed_at: datetime | None = None, timezone_name: str | None = None,
-                local_time: str | None = None) -> datetime | None:
+                local_time: str | None = None, strict: bool = False) -> datetime | None:
     """Return the next scheduled slot, or ``None`` when the plan has no fixed time.
 
     The function is pure schedule arithmetic: it never decides whether a slot
     was already consumed.  A ``once`` slot stays visible after it expires so the
     caller can record the misfire (``late_by``) instead of losing the run.
+
+    ``strict`` selects which question is being asked: the default returns the
+    earliest slot at or after ``now`` (planning a new plan, showing a preview),
+    while ``strict=True`` returns the earliest slot after ``now``, which is what
+    advancing a plan that just accepted a slot needs.
     """
     now = _require_aware(now, "now")
     schedule = _canonical_schedule(schedule)
@@ -131,13 +137,16 @@ def next_run_at(*, schedule: str, now: datetime, anchor: datetime | None = None,
         # Without a completion there is no honest absolute time to show.
         return None if completed is None else completed + timedelta(seconds=interval_seconds)
     if schedule == "daily":
-        return _daily_next(now=now, zone=_load_zone(timezone_name), local_time=local_time or "")
+        return _daily_next(now=now, zone=_load_zone(timezone_name), local_time=local_time or "",
+                           strict=strict)
     if not interval_seconds or interval_seconds <= 0:
         raise ValueError("interval schedules require positive interval and anchor")
     anchor = _require_aware(anchor, "anchor")
     if anchor is None:
         raise ValueError("interval schedules require positive interval and anchor")
-    if anchor > now:
+    # A tick that lands exactly on the anchor sees that slot as due rather than
+    # already past, so the first planned time is the first run.
+    if anchor > now or (anchor == now and not strict):
         return anchor
     steps = int((now - anchor).total_seconds() // interval_seconds) + 1
     return anchor + timedelta(seconds=steps * interval_seconds)
@@ -268,11 +277,14 @@ class Scheduler:
             # ``manual`` never advances on its own, a one-shot slot is consumed,
             # and a fixed-delay plan can only advance on a terminal execution.
             return None
+        # Advancing asks for the slot *after* now: accepting a slot and then
+        # immediately re-accepting it would run the same moment twice.
         return next_run_at(
             schedule=kind, now=now, anchor=_optional_utc(schedule.get("anchor")),
             interval_seconds=schedule.get("interval_seconds"),
             run_at=_optional_utc(schedule.get("run_at")),
-            timezone_name=schedule.get("timezone"), local_time=schedule.get("local_time"))
+            timezone_name=schedule.get("timezone"), local_time=schedule.get("local_time"),
+            strict=True)
 
     def tick(self, *, now: datetime | None = None, budget: int | None = None) -> dict:
         """Evaluate due plans inside explicit bounds and return an auditable decision list.

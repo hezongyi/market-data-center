@@ -54,7 +54,7 @@ from data_center.production_tasks import (
     ProductionTasks,
 )
 from data_center.run_views import RunCursorError, RunValidationError, RunView
-from data_center.runs.ledger import RunLedger
+from data_center.runs.ledger import IdempotencyConflict, RunLedger
 from data_center.settings import Settings
 from data_center.snapshot import ReceiptIndex, build_snapshot
 from data_center.storage.query import (
@@ -351,16 +351,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Write failures carry a stable, safe semantic code so a console can
         # distinguish permission, protection, conflict and validation without
         # parsing prose; the message stays human-readable.
-        code = {
-            401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
-            422: "invalid_request", 507: "capacity_protected",
-        }.get(exc.status_code, "internal_error" if exc.status_code >= 500 else str(exc.status_code))
+        detail = exc.detail
+        errors = None
+        if isinstance(detail, dict) and detail.get("code"):
+            # A route that knows *why* it refused keeps its stable code instead
+            # of being flattened into the generic status code (spec 8).
+            code = str(detail["code"])
+            message = str(detail.get("message") or code)
+            errors = [{"code": code, "message": message}]
+            errors.extend({**item, "code": item.get("code", code)} for item in detail.get("errors") or [])
+        else:
+            code = {
+                401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
+                422: "invalid_request", 507: "capacity_protected",
+            }.get(exc.status_code, "internal_error" if exc.status_code >= 500 else str(exc.status_code))
+            message = str(detail)
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "data": None,
                 "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": [{"code": code, "message": str(exc.detail)}],
+                "errors": errors or [{"code": code, "message": message}],
             },
         )
 
@@ -515,6 +526,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     production_tasks_service = ProductionTasks(
         ledger, cursor_secret=config.api_key or str(config.canonical_root))
 
+    def production_conflict_status(code: str) -> int:
+        """Refusals that are bad requests stay 422; genuine state conflicts are 409."""
+        return 422 if code in {"expected_version_required", "unsupported_command",
+                               "cursor_error", "page_size_error"} else 409
+
     @app.get(f"{config.api_prefix}/production/tasks")
     def production_tasks(provider: str | None = None, symbol: str | None = None,
                          desired_state: str | None = None, include_deleted: bool = False,
@@ -527,7 +543,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 provider=provider, symbol=symbol, desired_state=desired_state,
                 include_deleted=include_deleted, page_size=page_size, cursor=cursor)
         except ProductionConflict as exc:
-            raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(page["tasks"], meta={"page": page["page"]})
 
     @app.post(f"{config.api_prefix}/production/tasks", status_code=201)
@@ -543,17 +560,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_id=current_request_id(),
                 idempotency_key=request.headers.get("Idempotency-Key"))
         except DefinitionError as exc:
-            ledger.record_write_audit({"action": "production.task.create", "actor": actor,
-                                       "request_id": current_request_id(), "outcome": "rejected",
-                                       "code": "invalid_definition", "message": str(exc)})
             raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
                                                          "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
         except ProductionConflict as exc:
-            ledger.record_write_audit({"action": "production.task.create", "actor": actor,
-                                       "request_id": current_request_id(),
-                                       "task_id": payload.get("task_id"), "outcome": "rejected",
-                                       "code": exc.code, "message": str(exc)})
-            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/production/plans")
@@ -591,9 +606,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="production task not found") from exc
         except DefinitionError as exc:
             raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
                                                          "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
         except ProductionConflict as exc:
-            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/production/tasks/{{task_id}}/actions")
@@ -602,7 +622,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_api_key(config, x_api_key)
         command = str(payload.get("command") or "")
         actor = operator_identity(request, config)
-        audit_action = f"production.task.{command or 'action'}"
         try:
             result = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
@@ -611,23 +630,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 alias=payload.get("alias"),
                 idempotency_key=request.headers.get("Idempotency-Key"))
         except KeyError as exc:
-            ledger.record_write_audit({"action": audit_action, "actor": actor,
-                                       "request_id": current_request_id(), "task_id": task_id,
-                                       "outcome": "rejected", "code": "not_found", "message": command})
             raise HTTPException(status_code=404, detail="production task not found") from exc
         except DefinitionError as exc:
-            ledger.record_write_audit({"action": audit_action, "actor": actor,
-                                       "request_id": current_request_id(), "task_id": task_id,
-                                       "outcome": "rejected", "code": "invalid_definition",
-                                       "message": str(exc)})
             raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
                                                          "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
         except ProductionConflict as exc:
-            ledger.record_write_audit({"action": audit_action, "actor": actor,
-                                       "request_id": current_request_id(), "task_id": task_id,
-                                       "outcome": "rejected", "code": exc.code, "message": str(exc)})
-            status = 422 if exc.code in {"unsupported_command", "expected_version_required"} else 409
-            raise HTTPException(status_code=status,
+            raise HTTPException(status_code=production_conflict_status(exc.code),
                                 detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(result)
 

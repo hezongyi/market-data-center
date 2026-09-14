@@ -301,14 +301,14 @@ class RunLedger:
                 "provider": provider, "symbol": symbol, "next_run_at": next_run_at}
 
     _TASK_COLUMNS = ("task_id,alias,name,desired_state,definition_version,payload,created_at,updated_at,"
-                     "deleted_at,provider,symbol,next_run_at")
+                     "deleted_at,provider,symbol,next_run_at,deleted_digest")
 
     @classmethod
     def _task_document(cls, row) -> dict:
         return {"task_id": row[0], "alias": row[1], "name": row[2], "desired_state": row[3],
                 "definition_version": row[4], "payload": json.loads(row[5]), "created_at": row[6],
                 "updated_at": row[7], "deleted_at": row[8], "provider": row[9], "symbol": row[10],
-                "next_run_at": row[11]}
+                "next_run_at": row[11], "deleted_digest": row[12]}
 
     def list_production_tasks(self, *, include_deleted: bool = False) -> list[dict]:
         with self._connect() as conn:
@@ -440,9 +440,10 @@ class RunLedger:
 
     def ownership_of(self, task_id: str) -> builtins.list[dict]:
         with self._connect() as conn:
-            rows = conn.execute("select ownership_key,state,updated_at from plan_ownership "
+            rows = conn.execute("select ownership_key,state,updated_at,task_id from plan_ownership "
                                 "where task_id=? order by id", (task_id,)).fetchall()
-        return [{"ownership_key": r[0], "state": r[1], "updated_at": r[2]} for r in rows]
+        return [{"ownership_key": r[0], "state": r[1], "updated_at": r[2], "task_id": r[3]}
+                for r in rows]
 
     def _set_task_state(self, conn, task_id: str, state: str, expected_version: int | None) -> dict:
         if state not in {"enabled", "paused", "archived"}:

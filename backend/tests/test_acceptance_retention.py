@@ -180,6 +180,42 @@ def test_backup_rejects_ledger_outside_canonical_root(tmp_path):
         create_backup(tmp_path / "canonical", tmp_path / "outside.sqlite", tmp_path / "backup.tar.gz")
 
 
+def test_backup_restore_keeps_plans_ownership_and_executions(tmp_path):
+    """A restore must bring back the scheduler state, not just the runs (AC17, AC22)."""
+    from datetime import datetime, timezone
+
+    from data_center.production_tasks import ProductionTasks
+    from data_center.runs.ledger import RunLedger
+
+    root = tmp_path / "canonical"
+    ledger_path = root / "audit" / "data_center.sqlite"
+    ledger_path.parent.mkdir(parents=True)
+    ledger = RunLedger(ledger_path)
+    service = ProductionTasks(ledger)
+    service.create(definition={"provider": "dukascopy", "symbol": "EURUSD", "bar_timeframes": ["5m"],
+                               "window_policy": {"mode": "continuous",
+                                                 "history_start": "2026-01-01T00:00:00+00:00"},
+                               "schedule": {"schedule": "manual"}},
+                   name="EURUSD", task_id="p1", desired_state="enabled",
+                   now=datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
+    ledger.create_production_execution(execution_id="e1", task_id="p1", definition_version=1,
+                                       trigger_source="manual")
+    archive = tmp_path / "backup.tar.gz"
+    assert create_backup(root, ledger_path, archive)["status"] == "pass"
+    restored_root = tmp_path / "restored"
+    restored_ledger_path = restored_root / "audit" / "data_center.sqlite"
+    restore_backup(archive, restored_root, restored_ledger_path)
+
+    restored = RunLedger(restored_ledger_path)
+    task = restored.get_production_task("p1")
+    assert task["desired_state"] == "enabled" and task["symbol"] == "EURUSD"
+    assert [item["ownership_key"] for item in restored.ownership_of("p1")] == [
+        "provider_bars:dukascopy:EURUSD:1m:bid", "market_bars:dukascopy:EURUSD:5m:bid"]
+    assert restored.list_production_executions("p1")[0]["execution_id"] == "e1"
+    # Re-opening a restored ledger re-runs the migration check and stays idempotent.
+    assert RunLedger(restored_ledger_path).schema_version() == restored.schema_version()
+
+
 def test_recovery_drill_compares_archive_snapshot_when_live_ledger_changes(tmp_path, monkeypatch):
     from data_center import operations
 

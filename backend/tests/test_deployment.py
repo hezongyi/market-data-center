@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -198,6 +199,35 @@ def test_logical_ledger_hash_ignores_heartbeat_but_detects_run_changes(tmp_path,
     assert _configured_data_hash("DATACENTER_LEDGER_PATH") == before
     ledger.update(run_id, request_id="changed")
     assert _configured_data_hash("DATACENTER_LEDGER_PATH") != before
+
+
+def test_logical_ledger_hash_covers_scheduler_tables_and_reports_cost(tmp_path, monkeypatch):
+    """Every scheduling table is hashed, and the receipt can show what it cost."""
+    from data_center.production_tasks import ProductionTasks
+    from data_center.runs.ledger import RunLedger
+
+    path = tmp_path / "ledger.sqlite"
+    ledger = RunLedger(path)
+    service = ProductionTasks(ledger)
+    service.create(definition={"provider": "dukascopy", "symbol": "EURUSD", "bar_timeframes": [],
+                               "window_policy": {"mode": "continuous",
+                                                 "history_start": "2026-01-01T00:00:00+00:00"},
+                               "schedule": {"schedule": "manual"}},
+                   name="EURUSD", task_id="p1",
+                   now=datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
+    monkeypatch.setenv("DATACENTER_LEDGER_PATH", str(path))
+    details: dict = {}
+    before = _configured_data_hash("DATACENTER_LEDGER_PATH", details=details)
+    # The scheduler state tables are inside the hash, not on an exclusion list.
+    assert {"production_tasks", "plan_ownership", "production_task_versions",
+            "scheduler_state", "scheduler_leases", "production_executions"} <= set(details["tables"])
+    assert details["tables"]["production_tasks"] == {"rows": 1, "seconds": details["tables"]["production_tasks"]["seconds"]}
+    assert details["row_count"] >= 1 and details["hash_seconds"] >= 0
+    ledger.set_global_dispatch(False, actor="system:test")
+    assert _configured_data_hash("DATACENTER_LEDGER_PATH") != before
+    changed: dict = {}
+    _configured_data_hash("DATACENTER_LEDGER_PATH", details=changed)
+    assert changed["tables"]["scheduler_state"]["rows"] == 1
 
 
 def test_dirty_checkout_is_rejected_before_build(tmp_path):

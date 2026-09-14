@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
-from .runs.ledger import ProductionConflict, RunLedger
+from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
 from .scheduler import MIN_INTERVAL_SECONDS, next_run_at, validate_schedule
 
 RAW_DATASET = "provider_bars"
@@ -198,7 +198,9 @@ def normalize_definition(definition: dict, *, now: datetime) -> dict:
         requested = []
     bar_timeframes: list[str] = []
     chains: dict[str, list[dict]] = {}
-    if capability is not None and instrument is not None:
+    # Recipe resolution depends on the provider capability, not on the symbol,
+    # so an unusable output is reported even when the symbol is also wrong.
+    if capability is not None:
         for timeframe in requested:
             chain = _recipe_chain(timeframe, raw_timeframe=raw_timeframe, provider=provider,
                                   price_basis=price_basis)
@@ -325,7 +327,10 @@ def next_runs(definition: dict, *, now: datetime, count: int = PREVIEW_RUNS) -> 
             interval_seconds=schedule.get("interval_seconds"),
             run_at=_optional_utc(schedule.get("run_at")),
             completed_at=_optional_utc(schedule.get("completed_at")),
-            timezone_name=schedule.get("timezone"), local_time=schedule.get("local_time"))
+            timezone_name=schedule.get("timezone"), local_time=schedule.get("local_time"),
+            # The first occurrence may be due right now; every following one
+            # must be strictly later than the previous.
+            strict=bool(runs))
         if value is None or (runs and value <= runs[-1]):
             break
         runs.append(value)
@@ -385,8 +390,8 @@ class ProductionTasks:
                                  "next_runs": [], "rule": None},
                     "policy": None, "conflicts": [], "dispatch_enabled": False}
         keys = ownership_keys(normalized)
-        conflicts = [{"ownership_key": item["ownership_key"], "task_id": item["task_id"]}
-                     for item in self.ledger.ownership_holders(keys)]
+        held = {item["ownership_key"]: item["task_id"] for item in self.ledger.ownership_holders(keys)}
+        conflicts = [{"ownership_key": key, "task_id": held[key]} for key in keys if key in held]
         preview_definition = {key: value for key, value in normalized.items() if key != "recipe_chains"}
         policy = maintenance_policy_for(normalized["provider"], normalized["raw_timeframe"])
         return {
@@ -494,10 +499,24 @@ class ProductionTasks:
         return task
 
     def _apply(self, task_id: str, command: str, action, *, request: dict | None,
-               idempotency_key: str | None, actor: str | None, audit_action: str):
-        return self.ledger.production_idempotent(
-            idempotency_key, task_id=task_id, command=command, request=request, actor=actor,
-            audit_action=audit_action, action=action)
+               idempotency_key: str | None, actor: str | None, audit_action: str,
+               request_id: str | None = None):
+        """Run one idempotent action and audit a refusal the same way the API would.
+
+        A refused action leaves no trace in the ledger otherwise, and "who tried
+        to delete what and was told no" is exactly the audit question that gets
+        asked later (spec 5.4, 16).
+        """
+        try:
+            return self.ledger.production_idempotent(
+                idempotency_key, task_id=task_id, command=command, request=request, actor=actor,
+                audit_action=audit_action, action=action)
+        except (KeyError, ProductionConflict, IdempotencyConflict) as exc:
+            self.ledger.record_write_audit({
+                "action": audit_action, "actor": actor, "request_id": request_id, "task_id": task_id,
+                "outcome": "rejected", "code": getattr(exc, "code", "not_found"),
+                "message": str(exc) or command})
+            raise
 
     # -- write paths -----------------------------------------------------
     def create(self, *, definition: dict, name: str, task_id: str | None = None,
@@ -511,9 +530,11 @@ class ProductionTasks:
             raise DefinitionError([{"field": "name", "message": "name is required"}])
         identity = task_id or str(uuid4())
         scheduled = next_runs(normalized, now=now, count=1)
+        # The idempotency fingerprint covers the content of the request only:
+        # a per-request id would make an honest replay look like a new request.
         record = {
             "name": name, "alias": alias, "desired_state": desired_state, "definition": normalized,
-            "ownership_keys": ownership_keys(normalized), "request_id": request_id,
+            "ownership_keys": ownership_keys(normalized),
         }
 
         audit = {"action": "production.task.create", "actor": actor, "request_id": request_id}
@@ -529,7 +550,7 @@ class ProductionTasks:
 
         return self._apply(identity, "create", action, request=record,
                            idempotency_key=idempotency_key, actor=actor,
-                           audit_action="production.task.create")
+                           audit_action="production.task.create", request_id=request_id)
 
     def change(self, task_id: str, command: str, *, definition: dict | None = None,
                expected_version: int | None = None, actor: str | None = None,
@@ -541,8 +562,7 @@ class ProductionTasks:
             raise ProductionConflict("unsupported_command", f"unsupported production task command: {command}")
         now = now or datetime.now(timezone.utc)
         request = {"task_id": task_id, "command": command, "definition": definition,
-                   "expected_version": expected_version, "name": name, "alias": alias,
-                   "request_id": request_id}
+                   "expected_version": expected_version, "name": name, "alias": alias}
         audit_action = f"production.task.{command}"
         audit = {"action": audit_action, "actor": actor, "request_id": request_id}
 
@@ -553,7 +573,7 @@ class ProductionTasks:
                                    task_id, target, expected_version=expected_version, conn=conn,
                                    audit=audit),
                                request=request, idempotency_key=idempotency_key, actor=actor,
-                               audit_action=audit_action)
+                               audit_action=audit_action, request_id=request_id)
 
         if command == "delete":
             return self._apply(task_id, command,
@@ -591,7 +611,7 @@ class ProductionTasks:
 
             return self._apply(task_id, command, action, request=request,
                                idempotency_key=idempotency_key, actor=actor,
-                               audit_action=audit_action)
+                               audit_action=audit_action, request_id=request_id)
 
         if command == "copy":
             source = self._resolve(task_id)
@@ -604,14 +624,14 @@ class ProductionTasks:
         if command == "run_now":
             return self._apply(task_id, command, lambda conn: self._run_now(conn, task_id, now=now),
                                request=request, idempotency_key=idempotency_key, actor=actor,
-                               audit_action=audit_action)
+                               audit_action=audit_action, request_id=request_id)
 
         if command == "acknowledge_drift":
             return self._apply(task_id, command,
                                lambda conn: self.ledger.acknowledge_config_drift(
                                    conn, task_id, expected_version=expected_version),
                                request=request, idempotency_key=idempotency_key, actor=actor,
-                               audit_action=audit_action)
+                               audit_action=audit_action, request_id=request_id)
 
         raise ProductionConflict("unsupported_command", f"{command} is not available in this phase")
 

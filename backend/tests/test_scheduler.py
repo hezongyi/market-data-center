@@ -181,7 +181,6 @@ def test_execution_in_progress_blocks_a_second_claim(tmp_path):
 def test_fenced_owner_cannot_claim_after_losing_the_lease(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     _plan(ledger)
-    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
     stale_token = ledger.acquire_scheduler_lease("global", "one", ttl_seconds=0.0)
     fresh_token = ledger.acquire_scheduler_lease("global", "two")
     assert stale_token == 1 and fresh_token == 2
