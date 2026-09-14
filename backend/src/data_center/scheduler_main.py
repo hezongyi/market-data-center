@@ -37,7 +37,7 @@ def build_scheduler(settings: Settings, *, dispatch: bool, instance_id: str | No
         dispatch_enabled=dispatch,
         budget=settings.scheduler_tick_budget,
         lease_ttl_seconds=settings.scheduler_lease_seconds,
-        planner=ProductionTasks(ledger),
+        planner=ProductionTasks(ledger, canonical_root=settings.canonical_root),
         step_budget=settings.scheduler_step_budget,
     )
 

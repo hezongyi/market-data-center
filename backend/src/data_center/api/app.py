@@ -524,7 +524,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope(ledger.list_maintenance_tasks())
 
     production_tasks_service = ProductionTasks(
-        ledger, cursor_secret=config.api_key or str(config.canonical_root))
+        ledger, cursor_secret=config.api_key or str(config.canonical_root),
+        canonical_root=config.canonical_root)
 
     def production_conflict_status(code: str) -> int:
         """Refusals that are bad requests stay 422; genuine state conflicts are 409."""

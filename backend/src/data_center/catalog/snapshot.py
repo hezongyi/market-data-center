@@ -10,6 +10,7 @@ from pathlib import Path
 
 from data_center.catalog.manifest import PublicationError, validate_manifest_metadata
 from data_center.catalog.registry import get_dataset_definition
+from data_center.domain.errors import InputUnavailableError
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,63 @@ class CatalogSnapshot:
 def selector_hash(selector: dict[str, str]) -> str:
     encoded = json.dumps(selector, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def snapshot_reference(root: Path, snapshot: CatalogSnapshot) -> dict:
+    """Describe one snapshot as shared, rebuildable part references.
+
+    A run stores this reference instead of a copy of the manifest list, so the
+    same input is one record no matter how many runs or WebUI responses mention
+    it (spec 6.3).
+    """
+    root = Path(root)
+    return {
+        "snapshot_id": snapshot.snapshot_id,
+        "dataset_id": snapshot.dataset_id,
+        "selector": dict(snapshot.selector),
+        "schema_versions": list(snapshot.schema_versions),
+        "parts": [{"path": str(part.path.relative_to(root)),
+                   "manifest": str(part.manifest_path.relative_to(root)),
+                   "run_id": part.run_id, "schema_version": part.schema_version}
+                  for part in snapshot.parts],
+    }
+
+
+def snapshot_from_reference(root: Path, reference: dict) -> CatalogSnapshot:
+    """Rebuild the exact input an execution was accepted with.
+
+    Missing parts, a tampered digest or an unreadable manifest stop the step
+    instead of quietly substituting whatever is published now.
+    """
+    root = Path(root)
+    parts: list[PartReference] = []
+    for item in reference.get("parts") or []:
+        try:
+            part_path = root / item["path"]
+            manifest_path = root / item["manifest"]
+            if not part_path.is_file() or not manifest_path.is_file():
+                raise InputUnavailableError(f"fixed input part is missing: {item['path']}")
+            manifest = json.loads(manifest_path.read_text())
+            files = validate_manifest_metadata(root, manifest)
+        except InputUnavailableError:
+            raise
+        except (OSError, KeyError, TypeError, ValueError, PublicationError) as exc:
+            raise InputUnavailableError(f"fixed input part failed verification: {item['path']}") from exc
+        if part_path not in files:
+            raise InputUnavailableError(f"fixed input is not published by its manifest: {item['path']}")
+        parts.append(PartReference(path=part_path, manifest_path=manifest_path,
+                                   run_id=item.get("run_id") or manifest.get("run_id", ""),
+                                   schema_version=item.get("schema_version") or manifest.get("schema_version", "")))
+    if not parts:
+        raise InputUnavailableError("fixed input snapshot has no parts")
+    return CatalogSnapshot(
+        snapshot_id=str(reference.get("snapshot_id") or ""),
+        dataset_id=str(reference.get("dataset_id") or ""),
+        selector=tuple(sorted((reference.get("selector") or {}).items())),
+        parts=tuple(parts),
+        schema_versions=tuple(sorted(reference.get("schema_versions") or [])),
+        created_at=time.time(),
+    )
 
 
 class Catalog:
