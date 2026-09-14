@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-from data_center.scheduler import MIN_INTERVAL_SECONDS
 from data_center.production_tasks import (
     DefinitionError,
     ProductionConflict,
@@ -23,6 +22,7 @@ from data_center.production_tasks import (
     ownership_keys,
 )
 from data_center.runs.ledger import IdempotencyConflict, RunLedger
+from data_center.scheduler import MIN_INTERVAL_SECONDS
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 
