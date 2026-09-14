@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from .capacity import CapacityPolicy
 from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
 from .control_plane import timeframe_delta
@@ -46,6 +47,9 @@ GAP_LIMIT = 50
 #: One window expands into at most this many bucket runs; a window with more
 #: holes than that defers the remainder instead of flooding the round.
 DERIVE_RUNS_PER_WINDOW = 12
+#: Unattended catch-up beyond this span needs an explicit capacity decision
+#: rather than being sharded into smaller requests (spec 5.6, AC08).
+UNATTENDED_BACKFILL_DAYS = 31
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
 CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",
@@ -375,9 +379,11 @@ def _optional_utc(value) -> datetime | None:
 class ProductionTasks:
     """Plan registry service: preview, create, read, list and change."""
 
-    def __init__(self, ledger: RunLedger, *, cursor_secret: str | None = None,
+    def __init__(self, ledger: RunLedger, *, capacity_policy: CapacityPolicy | None = None,
+                 cursor_secret: str | None = None,
                  cursor_ttl_seconds: float = 3600.0, canonical_root=None):
         self.ledger = ledger
+        self.capacity_policy = capacity_policy or CapacityPolicy()
         # Needed to resolve upstream snapshots for derived steps; a service
         # without one can still validate and manage plans.
         self.canonical_root = None if canonical_root is None else Path(canonical_root)
@@ -514,6 +520,10 @@ class ProductionTasks:
                 item.get("step") if isinstance(item, dict) else str(item)
                 for item in (progress.get("deferred_derived") or [])
             ],
+            "backlog_blocked": bool(progress.get("backlog_blocked")),
+            "backlog_span_days": int(progress.get("backlog_span_days") or 0),
+            "capacity_status": progress.get("capacity_status"),
+            "capacity_block": progress.get("capacity_block"),
             "recorded": bool(progress),
             "note": "Recorded planning boundaries, not live provider freshness.",
         }
@@ -536,6 +546,9 @@ class ProductionTasks:
         if active_execution is not None and active_execution["state"] in {"pausing", "paused"}:
             return "attention"
         block_reason = self.block_reason(task, progress)
+        if block_reason == "capacity":
+            # New publishing work is refused, but the backlog and read paths stay.
+            return "blocked"
         if block_reason == "dependency":
             # Outputs are owed but their input cannot be built yet: the plan is
             # blocked on a dependency rather than on its own progress.
@@ -552,6 +565,8 @@ class ProductionTasks:
         if task["deleted_at"] or task.get("health") == "config_drift":
             return None
         progress = progress or {}
+        if (progress.get("capacity_block") or {}).get("reason"):
+            return "capacity"
         if progress.get("deferred_derived"):
             return "dependency"
         if progress.get("gaps"):
@@ -571,7 +586,7 @@ class ProductionTasks:
         if not progress:
             return "initializing"
         if (progress.get("backlog") or progress.get("gaps") or progress.get("deferred_derived")
-                or progress.get("recompute")):
+                or progress.get("recompute") or progress.get("capacity_block")):
             return "catching_up"
         return "maintaining"
 
@@ -1382,6 +1397,41 @@ class ProductionTasks:
         return rows
 
     # -- dispatch and closure -------------------------------------------
+    def capacity_state(self) -> dict:
+        """The effective capacity measurement for new publishing dispatch (spec 5.6)."""
+        if self.canonical_root is None:
+            return {"status": "unknown", "measurement_source": "not_configured"}
+        try:
+            return self.capacity_policy.inspect(self.canonical_root).as_dict()
+        except OSError as exc:
+            return {"status": "unknown", "measurement_source": "unreadable", "error": str(exc)}
+
+    def dispatch_gate(self, *, now: datetime | None = None) -> dict:
+        """Whether new publishing work may be dispatched right now.
+
+        ``critical`` stops new publishing dispatch while leaving the backlog and
+        every read path intact; ``warning`` is decided per plan against the
+        unattended catch-up span, because sharding a long backfill into smaller
+        requests must not walk around the capacity gate (spec 5.6, AC08).
+        """
+        state = self.capacity_state()
+        blocked = state.get("status") == "critical"
+        return {"allowed": not blocked, "block_reason": "capacity" if blocked else None,
+                "capacity": state, "now": (now or datetime.now(timezone.utc)).isoformat()}
+
+    def record_dispatch_block(self, task_id: str, *, reason: str, capacity: dict | None = None,
+                              now: datetime | None = None) -> dict:
+        """Record that new publishing dispatch was refused for this plan.
+
+        The scheduler makes the decision; the plan owns the recorded fact, so the
+        console can explain a plan that is due and not moving (spec 5.6, AC08).
+        """
+        moment = now or datetime.now(timezone.utc)
+        return self.ledger.record_progress(task_id, {
+            "capacity_block": {"reason": reason, "status": (capacity or {}).get("status"),
+                               "at": moment.isoformat()},
+            "blocked_at": moment.isoformat()})
+
     def _raw_coverage(self, *, task: dict, definition: dict, now: datetime):
         """Evaluate published raw coverage over the plan's short scan window.
 
@@ -1438,9 +1488,25 @@ class ProductionTasks:
 
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
                  step_budget: int = 8) -> dict:
-        """Plan one accepted execution and persist its steps, runs and jobs together."""
+        """Plan one accepted execution and persist its steps, runs and jobs together.
+
+        A critical capacity state refuses new publishing work here as well as in
+        the scheduler's due scan, so no caller can walk around the gate by
+        claiming a slot first; the round stays pending with its backlog intact.
+        """
         now = now or datetime.now(timezone.utc)
         definition = task.get("payload") or {}
+        gate = self.dispatch_gate(now=now)
+        if not gate["allowed"]:
+            self.ledger.record_progress(task["task_id"], {
+                "capacity_block": {"reason": gate["block_reason"], "status": gate["capacity"]["status"],
+                                   "at": now.isoformat()},
+                "blocked_at": now.isoformat()})
+            return {"execution_id": execution["execution_id"], "task_id": task["task_id"],
+                    "step_ids": [], "run_ids": [], "planned_steps": 0,
+                    "blocked": gate["block_reason"],
+                    "plan": {"steps": [], "reason": "capacity_blocked", "backlog": True,
+                             "backlog_blocked": True, "capacity": gate["capacity"]}}
         progress = self.ledger.production_progress(task["task_id"]) or {}
         # Windows whose run ended terminally are owed regardless of how far back
         # they are: the short coverage scan cannot see them, so the ledger does.
@@ -1453,7 +1519,8 @@ class ProductionTasks:
                               progress=progress, coverage=coverage,
                               cooldown_windows=self._gap_cooldown_windows(
                                   task=task, definition=definition, now=now),
-                              carried_gaps=carried)
+                              carried_gaps=carried,
+                              capacity_status=str(gate["capacity"]["status"]))
         accepted = self.ledger.accept_execution_plan(
             execution_id=execution["execution_id"], steps=plan["steps"],
             audit={"action": "production.execution.accept", "actor": "system:scheduler",
@@ -1465,6 +1532,12 @@ class ProductionTasks:
             "planned_windows": len(plan["steps"]),
             "observed_boundary": plan.get("observed_boundary"),
             "complete_boundary": plan.get("complete_boundary"),
+            # The gate that was in force for this round, and whether it held the
+            # unattended catch-up back instead of sharding around it.
+            "capacity_status": gate["capacity"]["status"],
+            "capacity_block": None,
+            "backlog_blocked": bool(plan.get("backlog_blocked")),
+            "backlog_span_days": int(plan.get("backlog_span_days") or 0),
             # The high-water mark is what makes a later rewind visible.
             "last_frontier": max([_as_utc(value, "frontier")
                                   for value in (progress.get("last_frontier"), plan["frontier"])
@@ -1674,7 +1747,8 @@ def _raw_job(*, task: dict, definition: dict, execution: dict, start: datetime, 
 
 def plan_execution(task: dict, definition: dict, execution: dict, *, now: datetime,
                    step_budget: int = 8, progress: dict | None = None, coverage=None,
-                   cooldown_windows: Iterable[dict] = (), carried_gaps: Iterable[dict] = ()) -> dict:
+                   cooldown_windows: Iterable[dict] = (), carried_gaps: Iterable[dict] = (),
+                   capacity_status: str = "unknown") -> dict:
     """Plan the raw windows one execution may expand, bounded by policy and budget.
 
     Windows are planned in the order the spec requires (5.5): the observed tail
@@ -1731,6 +1805,8 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
 
     gaps: list[dict] = []
     gap_ranges: list[dict] = []
+    backlog_blocked = False
+    backlog_span_days = 0
     observed_boundary = complete_boundary = None
     if mode == "fixed":
         start = _as_utc(window_policy["start"], "window_policy.start")
@@ -1798,9 +1874,16 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
         #    It stops where coverage takes over: the scheduler does not re-plan a
         #    recent range that the provider has already delivered.  A rewind is
         #    the exception, because that is an explicit request to fetch again.
+        #    Under a capacity warning the unattended span itself is the gate: a
+        #    long backfill is reported as blocked instead of being sharded into
+        #    requests small enough to slip past the same limit (spec 5.6, AC08).
+        backlog_span_days = max(0, (end - data_start).days)
+        backlog_blocked = (capacity_status == "warning"
+                           and backlog_span_days > UNATTENDED_BACKFILL_DAYS)
         backfill_limit = scan_start if (scan_start is not None and coverage is not None
                                         and not rewound) else end
-        backfill_end = min(end, data_start + timedelta(days=bounded_days), backfill_limit)
+        backfill_end = (data_start if backlog_blocked
+                        else min(end, data_start + timedelta(days=bounded_days), backfill_limit))
         expand("backfill", "backfill", [(data_start, backfill_end)])
         # The frontier only advances over a range this round actually planned, so
         # a budget-truncated backlog is never recorded as covered.  Every group
@@ -1823,9 +1906,10 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
                       default=frontier_end)
     return {"steps": steps, "planned_start": frontier_end.isoformat(),
             "planned_end": planned_end.isoformat(), "frontier": frontier_end.isoformat(),
-            "effective_end": end.isoformat(), "backlog": frontier_end < end,
+            "effective_end": end.isoformat(), "backlog": frontier_end < end or backlog_blocked,
             "rewound": rewound, "truncated_windows": truncated, "gaps": gaps,
             "observed_boundary": observed_boundary, "complete_boundary": complete_boundary,
+            "backlog_blocked": backlog_blocked, "backlog_span_days": backlog_span_days,
             "reason": "no_work" if not steps else "planned", "policy_id": policy.policy_id}
 
 

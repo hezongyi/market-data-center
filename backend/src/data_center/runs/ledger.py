@@ -1339,6 +1339,24 @@ class RunLedger:
                 "oldest_queued_available_at": None if oldest is None else datetime.fromtimestamp(
                     oldest, tz=timezone.utc).isoformat()}
 
+    def provider_backoff_state(self, *, now: datetime | None = None) -> builtins.list[dict]:
+        """Per-provider retry backoff: jobs whose own retry delay has not elapsed.
+
+        The worker owns the bounded attempt/backoff policy; the scheduler only
+        reports what is actually waiting, so "provider backoff" is an observed
+        value rather than a promise the tick makes (spec 5.5, 9.1).
+        """
+        moment = (now or datetime.now(timezone.utc)).timestamp()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select coalesce(json_extract(payload,'$.provider'),'unknown') as provider, "
+                "count(*), min(available_at) from jobs "
+                "where status='queued' and available_at is not null and available_at > ? "
+                "group by provider order by min(available_at)", (moment,)).fetchall()
+        return [{"provider": row[0], "waiting": row[1],
+                 "next_attempt_at": datetime.fromtimestamp(row[2], tz=timezone.utc).isoformat()}
+                for row in rows]
+
     def enqueue_provider_bars(self, job_payload: dict) -> str:
         return self.enqueue_job(job_payload)
 

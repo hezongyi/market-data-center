@@ -650,6 +650,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "the plan registry must list plans or state that there are none");
     const schedulerView = await call("GET", "/operations/scheduler");
     assert.equal(typeof schedulerView.dispatch_enabled, "boolean");
+    // The capacity gate and provider backoff are observed values, and the strip
+    // must agree with the API instead of showing a hard-coded green state.
+    assert.equal(schedulerView.publishing_allowed, schedulerView.capacity.status !== "critical");
+    assert.ok(Array.isArray(schedulerView.provider_backoff));
+    assert.ok(await page.getByText("New publishing", { exact: true }).count() > 0);
+    assert.ok(await page.getByText("Provider backoff", { exact: true }).count() > 0);
     assert.ok(await page.getByText("Dispatch", { exact: true }).count() > 0);
 
     // The wizard validates against the live registry before anything is saved:
@@ -757,7 +763,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
-      "governance_unit_list", "production_plan_progress", "production_plan_health_filter"],
+      "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
+      "production_capacity_gate"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

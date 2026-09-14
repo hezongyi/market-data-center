@@ -274,6 +274,24 @@ class Scheduler:
             return datetime.fromtimestamp(self.clock(), tz=UTC)
         return datetime.now(UTC)
 
+    def _record_block(self, task_id: str, *, gate: dict, now: datetime) -> None:
+        """Let the planner record the refusal; a test double simply has no store."""
+        record = getattr(self.planner, "record_dispatch_block", None)
+        if record is not None:
+            record(task_id, reason=gate.get("block_reason") or "capacity",
+                   capacity=gate.get("capacity"), now=now)
+
+    def dispatch_gate(self, now: datetime) -> dict:
+        """Ask the planner whether new publishing work may be dispatched.
+
+        A planner without a capacity policy (a test double, or a deployment with
+        no canonical root) is treated as unconstrained rather than as blocked.
+        """
+        gate = getattr(self.planner, "dispatch_gate", None)
+        if gate is None:
+            return {"allowed": True, "block_reason": None, "capacity": {"status": "unknown"}}
+        return gate(now=now)
+
     def next_slot(self, definition: dict, *, now: datetime) -> datetime | None:
         """The slot after this run, or ``None`` when the plan has no fixed next time."""
         schedule = definition.get("schedule") or {}
@@ -344,6 +362,16 @@ class Scheduler:
                 decision["action"] = "shadow_start_execution"
                 decisions.append(decision)
                 continue
+            gate = self.dispatch_gate(now)
+            if not gate["allowed"]:
+                # Capacity protection holds new publishing work back without
+                # consuming the slot or piling up executions: the plan stays due
+                # with its backlog intact (spec 5.6, AC08).
+                decision.update({"action": "capacity_blocked", "reason": gate["block_reason"],
+                                 "capacity_status": gate["capacity"]["status"]})
+                self._record_block(task["task_id"], gate=gate, now=now)
+                decisions.append(decision)
+                continue
             execution = self.ledger.claim_due_execution(
                 task_id=task["task_id"], owner_id=self.instance_id, scheduled_for=scheduled_for.isoformat(),
                 definition_version=task["definition_version"], fencing_token=token,
@@ -377,12 +405,27 @@ class Scheduler:
                             "trigger_source": execution["trigger_source"],
                             "execution_id": execution["execution_id"], "execution_created": False,
                             "definition_version": task["definition_version"]}
+                gate = self.dispatch_gate(now)
+                if not gate["allowed"]:
+                    decision.update({"action": "capacity_blocked", "reason": gate["block_reason"],
+                                     "capacity_status": gate["capacity"]["status"]})
+                    self._record_block(task["task_id"], gate=gate, now=now)
+                    decisions.append(decision)
+                    continue
                 try:
                     planned = self.planner.dispatch(task=task, execution=execution, now=now,
                                                     step_budget=self.step_budget)
                     decision["steps"] = planned["planned_steps"]
                     decision["runs"] = len(planned["run_ids"])
                     decision["backlog"] = planned["plan"]["backlog"]
+                    if planned.get("blocked"):
+                        # The planner is the authority on the gate: if capacity
+                        # turned critical between the check and the claim, the
+                        # round is reported blocked instead of dispatched.
+                        decision.update({"action": "capacity_blocked",
+                                         "reason": planned["blocked"],
+                                         "capacity_status": planned["plan"].get(
+                                             "capacity", {}).get("status")})
                 except (KeyError, ValueError) as exc:
                     decision["action"] = "dispatch_rejected"
                     decision["reason"] = str(exc)

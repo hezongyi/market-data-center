@@ -330,8 +330,20 @@ export function ProductionPage({ services, onMessage, onChanged }: {
           <article className="metric"><span>{t("Heartbeat")}</span><strong>{scheduler.scheduler.heartbeat_at ? <TimeDisplay value={scheduler.scheduler.heartbeat_at} /> : t("never")}</strong><small>{scheduler.scheduler.lease ? `${t("lease")} ${scheduler.scheduler.lease.owner_id}` : t("no lease")}</small></article>
           <article className={`metric${scheduler.due_now ? " metric-warn" : ""}`}><span>{t("Due now")}</span><strong>{scheduler.due_now}</strong><small>{scheduler.oldest_due_at ? <TimeDisplay value={scheduler.oldest_due_at} /> : t("nothing overdue")}</small></article>
           <article className="metric"><span>{t("Plans")}</span><strong>{Object.values(scheduler.plans_by_state).reduce((total, count) => total + count, 0)}</strong><small>{Object.entries(scheduler.plans_by_state).map(([state, count]) => `${count} ${state}`).join(" · ") || t("none")}</small></article>
+          <article className={`metric${scheduler.publishing_allowed ? "" : " metric-warn"}`}><span>{t("New publishing")}</span>
+            <strong>{scheduler.publishing_allowed ? t("allowed") : t("refused")}</strong>
+            <small>{t("capacity")}: {scheduler.capacity.status}</small></article>
+          <article className={`metric${scheduler.provider_backoff.length ? " metric-warn" : ""}`}><span>{t("Provider backoff")}</span>
+            <strong>{scheduler.provider_backoff.reduce((total, item) => total + item.waiting, 0)}</strong>
+            <small>{scheduler.provider_backoff.length
+              ? `${scheduler.provider_backoff[0].provider} · ${new Date(scheduler.provider_backoff[0].next_attempt_at).toISOString().slice(11, 16)}Z`
+              : t("no provider waiting")}</small></article>
         </div>
         : <LoadingSkeleton rows={1} />}
+      {scheduler && scheduler.blocked.length > 0 && <ul className="warnings">
+        {scheduler.blocked.slice(0, 5).map(item => <li key={item.task_id}>
+          <b>{item.task_id}</b>: {item.health} · {item.reason}</li>)}
+      </ul>}
     </section>
     <section className="panel">
       <PanelHeading eyebrow="Wizard" title="New plan" action={

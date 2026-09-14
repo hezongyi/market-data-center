@@ -571,7 +571,13 @@ export type SchedulerView = {
   };
   dispatch_enabled: boolean;
   due_now: number; due_task_ids: string[]; plans_by_state: Record<string, number>;
-  oldest_due_at: string | null; queue: QueueState; blocked: string[];
+  oldest_due_at: string | null; queue: QueueState;
+  blocked: Array<{ task_id: string; reason: string; health: string }>;
+  // The capacity gate: a critical state refuses new publishing dispatch, and a
+  // warning is decided per plan against its unattended catch-up span.
+  capacity: { status: string; free_ratio: number | null; measurement_source: string };
+  publishing_allowed: boolean;
+  provider_backoff: Array<{ provider: string; waiting: number; next_attempt_at: string }>;
 };
 export type ProductionPlanPage = { tasks: ProductionPlan[]; page: PageInfo };
 export type CatalogMatrixRow = {

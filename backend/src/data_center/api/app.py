@@ -544,7 +544,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     production_tasks_service = ProductionTasks(
         ledger, cursor_secret=config.api_key or str(config.canonical_root),
-        canonical_root=config.canonical_root)
+        canonical_root=config.canonical_root, capacity_policy=capacity_policy)
 
     def production_conflict_status(code: str) -> int:
         """Refusals that are bad requests stay 422; genuine state conflicts are 409."""
@@ -792,11 +792,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         The projection is observational: it reports what the ledger recorded and
         never infers a healthy state the scheduler did not write (spec 3.2, 7.3).
         """
+        moment = datetime.now(timezone.utc)
         state = ledger.scheduler_state()
-        due = ledger.list_due_production_tasks(now=datetime.now(timezone.utc).isoformat(), limit=50)
+        due = ledger.list_due_production_tasks(now=moment.isoformat(), limit=50)
         counts: dict[str, int] = {}
+        blocked: list[dict] = []
         for task in ledger.list_production_tasks():
             counts[task["desired_state"]] = counts.get(task["desired_state"], 0) + 1
+            document = production_tasks_service.read(task["task_id"])
+            if document is not None and document["block_reason"] is not None:
+                blocked.append({"task_id": document["task_id"], "reason": document["block_reason"],
+                                "health": document["health"]})
+        gate = production_tasks_service.dispatch_gate(now=moment)
         return api_envelope({
             "scheduler": state,
             "dispatch_enabled": state["dispatch_enabled"],
@@ -805,7 +812,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "plans_by_state": counts,
             "oldest_due_at": min([task["next_run_at"] for task in due], default=None),
             "queue": ledger.job_queue_state(),
-            "blocked": [],
+            # A critical capacity state refuses new publishing work; warning is
+            # decided per plan against its unattended catch-up span (spec 5.6).
+            "capacity": gate["capacity"],
+            "publishing_allowed": gate["allowed"],
+            "provider_backoff": ledger.provider_backoff_state(now=moment),
+            "blocked": blocked,
         })
 
     @app.post(f"{config.api_prefix}/operations/scheduler/actions")

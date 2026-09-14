@@ -305,3 +305,111 @@ def test_dispatch_records_what_the_provider_showed_and_what_stays_owed(tmp_path)
              run["execution_plan"]["windows"][0]["reason"]) for run in runs] == [
         (hole[0], hole[1], "gap_repair")]
     assert task["task_id"] == "p1"
+
+
+def capacity_snapshot(status: str):
+    from data_center.capacity import CapacitySnapshot
+
+    ratios = {"ok": 0.5, "warning": 0.12, "critical": 0.05}
+    free = ratios[status]
+    return CapacitySnapshot(total_bytes=100, used_bytes=int(100 * (1 - free)), free_bytes=int(100 * free),
+                            free_ratio=free, status=status, warning_free_ratio=0.15,
+                            critical_free_ratio=0.10, measurement_source="pinned")
+
+
+def test_a_capacity_warning_blocks_the_unattended_backlog_without_hiding_it():
+    """AC08: a long backfill is reported as blocked, not sharded past the gate."""
+    end = scheduled_end(NOW, lag_minutes=1)
+    scan_start = end - timedelta(days=3)
+    bars = covered_bars(start=scan_start, end=end - timedelta(minutes=9))
+    coverage = coverage_at(bars=bars, start=scan_start, end=end)
+
+    # A far-behind frontier is a backlog of months, planned under a warning.
+    blocked = plan(coverage=coverage, progress={"frontier": "2026-06-01T00:00:00+00:00"},
+                   capacity_status="warning", step_budget=8)
+    assert blocked["backlog_blocked"] is True and blocked["backlog"] is True
+    assert blocked["backlog_span_days"] > 31
+    # The recent tail is still fetched: freshness never waits for capacity.
+    assert [step["reason"] for step in blocked["steps"]] == ["tail"]
+    # The frontier stays where the plan starts: no backlog window was planned, and
+    # the plan says so instead of pretending it caught up to the last days.
+    assert blocked["frontier"] == "2026-08-01T00:00:00+00:00" == blocked["planned_start"]
+
+    # Without the warning the same plan advances the backlog normally.
+    allowed = plan(coverage=coverage, progress={"frontier": "2026-06-01T00:00:00+00:00"},
+                   capacity_status="ok", step_budget=8)
+    assert allowed["backlog_blocked"] is False
+    assert "backfill" in [step["reason"] for step in allowed["steps"]]
+    assert allowed["frontier"] > "2026-06-01T00:00:00+00:00"
+
+    # A short catch-up is not an unattended backfill and is never gated.
+    short = plan(coverage=coverage, progress={"frontier": scan_start.isoformat()},
+                 capacity_status="warning", step_budget=8)
+    assert short["backlog_blocked"] is False and short["backlog_span_days"] <= 31
+
+
+def test_a_critical_capacity_state_refuses_new_publishing_dispatch(tmp_path):
+    """AC08: critical stops new publishing work and leaves the backlog readable."""
+    from data_center.capacity import FixedCapacityPolicy
+    from data_center.production_tasks import ProductionTasks
+    from data_center.runs.ledger import RunLedger
+    from data_center.scheduler import Scheduler
+
+    register_fixture_instrument()
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger, canonical_root=tmp_path / "lake",
+                              capacity_policy=FixedCapacityPolicy(capacity_snapshot("critical")))
+    service.create(definition=definition(), name="UI_TEST", task_id="p1", desired_state="enabled",
+                   now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+
+    gate = service.dispatch_gate(now=NOW)
+    assert gate == {"allowed": False, "block_reason": "capacity",
+                    "capacity": {**gate["capacity"], "status": "critical"}, "now": NOW.isoformat()}
+
+    result = Scheduler(ledger, instance_id="one", dispatch_enabled=True,
+                       planner=service).tick(now=NOW)
+    decision = next(item for item in result["decisions"] if item.get("reason") == "capacity")
+    assert decision["action"] == "capacity_blocked" and decision["capacity_status"] == "critical"
+    # No slot was consumed and no step, run or job was created: the round waits.
+    assert ledger.list_production_steps(execution["execution_id"]) == []
+    assert ledger.list() == []
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "pending"
+    assert result["dispatched"] == 0
+
+    # The plan reports the gate and stays readable.
+    document = service.read("p1")
+    assert (document["health"], document["block_reason"], document["phase"]) == (
+        "blocked", "capacity", "catching_up")
+    assert document["progress"]["capacity_block"]["status"] == "critical"
+
+    # Dispatch refuses even when a caller claims a slot itself, so the gate
+    # cannot be walked around.
+    direct = service.dispatch(task=ledger.get_production_task("p1"), execution=execution, now=NOW)
+    assert direct["planned_steps"] == 0 and direct["blocked"] == "capacity"
+
+    # Once capacity recovers the same round is planned and the block is cleared.
+    service.capacity_policy = FixedCapacityPolicy(capacity_snapshot("ok"))
+    recovered = Scheduler(ledger, instance_id="one", dispatch_enabled=True,
+                          planner=service).tick(now=NOW + timedelta(minutes=1))
+    assert recovered["dispatched"] == 1
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "running"
+    assert service.read("p1")["progress"]["capacity_block"] is None
+
+
+def test_the_scheduler_view_reports_capacity_and_provider_backoff(tmp_path):
+    from data_center.runs.ledger import RunLedger
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite", clock=lambda: NOW.timestamp())
+    ledger.enqueue_job({"job_id": "j1", "dataset_id": "provider_bars", "provider": "fixture",
+                        "symbol": "UI_TEST", "timeframe": "1d", "start": "2026-09-14T00:00:00Z",
+                        "end": "2026-09-14T01:00:00Z", "run_scope": "production"})
+    claim = ledger.claim_next_job()
+    # A retryable failure pushes the job's own retry past now: that is backoff.
+    ledger.fail_job(claim["job_id"], claim["run_id"], "transient", retryable=True,
+                    delay_seconds=300.0)
+    waiting = ledger.provider_backoff_state(now=NOW)
+    assert [item["provider"] for item in waiting] == ["fixture"]
+    assert waiting[0]["waiting"] == 1 and waiting[0]["next_attempt_at"] > NOW.isoformat()
+    # Nothing is waiting once the job's own delay has elapsed.
+    assert ledger.provider_backoff_state(now=NOW + timedelta(hours=1)) == []
