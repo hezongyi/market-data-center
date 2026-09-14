@@ -7,7 +7,8 @@ from data_center.runs.ledger import RunLedger
 
 def test_ledger_initializes_versioned_wal_schema_and_batch_is_atomic(tmp_path):
     path = tmp_path / "ledger.sqlite"
-    clock = lambda: 1_700_000_000.0
+    def clock():
+        return 1_700_000_000.0
     ledger = RunLedger(path, clock=clock)
     payloads = [
         {"job_id": "task-a-1", "dataset_id": "provider_bars", "owner_plan_id": "plan-a"},
