@@ -558,6 +558,24 @@ export type SchedulerView = {
   oldest_due_at: string | null; queue: QueueState; blocked: string[];
 };
 export type ProductionPlanPage = { tasks: ProductionPlan[]; page: PageInfo };
+export type CatalogMatrixRow = {
+  dataset_id: string; provider: string; symbol: string; timeframe: string; price_basis: string;
+  ownership_key: string; status: "planned" | "unplanned" | "unavailable" | "config_drift";
+  task_id: string | null; plan_state: string | null; reason: string | null;
+};
+export type CatalogMatrix = {
+  rows: CatalogMatrixRow[]; counts: Record<string, number>; planned_scope: number; note: string;
+};
+export type GovernanceUnit = {
+  unit: string; owner: string; read_only: boolean;
+  declaration: "installed" | "declared_not_installed" | "installed_not_declared" | "unknown";
+  cadence: Record<string, string>; receipt_action: string | null;
+  latest_receipt: { completed_at?: string; result?: string } | null; evidence: string;
+};
+export type GovernanceUnits = {
+  available: boolean; units: GovernanceUnit[]; declared_not_installed: string[];
+  installed_not_declared: string[]; note: string;
+};
 
 export type PageInfo = { count: number; next_cursor: string | null; page_size: number | null; paginated: boolean; has_more: boolean; order: string };
 
@@ -796,6 +814,8 @@ export function createDataCenterClient(apiKey: string) {
       request<Record<string, unknown>>(`/production/executions/${encodeURIComponent(executionId)}/retry`, {
         method: "POST", headers: { "Idempotency-Key": idempotencyKey },
       }),
+    catalogMatrix: () => request<CatalogMatrix>("/production/catalog-matrix"),
+    governanceUnits: () => request<GovernanceUnits>("/operations/units"),
     scheduler: () => request<SchedulerView>("/operations/scheduler"),
     schedulerAction: (command: "pause_dispatch" | "resume_dispatch") =>
       request<{ command: string; dispatch_enabled: boolean }>("/operations/scheduler/actions", {

@@ -670,6 +670,17 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
       "the saved plan must be readable through the plan registry");
 
+    // The matrix and the governance list are read-only projections: they must
+    // render, and a governance unit must carry no lifecycle control.
+    await page.getByText("Registered × planned", { exact: true }).waitFor();
+    await page.getByText("Units this view does not manage", { exact: true }).waitFor();
+    const matrix = await call("GET", "/production/catalog-matrix");
+    assert.ok(matrix.rows.length > 0, "the matrix must cover the registered outputs");
+    assert.equal(Object.values(matrix.counts).reduce((total, count) => total + count, 0), matrix.rows.length);
+    const units = await call("GET", "/operations/units");
+    assert.ok(units.units.every(unit => unit.read_only === true),
+      "the governance list must be read-only by construction");
+
     await page.getByRole("button", { name: "overview", exact: true }).click();
 
     const widths = await page.evaluate(() => ({
@@ -720,7 +731,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
-      "production_plans_workspace", "production_plan_wizard"],
+      "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
+      "governance_unit_list"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

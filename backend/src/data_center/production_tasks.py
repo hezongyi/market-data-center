@@ -935,6 +935,78 @@ class ProductionTasks:
         return {"stage": "raw", "window_start": payload["start"], "window_end": payload["end"],
                 "dedupe_key": identity, "payloads": [payload]}
 
+    def catalog_matrix(self) -> dict:
+        """Which registered outputs are planned, unplanned, unavailable or drifting.
+
+        The matrix is a read-only projection over the registry and the plan
+        registry; it never widens production scope by itself (spec 3.3, AC23).
+        """
+        plans = self.ledger.list_production_tasks()
+        held: dict[str, dict] = {}
+        for plan in plans:
+            for ownership in self.ledger.ownership_of(plan["task_id"]):
+                if ownership["state"] in {"enabled", "paused"}:
+                    held[ownership["ownership_key"]] = plan
+        rows: list[dict] = []
+        for capability in REGISTRY.capabilities():
+            instruments = REGISTRY.instruments(capability.provider)
+            price_bases = capability.price_bases or ("bid",)
+            for instrument in instruments:
+                for timeframe in capability.maintenance_timeframes or capability.timeframes:
+                    rows.extend(self._matrix_rows(
+                        dataset_id=RAW_DATASET, provider=capability.provider,
+                        symbol=instrument.symbol, timeframe=timeframe, price_bases=price_bases,
+                        held=held))
+                for recipe in sorted(REGISTRY.recipes(), key=lambda item: (item.recipe_id, item.version)):
+                    if recipe.output_dataset != DERIVED_DATASET:
+                        continue
+                    rows.extend(self._matrix_rows(
+                        dataset_id=DERIVED_DATASET, provider=capability.provider,
+                        symbol=instrument.symbol, timeframe=recipe.target_timeframe,
+                        price_bases=price_bases, held=held,
+                        unavailable_reason=self._recipe_unavailable_reason(
+                            recipe, capability.provider, capability.timeframes,
+                            capability.maintenance_timeframes or capability.timeframes)))
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return {"rows": rows, "counts": counts, "planned_scope": len(plans),
+                "note": "Read-only projection: a matrix row never creates or widens a plan."}
+
+    @staticmethod
+    def _recipe_unavailable_reason(recipe, provider: str, timeframes, maintenance_timeframes) -> str | None:
+        """Why a registered recipe cannot be planned for this provider, if it cannot."""
+        if recipe.allowed_providers and provider not in recipe.allowed_providers:
+            return "recipe is not registered for this provider"
+        if recipe.source_timeframe not in maintenance_timeframes and recipe.input_dataset == RAW_DATASET:
+            return f"{provider} does not maintain {recipe.source_timeframe}"
+        if recipe.input_dataset == DERIVED_DATASET and recipe.source_timeframe not in timeframes:
+            return f"{recipe.source_timeframe} is not produced for {provider}"
+        return None
+
+    @staticmethod
+    def _matrix_rows(*, dataset_id: str, provider: str, symbol: str, timeframe: str,
+                     price_bases, held: dict, unavailable_reason: str | None = None) -> builtins.list[dict]:
+        rows = []
+        for price_basis in price_bases:
+            key = ownership_key(dataset_id=dataset_id, provider=provider, symbol=symbol,
+                                timeframe=timeframe, price_basis=price_basis)
+            holder = held.get(key)
+            if unavailable_reason is not None:
+                status = "unavailable"
+            elif holder is None:
+                status = "unplanned"
+            elif holder.get("health") == "config_drift":
+                status = "config_drift"
+            else:
+                status = "planned"
+            rows.append({"dataset_id": dataset_id, "provider": provider, "symbol": symbol,
+                         "timeframe": timeframe, "price_basis": price_basis, "ownership_key": key,
+                         "status": status, "task_id": None if holder is None else holder["task_id"],
+                         "plan_state": None if holder is None else holder["desired_state"],
+                         "reason": unavailable_reason})
+        return rows
+
     # -- dispatch and closure -------------------------------------------
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
                  step_budget: int = 8) -> dict:

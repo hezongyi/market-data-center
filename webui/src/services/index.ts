@@ -120,6 +120,8 @@ export function createServices(apiKey: string) {
       steps: async (executionId: string, limit = 100) => (await client.productionExecutionSteps(executionId, limit)).data,
       retry: async (executionId: string, idempotencyKey: string) =>
         (await client.retryProductionExecution(executionId, idempotencyKey)).data,
+      matrix: async () => (await client.catalogMatrix()).data,
+      governance: async () => (await client.governanceUnits()).data,
       scheduler: async () => (await client.scheduler()).data,
       dispatch: async (command: "pause_dispatch" | "resume_dispatch") => (await client.schedulerAction(command)).data,
     },

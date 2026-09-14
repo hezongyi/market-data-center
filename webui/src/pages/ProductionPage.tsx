@@ -4,7 +4,9 @@ import {
   ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingSkeleton, PageHeader, PanelHeading, StatusBadge,
 } from "../components/ui";
 import { TimeDisplay, usePreferences } from "../preferences";
-import type { Capabilities, ProductionExecution, ProductionPlan, ProductionPreview, SchedulerView } from "../lib/api";
+import type {
+  Capabilities, CatalogMatrix, GovernanceUnits, ProductionExecution, ProductionPlan, ProductionPreview, SchedulerView,
+} from "../lib/api";
 import type { Services } from "../services";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -95,6 +97,8 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   const [planName, setPlanName] = useState("");
   const [preview, setPreview] = useState<ProductionPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [matrix, setMatrix] = useState<CatalogMatrix | null>(null);
+  const [governance, setGovernance] = useState<GovernanceUnits | null>(null);
   const [steps, setSteps] = useState<Array<{ step_id: string; stage: string; state: string; block_reason: string | null; window_start: string | null; window_end: string | null }>>([]);
 
   const load = useCallback(async () => {
@@ -108,9 +112,15 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       setPlans(registered);
       setScheduler(schedulerView);
       setCapabilities(registry);
+      setLoading(false);
       // A draft with no provider cannot be validated; seed it from the registry
       // without discarding edits the operator already made.
       setDefinition(current => current.provider ? current : seedFromRegistry(registry));
+      // The read-only projections load beside the registry, not in front of it:
+      // a slow host probe must never hide whether plans exist.
+      void Promise.all([services.production.matrix(), services.production.governance()])
+        .then(([catalogMatrix, units]) => { setMatrix(catalogMatrix); setGovernance(units); })
+        .catch(reason => onMessage(`projections unavailable: ${(reason as Error).message}`));
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -377,6 +387,58 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       {!error && loading && <LoadingSkeleton rows={3} />}
       {!error && !loading && plans.length === 0 && <EmptyState title="No production plans yet" detail="Plans are created through POST /production/tasks; the guide describes the definition fields." />}
       {!error && !loading && plans.length > 0 && <DataTable data={plans} columns={columns} />}
+    </section>
+    <section className="panel">
+      <PanelHeading eyebrow="Registry sync" title="Registered × planned" />
+      {matrix
+        ? <>
+          <div className="metric-grid">
+            {(["planned", "unplanned", "unavailable", "config_drift"] as const).map(status => (
+              <article key={status} className={`metric${status === "config_drift" && (matrix.counts[status] ?? 0) > 0 ? " metric-bad" : ""}`}>
+                <span>{t(status.replace("_", " "))}</span>
+                <strong>{matrix.counts[status] ?? 0}</strong>
+                <small>{t("outputs")}</small>
+              </article>
+            ))}
+          </div>
+          <p className="muted">{t(matrix.note)}</p>
+          <ul className="step-list">
+            {matrix.rows.filter(row => row.status !== "unplanned").slice(0, 12).map(row => <li key={row.ownership_key}>
+              <StatusBadge tone={row.status === "planned" ? "good" : row.status === "config_drift" ? "bad" : "warn"}>
+                {row.status}
+              </StatusBadge>
+              <b>{row.ownership_key}</b>
+              <small>{row.task_id ?? row.reason ?? ""}</small>
+            </li>)}
+          </ul>
+        </>
+        : <LoadingSkeleton rows={1} />}
+    </section>
+    <section className="panel">
+      <PanelHeading eyebrow="Governance" title="Units this view does not manage" />
+      {governance
+        ? <>
+          <p className="muted">{t(governance.note)}</p>
+          <table>
+            <thead><tr><th>{t("Unit")}</th><th>{t("Declaration")}</th><th>{t("Cadence")}</th><th>{t("Latest receipt")}</th></tr></thead>
+            <tbody>
+              {governance.units.map(unit => <tr key={unit.unit}>
+                <td>{unit.unit}</td>
+                <td><StatusBadge tone={unit.declaration === "installed" ? "good" : unit.declaration === "unknown" ? "neutral" : "warn"}>{unit.declaration}</StatusBadge></td>
+                <td>{Object.entries(unit.cadence).map(([directive, value]) => `${directive}=${value}`).join(" · ") || "—"}</td>
+                <td>{unit.latest_receipt
+                  ? <span>{unit.latest_receipt.result} · <TimeDisplay value={unit.latest_receipt.completed_at} /></span>
+                  : <span className="muted">{t("no receipt recorded")}</span>}</td>
+              </tr>)}
+            </tbody>
+          </table>
+          {(governance.declared_not_installed.length > 0 || governance.installed_not_declared.length > 0) &&
+            <ul className="warnings">
+              {governance.declared_not_installed.map(name => <li key={name}>{t("declared but not installed")}: <b>{name}</b></li>)}
+              {governance.installed_not_declared.map(name => <li key={name}>{t("installed but not declared")}: <b>{name}</b></li>)}
+            </ul>}
+        </>
+        : <LoadingSkeleton rows={1} />}
     </section>
     {selected && <section className="panel">
       <PanelHeading eyebrow="Round" title={`${selected.name} · ${selected.current_execution?.state ?? selected.executions?.[0]?.state ?? t("no round")}`} action={

@@ -5,10 +5,12 @@ import json
 import math
 import os
 import sqlite3
+import subprocess
 import tempfile
 import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
@@ -43,6 +45,7 @@ from data_center.maintenance_tasks import (
 from data_center.observability import AlertSink, run_metrics
 from data_center.operations_views import (
     capacity_history,
+    governance_units,
     operations_receipts,
     worker_activity,
 )
@@ -523,6 +526,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_tasks() -> dict:
         return api_envelope(ledger.list_maintenance_tasks())
 
+    def installed_governance_units() -> list[str] | None:
+        """Ask the host which Data Center timers exist; ``None`` when unanswerable.
+
+        The repository's unit files are the declaration, the host is the reality,
+        and an unreadable host is reported as unknown rather than as empty.
+        """
+        try:
+            probe = subprocess.run(
+                ["systemctl", "--user", "list-unit-files", "market-data-center-*.timer", "--no-legend"],
+                capture_output=True, text=True, timeout=5.0, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if probe.returncode != 0:
+            return None
+        return [line.split()[0] for line in probe.stdout.splitlines() if line.split()]
+
     production_tasks_service = ProductionTasks(
         ledger, cursor_secret=config.api_key or str(config.canonical_root),
         canonical_root=config.canonical_root)
@@ -744,6 +763,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def operations_receipts_view(limit: int = 5) -> dict:
         payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
         return api_envelope(payload)
+
+    @app.get(f"{config.api_prefix}/production/catalog-matrix")
+    def production_catalog_matrix() -> dict:
+        """Registered x planned matrix; a read model that never widens scope."""
+        return api_envelope(production_tasks_service.catalog_matrix())
+
+    @app.get(f"{config.api_prefix}/operations/units")
+    def operations_units() -> dict:
+        """Governance timers: owner, cadence, latest receipt, declaration differences."""
+        return api_envelope(governance_units(
+            declared_root=Path(__file__).resolve().parents[4] / "deploy" / "systemd",
+            installed=installed_governance_units(),
+            receipt_index=receipt_index))
 
     @app.get(f"{config.api_prefix}/operations/scheduler")
     def operations_scheduler() -> dict:
