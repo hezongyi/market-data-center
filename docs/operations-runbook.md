@@ -1,5 +1,25 @@
 # Operations runbook
 
+## Machine-level configuration only
+
+Production configuration has exactly one source: `$HOME/.config/market-data-center/env` (mode 0600), loaded by
+each unit through its own `EnvironmentFile` line. A unit or drop-in must never load configuration from a
+repository checkout, a development `.env.local`, or any other working copy — a checkout is mutable, is not part of
+the immutable release, and may carry credentials production does not need.
+
+```bash
+# CI guard: the committed templates must bind only the machine-level directory
+python scripts/production_env_check.py
+# Host audit: the installed units and drop-ins must do the same (exit 1 lists violations)
+python scripts/production_env_check.py --installed
+systemctl --user show -p DropInPaths market-data-center-api.service market-data-center-worker.service
+```
+
+`DropInPaths` must be empty for the API and worker, and the process environment of both must contain
+`DATACENTER_PROXY_URL` but never a development-only token such as `GITHUB_TOKEN`. Host-local drop-ins are not
+part of the immutable release, so any change to them needs the same approval as a production change, and the
+removed file must be kept as a rollback copy under `$HOME/market-data-center/config-history/`.
+
 ## Immutable deployment
 
 Production services run only from the immutable `releases/current` pointer, never from a repository checkout.

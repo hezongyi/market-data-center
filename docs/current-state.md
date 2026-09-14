@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | 源码版本 | `0.5.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | `v0.5.0` release contract test |
 | 最新发布标签 | `v0.5.0` → `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（annotated；按仓库约定发布后不再移动） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.5.0) + `release-receipt.json` |
-| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`），是 protected `main` 的当前提交 | active deployment manifest |
+| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`）；protected `main` 已在其之后合入多个纯文档提交，生产 deployment 不随文档提交前进 | active deployment manifest + `git log --oneline v0.5.0..origin/main` |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
 生产 deployment 现与 `v0.5.0` 发布基线一致（WebUI v0.5 可用性、访问控制和版本收口）。上一版本 `v0.4.1` 的 stage/activate、回滚路径和 receipt 均保留，可作为回滚目标；本次 `v0.5.0` activation 的 canonical 与 ledger 哈希均未变化。更早版本的 stage/activate、注入候选 readiness 失败后的自动恢复、回滚和 monitor soak receipt 也继续保留在 data-center evidence root。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。

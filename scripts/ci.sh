@@ -34,6 +34,7 @@ run_backend() {
   "$task_python" -m pip check
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/compatibility_check.py
   "$task_python" scripts/dependency_lock_check.py
+  "$task_python" scripts/production_env_check.py
   PYTHONPATH="$repo_dir/backend/src" "$task_python" -m pytest -q backend/tests
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/secret_scan.py
   PYTHONPATH="$repo_dir/backend/src" "$task_python" scripts/operations_acceptance.py
