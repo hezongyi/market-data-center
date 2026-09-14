@@ -15,6 +15,9 @@ class CapacitySnapshot:
     status: str
     warning_free_ratio: float
     critical_free_ratio: float
+    # Where the numbers came from. A pinned acceptance measurement is deterministic and must never be
+    # quoted as a live disk reading, so the value travels with the data instead of only in a footnote.
+    measurement_source: str = "live"
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -51,6 +54,7 @@ class CapacityPolicy:
             status=self.classify(free_ratio),
             warning_free_ratio=self.warning_free_ratio,
             critical_free_ratio=self.critical_free_ratio,
+            measurement_source="live",
         )
 
     def require_ingest_capacity(self, path: Path) -> CapacitySnapshot:
@@ -104,6 +108,7 @@ class FixedCapacityPolicy(CapacityPolicy):
             status=probe.classify(free_ratio),
             warning_free_ratio=warning_free_ratio,
             critical_free_ratio=critical_free_ratio,
+            measurement_source="fixed_acceptance",
         ))
 
     def inspect(self, path: Path) -> CapacitySnapshot:

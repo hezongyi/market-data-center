@@ -99,6 +99,12 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
   const audit = useQuery(() => services.operations.audit(50), [services, apiKey, refreshToken]);
 
   const capacity = metrics?.capacity;
+  // The measurement source travels with the numbers (issue #86); older payloads only carry the
+  // fixed_measurement boolean, so fall back to it instead of silently claiming a live reading.
+  const liveCapacity = history.data?.live;
+  const measurementSource = liveCapacity?.measurement_source
+    ?? (liveCapacity?.fixed_measurement ? "fixed_acceptance" : "live");
+  const pinnedMeasurement = measurementSource === "fixed_acceptance";
   const alerts = [
     capacity && capacity.status !== "ok"
       ? { title: `Capacity ${capacity.status}`, detail: `${(capacity.free_ratio * 100).toFixed(1)}% free`, tone: capacity.status === "critical" ? "bad" as const : "warn" as const }
@@ -259,7 +265,10 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
         </div>} />
         <PanelQueryState query={history} emptyTitle="No capacity measurement recorded">
           {history.data && history.data.live && <>
-            <h3 className="detail-heading"><HardDrive size={14} /> Live measurement</h3>
+            <h3 className="detail-heading"><HardDrive size={14} /> {pinnedMeasurement ? "Pinned acceptance measurement" : "Live measurement"}</h3>
+            {pinnedMeasurement && <p className="inline-warning" role="status"><Pin size={14} />
+              <b>fixed_acceptance</b>: this free-space ratio is pinned by the acceptance harness — a deterministic
+              test value, not a reading of the production disk. Do not quote the percentage as capacity evidence.</p>}
             <div className="capacity-meter"><i style={{ width: `${Math.min(100, Math.max(0, (1 - (history.data.live.free_ratio ?? 0)) * 100))}%` }} /></div>
             <dl className="detail-list">
               <div><dt>Status</dt><dd><StatusBadge tone={capacityTone(history.data.live.status)}>
@@ -268,10 +277,11 @@ export function OperationsPage({ apiKey, health, metrics, onChanged, onMessage, 
               <div><dt>Warning threshold</dt><dd>{percent(history.data.live.warning_free_ratio)}</dd></div>
               <div><dt>Critical threshold</dt><dd>{percent(history.data.live.critical_free_ratio)}</dd></div>
               <div><dt>Free space</dt><dd>{bytes(history.data.live.free_bytes)} of {bytes(history.data.live.total_bytes)}</dd></div>
-              <div><dt>Measurement source</dt><dd>{history.data.live.fixed_measurement ? "Pinned by the acceptance harness (fixed_measurement)" : "Reported by the API as a live measurement (fixed_measurement = false)"}</dd></div>
+              <div><dt>Measurement source</dt><dd className="mono">{measurementSource}</dd></div>
             </dl>
-            {history.data.live.fixed_measurement && <p className="filter-note"><Pin size={12} />
-              fixed_measurement: the acceptance harness pins this free-space ratio, so the value is deterministic rather than a live disk reading.</p>}
+            {pinnedMeasurement && <p className="filter-note"><Pin size={12} />
+              measurement_source = fixed_acceptance: the acceptance harness pins this free-space ratio, so the
+              value is deterministic rather than a live disk reading.</p>}
             <h3 className="detail-heading"><History size={14} /> Recorded transitions {history.data.event_count > 0 ? `(${history.data.event_count})` : ""}</h3>
             <p className="filter-note">{history.data.note ?? "Only capacity transitions the monitor recorded are listed."}
               {history.data.recorded_only ? " No history is interpolated or reconstructed by the console." : ""}</p>

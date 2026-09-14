@@ -177,6 +177,9 @@ export type CapacityMetrics = {
   free_ratio: number;
   warning_free_ratio: number;
   critical_free_ratio: number;
+  // "live" is a disk reading; "fixed_acceptance" is a pinned, deterministic acceptance value that must
+  // never be quoted as a production fact (issue #86).
+  measurement_source?: "live" | "fixed_acceptance" | string;
 };
 
 export type SliWindow = { runs: number; passed: number; success_rate: number | null };
@@ -556,12 +559,14 @@ export type CapacityEvent = {
   free_ratio?: number | null;
   warning_free_ratio?: number;
   critical_free_ratio?: number;
+  recorded_only?: boolean;
 };
 
 export type CapacityHistory = {
-  live: CapacityMetrics & { fixed_measurement?: boolean };
+  live: CapacityMetrics & { fixed_measurement?: boolean; recorded_only?: boolean };
   events: CapacityEvent[];
   event_count: number;
+  measurement_source?: string;
   recorded_only: boolean;
   note: string;
 };

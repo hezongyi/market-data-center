@@ -586,6 +586,16 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByText("Maintenance queue", { exact: true }).waitFor();
     await page.getByText("Worker activity", { exact: true }).waitFor();
     await page.getByText("Capacity history", { exact: true }).waitFor();
+    // Issue #86: the acceptance harness pins the free-space ratio, so the console must say the value is
+    // a pinned acceptance measurement instead of presenting it as a live production disk reading.
+    await page.getByText("Pinned acceptance measurement", { exact: true }).waitFor();
+    await page.getByText("fixed_acceptance", { exact: false }).first().waitFor();
+    const capacityHistory = await call("GET", "/operations/capacity-history");
+    assert.equal(capacityHistory.live.measurement_source, "fixed_acceptance");
+    assert.equal(capacityHistory.live.recorded_only, false);
+    assert.equal(capacityHistory.measurement_source, "fixed_acceptance");
+    const readiness = await call("GET", "/health/ready");
+    assert.equal(readiness.capacity_measurement_source, "fixed_acceptance");
     await page.getByText("Write audit trail", { exact: true }).waitFor();
     await page.getByText("Recorded transitions", { exact: false }).first().waitFor();
     // The receipts panel renders the actions the API reports.  A name the
