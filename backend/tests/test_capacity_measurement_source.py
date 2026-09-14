@@ -90,6 +90,6 @@ def test_capacity_receipt_carries_the_measurement_source(tmp_path: Path) -> None
     assert live["capacity"]["measurement_source"] == "live"
     assert pinned["capacity"]["measurement_source"] == "fixed_acceptance"
 
-    receipts = sorted((evidence_root / "operations" / "capacity_check").glob("*.json"))
+    receipts = sorted((evidence_root / "operations" / "retention_audit").glob("*.json"))
     recorded = [json.loads(path.read_text())["details"]["capacity"]["measurement_source"] for path in receipts]
     assert sorted(recorded) == ["fixed_acceptance", "live"]

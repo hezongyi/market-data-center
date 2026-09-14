@@ -451,7 +451,11 @@ def retention_audit(root: Path, keep_days=30, capacity_policy: CapacityPolicy | 
               "policy": "audit_only_no_deletion", "canonical": canonical, "staging": staging,
               "capacity": capacity}
     receipt = operation_receipt(
-        action="capacity_check", command="data_center.operations retention-audit",
+        # The retention audit owns its action and receipt: it used to borrow
+        # ``capacity_check`` and only ran as a side effect of provider
+        # acceptance, so a failing acceptance silently stopped the audit
+        # (spec 9.3, AC24).
+        action="retention_audit", command="data_center.operations retention-audit",
         started_at=report["checked_at"], result="pass", details={"capacity": capacity},
     )
     receipt_path = write_receipt(evidence_root, receipt)

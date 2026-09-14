@@ -61,6 +61,104 @@ curl -fsS http://127.0.0.1:18380/api/v1/metrics
 systemctl --user show -p WorkingDirectory -p ExecStart market-data-center-api.service market-data-center-worker.service
 ```
 
+## Retention audit is its own release
+
+`retention-audit` used to run as an `ExecStartPost` of the provider-acceptance unit, so a red acceptance run silently stopped
+retention auditing as well. It is now a unit of its own with its own timer and its own `retention_audit` receipt action, and the
+provider-acceptance unit no longer carries that side effect.
+
+Spec §9.3 decision 4 requires that decoupling to reach production as an **independent small release**, not as part of the
+scheduler takeover: stage and activate it on its own, verify the timer fires and writes `retention_audit` receipts, and only then
+continue with the scheduler work. The scheduler change does not depend on it, and vice versa.
+
+```bash
+systemctl --user list-timers market-data-center-retention-audit.timer
+ls "$HOME/market_lake/evidence/data-center/operations/retention_audit" | tail -3
+```
+
+## Scheduler service
+
+The production task scheduler runs as its own unit and owns nothing but the tick loop; which plans exist and
+when they run always comes from the ledger, never from a unit file. It starts in shadow mode, so the first
+release observes what it *would* dispatch while the legacy timers still do the work. Real dispatch is enabled
+per machine through the operations action, not by editing the unit:
+
+```bash
+systemctl --user status market-data-center-scheduler.service
+curl -fsS http://127.0.0.1:18380/api/v1/operations/scheduler   # heartbeat, capacity gate, provider backoff
+curl -fsS -X POST http://127.0.0.1:18380/api/v1/operations/scheduler/actions \
+  -H "X-API-Key: $DATACENTER_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"command": "resume_dispatch"}'                           # the audited global switch
+```
+
+Two switches have to be on before a tick dispatches anything: this global switch (an audited operator action, persisted in
+`scheduler_state.global_dispatch_enabled`) and the instance's own mode. The instance mode comes from the process — the unit
+starts `data_center.scheduler_main` **without** `--dispatch`, and `DATACENTER_SCHEDULER_DISPATCH_ENABLED` must stay unset in the
+machine env, so a deployed scheduler observes before it acts. `--dispatch` exists for local drills and a canary window; when it
+is used, the startup log says `dispatch_source: flag_or_env` so the receipt trail shows where the mode came from.
+
+Before any takeover, run the service drill against isolated roots — start from an immutable release, prove the
+identity fallback, kill and restart the process, and upgrade an existing ledger in place. It is automated as
+`backend/tests/test_scheduler_service_drill.py`, and it never touches production paths:
+
+```bash
+PYTHONPATH=backend/src python -m pytest backend/tests/test_scheduler_service_drill.py -q
+```
+
+What the drill asserts, and what to reproduce by hand when a release misbehaves:
+
+- **Isolated start**: the process reports the `deployment_id`, `software_version`, and `source_commit` it
+  validated, writes a `scheduler_tick` receipt under the evidence root, and creates no execution in shadow mode.
+- **Failure fallback**: a release whose artifact no longer matches its manifest exits with code `3`, prints
+  `scheduler_identity_failed`, and writes a `deployment_runtime_failure` receipt naming the component. It fails
+  closed *before* opening the ledger, so an unverifiable release can never plan work.
+- **Restart takeover**: after a crash the lease row survives until it expires; the next instance takes it over
+  with an advanced fencing token, so a stale writer from the previous process is rejected. `tick_count` keeps
+  counting across instances while `lease.owner_id` follows the live one.
+- **Schema upgrade**: a database written by the previous release upgrades to `SCHEMA_VERSION=5` in place,
+  keeping its runs, plans and progress; the scheduler service and the API must be restarted together so both
+  read the same version.
+
+Receipts for every drill stay under the evidence root (`operations/scheduler_tick`, and
+`operations/deployment_runtime_failure` for refused starts). Never repair a scheduler by editing the checkout,
+the ledger, or a unit file. A start that cannot prove its release identity exits 3 *before* the ledger is opened, so a
+refused release leaves the ledger untouched.
+the ledger, or a unit file.
+
+## Legacy timer takeover (prepared, operator-executed)
+
+The scheduler replaces the periodic runners, and the handover is deliberately manual: the tool below only
+*prepares* it. `data_center.takeover` never installs, stops or starts a unit, and its import is dry by default.
+
+```bash
+# 1. Capture what the host actually runs, not what the repository declares.
+PYTHONPATH=backend/src python -m data_center.takeover plan --inventory /path/to/host-units.json
+
+# 2. Import the legacy entries as paused plans and keep the comparison receipt.
+PYTHONPATH=backend/src python -m data_center.takeover import --inventory /path/to/host-units.json --apply
+
+# 3. Block the old entries, wait for in-flight windows, then enable a canary plan.
+systemctl --user disable --now market-data-center-1m-maintenance.timer marketlab-market-bars-maintenance.timer
+PYTHONPATH=backend/src python -m data_center.takeover verify --inventory /path/to/host-units.json
+```
+
+What the tool guarantees, and what the operator still has to decide:
+
+- **The host is the authority.** `plan` reads `systemctl --user list-unit-files` (or a JSON inventory) and marks
+  entries that exist only on the machine as `host_only`; a unit installed from an older branch is captured
+  instead of assumed away. An unreadable host reports `unknown`, never "not installed".
+- **The scope never widens.** A raw entry imports raw output only, a derived entry imports the recipes it names,
+  and the cadence comes from the timer (`OnUnitInactiveSec=15min` becomes a `fixed_delay` plan of 900 seconds).
+  Two entries for one instrument become **one** plan, because raw and derived share an ownership scope.
+- **Import is not enablement.** Every imported plan is created `paused`; enabling is a separate action, and the
+  canary should be one or two plans first (§7.2 step 5).
+- **`verify` is the gate for the next step.** It fails while any legacy unit is still installed, while an
+  imported plan's cadence differs from the entry it came from, or when two plans hold one ownership key.
+- Rollback is the reverse order: pause the new plan (or pause global dispatch), re-enable the old units, and keep
+  both receipts. The isolated drill for the scheduler process itself is
+  `backend/tests/test_scheduler_service_drill.py`; the takeover preparation is covered by
+  `backend/tests/test_takeover_preparation.py`.
+
 ## Readiness and queue
 
 ```bash
@@ -131,7 +229,9 @@ Readiness separates `read_status`, `write_status`, and `capacity_status`. `capac
 
 Default free-space thresholds are warning 15% and critical 10%; production may configure stricter values with `DATACENTER_CAPACITY_WARNING_FREE_RATIO` and `DATACENTER_CAPACITY_CRITICAL_FREE_RATIO`.
 
-1. Run `python -m data_center.operations retention-audit` and retain the capacity receipt.
+1. Run `python -m data_center.operations retention-audit` and retain the `retention_audit` receipt.
+   The audit runs as its own unit (`market-data-center-retention-audit.timer`) and no longer
+   depends on provider acceptance: a failing provider must not stop it (spec §9.3).
 2. At warning, pause broad backfills and schedule expansion or archival to a separately governed destination.
 3. At critical, keep ingest paused; do not delete canonical parts, manifests, terminal receipts, or ledger rows.
 4. Expand the filesystem or move approved archives under an explicit maintenance change. Automatic canonical cleanup is forbidden.

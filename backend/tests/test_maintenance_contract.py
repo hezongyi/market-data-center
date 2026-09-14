@@ -8,6 +8,7 @@ from storage_fixtures import write_provider_bars
 from data_center.api.app import create_app
 from data_center.capacity import FixedCapacityPolicy
 from data_center.ingest.worker import LocalWorker
+from data_center.instants import parse_instant
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 
@@ -190,7 +191,7 @@ def test_write_audit_records_the_actor_without_storing_the_credential(tmp_path) 
     assert entry["actor"] == "ops-console"
     assert entry["action"] == "maintenance.ingest" and entry["outcome"] == "queued"
     assert entry["selector"]["symbol"] == "UI_TEST"
-    assert (datetime.fromisoformat(entry["time_range"]["start"])
+    assert (parse_instant(entry["time_range"]["start"])
             == datetime.fromisoformat(START.replace("Z", "+00:00")))
     assert "secret" not in str(entry)
 

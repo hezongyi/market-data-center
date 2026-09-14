@@ -138,6 +138,7 @@ class DeploymentService:
         service_names: tuple[str, ...] = (
             "market-data-center-api.service",
             "market-data-center-worker.service",
+            "market-data-center-scheduler.service",
         ),
         monitor_service: str = "market-data-center-monitor.service",
         ready_url: str = "http://127.0.0.1:18380/api/v1/health/ready",
@@ -206,10 +207,11 @@ class DeploymentService:
         identity = runtime_identity(target / "deployment.json")
         previous = self._current_target()
         canonical_hash = _configured_data_hash("DATACENTER_CANONICAL_ROOT")
-        ledger_hash = _configured_data_hash("DATACENTER_LEDGER_PATH")
+        ledger_details: dict = {}
+        ledger_hash = _configured_data_hash("DATACENTER_LEDGER_PATH", details=ledger_details)
         try:
             self._point_current(target)
-            self._restart_and_verify(identity)
+            services = self._restart_and_verify(identity)
         except Exception as exc:
             if previous is not None:
                 self._point_current(previous)
@@ -241,6 +243,16 @@ class DeploymentService:
             "source_commit": identity["source_commit"],
             "canonical_hash_unchanged": canonical_hash == _configured_data_hash("DATACENTER_CANONICAL_ROOT"),
             "ledger_hash_unchanged": ledger_hash == _configured_data_hash("DATACENTER_LEDGER_PATH"),
+            # Activation cost stays observable: every hashed table reports its
+            # row count and duration instead of one opaque number (AC22).
+            "ledger_hash_tables": ledger_details.get("tables"),
+            "ledger_hash_table_count": ledger_details.get("table_count"),
+            "ledger_hash_row_count": ledger_details.get("row_count"),
+            "ledger_hash_seconds": ledger_details.get("hash_seconds"),
+            # Every unit that was restarted is verified active, scheduler
+            # included: a release is not activated while one of its components is
+            # already dead (plan S5.3).
+            "services_active": services,
         }
         return {
             "action": action,
@@ -335,7 +347,13 @@ class DeploymentService:
         link.symlink_to(target, target_is_directory=True)
         os.replace(link, self.release_root / "current")
 
-    def _restart_and_verify(self, identity: dict) -> None:
+    def _restart_and_verify(self, identity: dict) -> list[dict]:
+        """Restart every unit, then verify the API identity *and* each unit's state.
+
+        Readiness alone only proves the API answers; the scheduler and the worker
+        could be dead while the release looked activated, so each restarted unit is
+        asked for its own state before the activation is called successful.
+        """
         subprocess.run([*self.systemctl, "daemon-reload"], check=True)
         for service in self.service_names:
             subprocess.run([*self.systemctl, "restart", service], check=True)
@@ -351,12 +369,26 @@ class DeploymentService:
                     for key in ("deployment_id", "software_version", "source_commit")
                 ):
                     subprocess.run([*self.systemctl, "start", self.monitor_service], check=True)
-                    return
+                    return self._verify_services_active()
                 last_error = RuntimeError("runtime deployment identity mismatch")
             except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
                 last_error = exc
             time.sleep(0.5)
         raise RuntimeError("deployment readiness verification failed") from last_error
+
+    def _verify_services_active(self) -> list[dict]:
+        """Ask systemd about each restarted unit instead of assuming it came up."""
+        active: list[dict] = []
+        for service in self.service_names:
+            # A unit that is not active is an expected answer here, not a crash:
+            # the state is checked explicitly below.
+            result = subprocess.run([*self.systemctl, "is-active", service],
+                                    capture_output=True, text=True, check=False)
+            state = (result.stdout or "").strip() or "unknown"
+            if result.returncode != 0 or state != "active":
+                raise RuntimeError(f"{service} is not active after restart: {state}")
+            active.append({"service": service, "state": state})
+        return active
 
     def _receipt(self, action: str, started: str, result: str, details: dict, exc: Exception | None = None) -> str | None:
         path = write_receipt(self.evidence_root, operation_receipt(
@@ -413,7 +445,7 @@ def _optional_hash(path: Path) -> str | None:
     return sha256_path(path) if path.exists() else None
 
 
-def _configured_data_hash(name: str) -> str | None:
+def _configured_data_hash(name: str, *, details: dict | None = None) -> str | None:
     value = os.environ.get(name)
     path = Path(value) if value else None
     if not path or not path.exists():
@@ -421,7 +453,7 @@ def _configured_data_hash(name: str) -> str | None:
     if path.is_file():
         if name == "DATACENTER_LEDGER_PATH":
             try:
-                return _sqlite_logical_hash(path)
+                return _sqlite_logical_hash(path, details=details)
             except sqlite3.Error:
                 pass
         return sha256_path(path)
@@ -432,22 +464,39 @@ def _configured_data_hash(name: str) -> str | None:
     return digest.hexdigest()
 
 
-def _sqlite_logical_hash(path: Path) -> str:
-    """Hash ledger state while excluding the expected mutable worker heartbeat."""
+def _sqlite_logical_hash(path: Path, *, details: dict | None = None) -> str:
+    """Hash every ledger table in rowid order, recording the cost per table.
+
+    Every table is included, including the scheduler state tables: an exclusion
+    list would create exactly the blind spot activation evidence exists to
+    prevent.  Rows are streamed in ``rowid`` order instead of being sorted, so
+    the cost stays linear, and each table's row count and duration are recorded
+    in the stage/activate receipt (spec 7.4.7, AC22).
+    """
     digest = hashlib.sha256()
-    tables = ("runs", "jobs", "quality_findings", "dead_letter_state", "dead_letter_audit")
+    costs: dict[str, dict] = {}
+    if details is not None:
+        details["tables"] = costs
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
-        existing = {row[0] for row in database.execute(
-            "select name from sqlite_master where type='table' and name not like 'sqlite_%'"
-        )}
+        tables = [row[0] for row in database.execute(
+            "select name from sqlite_master where type='table' and name not like 'sqlite_%' "
+            "and name != 'worker_heartbeat' order by name"
+        )]
         for table in tables:
-            if table not in existing:
+            if not table:
                 continue
+            started = time.perf_counter()
             digest.update(table.encode())
-            columns = [row[1] for row in database.execute(f"pragma table_info({table})")]
-            order = ",".join(f'"{column}"' for column in columns)
-            for row in database.execute(f'select * from "{table}" order by {order}'):
+            rows = 0
+            cursor = database.execute(f'select * from "{table}" order by rowid')
+            for row in cursor:
                 digest.update(json.dumps(row, sort_keys=True, default=str).encode())
+                rows += 1
+            costs[table] = {"rows": rows, "seconds": round(time.perf_counter() - started, 6)}
+    if details is not None:
+        details["table_count"] = len(costs)
+        details["row_count"] = sum(item["rows"] for item in costs.values())
+        details["hash_seconds"] = round(sum(item["seconds"] for item in costs.values()), 6)
     return digest.hexdigest()
 
 
