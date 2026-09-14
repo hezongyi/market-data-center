@@ -12,9 +12,11 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from .domain.models import IngestJob
+from .platform import ingest_window_payloads
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
 from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
 from .scheduler import MIN_INTERVAL_SECONDS, next_run_at, validate_schedule
@@ -635,6 +637,53 @@ class ProductionTasks:
 
         raise ProductionConflict("unsupported_command", f"{command} is not available in this phase")
 
+    # -- dispatch and closure -------------------------------------------
+    def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
+                 step_budget: int = 8) -> dict:
+        """Plan one accepted execution and persist its steps, runs and jobs together."""
+        now = now or datetime.now(timezone.utc)
+        definition = task.get("payload") or {}
+        progress = self.ledger.production_progress(task["task_id"]) or {}
+        plan = plan_execution(task, definition, execution, now=now, step_budget=step_budget,
+                              progress=progress)
+        accepted = self.ledger.accept_execution_plan(
+            execution_id=execution["execution_id"], steps=plan["steps"],
+            audit={"action": "production.execution.accept", "actor": "system:scheduler",
+                   "request_id": None})
+        self.ledger.record_progress(task["task_id"], {
+            "frontier": plan["planned_end"], "effective_end": plan["effective_end"],
+            "backlog": plan["backlog"], "last_execution_id": execution["execution_id"],
+            "last_planned_at": now.isoformat(), "policy_id": plan.get("policy_id"),
+            "planned_windows": len(plan["steps"]),
+        })
+        return {**accepted, "plan": {key: value for key, value in plan.items() if key != "steps"},
+                "planned_steps": len(plan["steps"])}
+
+    def reconcile(self, *, now: datetime | None = None, limit: int = 50) -> dict:
+        """Close finished executions and advance the schedules their outcome decides."""
+        now = now or datetime.now(timezone.utc)
+        closed = self.ledger.close_finished_executions(limit=limit)
+        advanced = []
+        for execution in closed:
+            task = self.ledger.get_production_task(execution["task_id"])
+            if task is None:
+                continue
+            definition = task.get("payload") or {}
+            schedule = definition.get("schedule") or {}
+            finished_at = _optional_utc(execution.get("finished_at"))
+            if schedule.get("schedule") == "fixed_delay" and finished_at is not None:
+                # A fixed-delay plan can only be advanced by a terminal round.
+                following = finished_at + timedelta(seconds=int(schedule.get("interval_seconds") or 0))
+                self.ledger.set_task_next_run_at(task_id=task["task_id"],
+                                                 next_run_at=following.isoformat())
+                advanced.append({"task_id": task["task_id"], "next_run_at": following.isoformat()})
+            self.ledger.record_progress(task["task_id"], {
+                "last_outcome": execution.get("outcome"),
+                "last_finished_at": execution.get("finished_at"),
+                "last_execution_id": execution["execution_id"],
+            })
+        return {"closed": closed, "advanced": advanced, "reconciled_at": now.isoformat()}
+
     def _run_now(self, conn, task_id: str, *, now: datetime) -> dict:
         """Trigger one manual execution, or locate the execution already in flight."""
         task = self.ledger.get_production_task(task_id)
@@ -650,6 +699,57 @@ class ProductionTasks:
         return self.ledger.create_production_execution(
             execution_id=str(uuid4()), task_id=task_id,
             definition_version=task["definition_version"], trigger_source="manual", conn=conn)
+
+
+def scheduled_end(now: datetime, *, lag_minutes: int) -> datetime:
+    """The half-open end of data the provider is expected to expose by ``now``."""
+    bounded = _as_utc(now, "now") - timedelta(minutes=max(0, lag_minutes))
+    return bounded.replace(second=0, microsecond=0)
+
+
+def plan_execution(task: dict, definition: dict, execution: dict, *, now: datetime,
+                   step_budget: int = 8, progress: dict | None = None) -> dict:
+    """Plan the raw windows one execution may expand, bounded by policy and budget.
+
+    The plan deliberately expands at most ``max_window_days`` of data and at most
+    ``step_budget`` windows per execution: a multi-year backlog stays a persisted
+    backlog instead of becoming one unbounded transaction, and the next
+    execution continues from the recorded frontier (spec 6.1, 7.2).
+    """
+    window_policy = definition.get("window_policy") or {}
+    mode = window_policy.get("mode", "continuous")
+    if mode == "fixed":
+        start = _as_utc(window_policy["start"], "window_policy.start")
+        end = _as_utc(window_policy["end"], "window_policy.end")
+    else:
+        policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+        end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
+        history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
+        frontier = (progress or {}).get("frontier")
+        start = max(history_start, _optional_utc(frontier)) if frontier else history_start
+    if end <= start:
+        return {"steps": [], "planned_start": start.isoformat(), "planned_end": start.isoformat(),
+                "effective_end": end.isoformat(), "backlog": False, "reason": "no_work"}
+    policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+    capability = REGISTRY.capability(definition["provider"])
+    bounded_days = min(policy.max_window_days, capability.max_window_days)
+    bounded_end = min(end, start + timedelta(days=bounded_days))
+    job = IngestJob(
+        job_id=f"{task['task_id']}:{execution['execution_id'][:8]}:raw",
+        dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
+        asset_class=definition.get("asset_class") or capability.asset_classes[0],
+        timeframe=definition["raw_timeframe"], start=start, end=bounded_end,
+        run_scope="production", run_kind="ingest")
+    payloads = ingest_window_payloads(job=job, policy=policy)
+    steps = []
+    for payload in payloads[:max(1, step_budget)]:
+        steps.append({"stage": "raw", "window_start": payload["start"], "window_end": payload["end"],
+                      "payloads": [payload]})
+    planned_end = max([_as_utc(step["window_end"], "window_end") for step in steps], default=start)
+    return {"steps": steps, "planned_start": start.isoformat(), "planned_end": planned_end.isoformat(),
+            "effective_end": end.isoformat(), "backlog": planned_end < end,
+            "truncated_windows": max(0, len(payloads) - len(steps)),
+            "policy_id": policy.policy_id}
 
 
 def as_dict(service_result: dict) -> dict:

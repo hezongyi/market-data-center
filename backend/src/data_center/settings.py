@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     # Optional production canary allowlist for the governed 1m maintenance
     # scheduler.  CLI --symbols remains an explicit per-run override.
     maintenance_symbols: str | None = None
+    # Production task scheduler.  Dispatch stays off until an operator turns it
+    # on, so a deployed scheduler observes before it acts (spec 9).
+    scheduler_interval_seconds: float = 15.0
+    scheduler_tick_budget: int = 50
+    # Windows one execution may expand; a longer range stays a persisted backlog.
+    scheduler_step_budget: int = 8
+    scheduler_lease_seconds: float = 30.0
+    scheduler_dispatch_enabled: bool = False
+    scheduler_instance_id: str = "scheduler"
     capacity_warning_free_ratio: float = 0.15
     capacity_critical_free_ratio: float = 0.10
     # Isolated acceptance only: pin the measured free ratio so capacity states are

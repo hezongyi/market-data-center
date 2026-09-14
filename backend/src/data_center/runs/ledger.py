@@ -454,6 +454,11 @@ class RunLedger:
         if expected_version is not None and row[3] != expected_version:
             raise ProductionConflict("version_conflict", "definition version conflict")
         stamp = self._now()
+        if state == "paused":
+            # Window-boundary pause: stop submitting new steps, but let the
+            # in-flight windows finish and keep their ownership (spec 5.3).
+            conn.execute("update production_executions set state='pausing', updated_at=? "
+                         "where task_id=? and state='running'", (stamp, task_id))
         if state == "archived":
             if self._has_active_execution(conn, task_id):
                 raise ProductionConflict("active_execution",
@@ -463,6 +468,10 @@ class RunLedger:
             conn.execute("update plan_ownership set state='archived', updated_at=? "
                          "where task_id=? and state in ('enabled','paused')", (stamp, task_id))
         elif state == "enabled":
+            # Resuming revives the round that was interrupted, so its unclaimed
+            # jobs become claimable again instead of waiting for a new round.
+            conn.execute("update production_executions set state='running', updated_at=? "
+                         "where task_id=? and state in ('pausing','paused')", (stamp, task_id))
             held = conn.execute(
                 f"select ownership_key,task_id from plan_ownership where ownership_key in "
                 f"(select ownership_key from plan_ownership where task_id=? and state in ('archived','deleted')) "
@@ -717,6 +726,18 @@ class RunLedger:
                 "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending",
                 "created_at": stamp, "schedule_revision": schedule_revision}
 
+    def list_pending_executions(self, *, limit: int = 50) -> builtins.list[dict]:
+        """Accepted executions that have no persisted plan yet (run_now, retry)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,"
+                "outcome,created_at,finished_at,coalesced_count,schedule_revision "
+                "from production_executions where state='pending' "
+                "and not exists (select 1 from production_steps s where s.execution_id = "
+                "production_executions.execution_id) order by created_at limit ?",
+                (max(1, limit),)).fetchall()
+        return [self._execution_row(row) for row in rows]
+
     def list_due_production_tasks(self, *, now, limit: int = 50) -> list[dict]:
         """Bounded, indexed due scan over enabled plans (spec 7.4.2, AC14)."""
         with self._connect() as conn:
@@ -861,6 +882,20 @@ class RunLedger:
         return [{"step_id": r[0], "execution_id": r[1], "stage": r[2], "window_start": r[3],
                  "window_end": r[4], "state": r[5], "block_reason": r[6], "run_id": r[7], "created_at": r[8]} for r in rows]
 
+    @staticmethod
+    def _write_run(conn, run_id: str, payload: dict) -> None:
+        """Write a run payload and its indexed columns together.
+
+        The SQL-side read model (plan history, execution steps) reads these
+        columns, so every payload write has to keep them in step; otherwise a
+        closed execution can sit forever behind a stale ``running`` status.
+        """
+        conn.execute(
+            "update runs set payload=?, status=?, plan_id=?, execution_id=?, step_id=?, "
+            "created_at=coalesce(created_at, ?) where run_id=?",
+            (json.dumps(payload), payload.get("status"), payload.get("plan_id"),
+             payload.get("execution_id"), payload.get("step_id"), payload.get("created_at"), run_id))
+
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:
             conn.execute("begin immediate")
@@ -871,7 +906,10 @@ class RunLedger:
                 raise ValueError("terminal receipt is immutable")
             merged = {**original, **payload}
             conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id) values (?, ?, ?, ?, ?, ?, ?) "
-                         "on conflict(run_id) do update set payload=excluded.payload,status=excluded.status",
+                         "on conflict(run_id) do update set payload=excluded.payload,status=excluded.status,"
+                         "plan_id=coalesce(excluded.plan_id,runs.plan_id),"
+                         "execution_id=coalesce(excluded.execution_id,runs.execution_id),"
+                         "step_id=coalesce(excluded.step_id,runs.step_id)",
                          (run_id, json.dumps(merged), merged.get("status"), merged.get("created_at"),
                           merged.get("plan_id"), merged.get("execution_id"), merged.get("step_id")))
 
@@ -1097,31 +1135,184 @@ class RunLedger:
     def enqueue_job(self, job_payload: dict) -> str:
         return self.enqueue_batch([job_payload])[0]
 
+    @staticmethod
+    def _run_document(run_id: str, job_payload: dict, stamp: str) -> dict:
+        def owner(field: str):
+            return job_payload.get(field) or job_payload.get(f"owner_{field}")
+
+        return {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
+                "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
+                "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
+                "recipe_version": job_payload.get("recipe_version"), "input_snapshot_id": job_payload.get("input_snapshot_id"),
+                "run_scope": job_payload.get("run_scope", "production"), "run_kind": job_payload.get("run_kind", "ingest"),
+                "execution_plan": job_payload.get("execution_plan"), "timeframe": job_payload.get("timeframe"),
+                "asset_class": job_payload.get("asset_class"), "series_id": job_payload.get("series_id"),
+                "price_basis": job_payload.get("price_basis"), "start": job_payload.get("start"), "end": job_payload.get("end"),
+                "plan_id": owner("plan_id"), "execution_id": owner("execution_id"), "step_id": owner("step_id"),
+                "status": "queued", "created_at": stamp}
+
+    def _insert_run_and_job(self, conn, job_payload: dict, stamp: str) -> str:
+        """Insert one run and its job on the caller's connection.
+
+        The run's plan/execution/step columns are written with the payload in the
+        same statement, so the SQL-side read model can never disagree with the
+        receipt it indexes (spec 7.4.5).
+        """
+        run_id = str(uuid4())
+        payload = self._run_document(run_id, job_payload, stamp)
+        conn.execute(
+            "insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id) "
+            "values (?,?,?,?,?,?,?)",
+            (run_id, json.dumps(payload), "queued", stamp, payload["plan_id"],
+             payload["execution_id"], payload["step_id"]))
+        conn.execute("insert into jobs(job_id, run_id, status, payload, owner_plan_id, owner_step_id, owner_execution_id) values (?, ?, ?, ?, ?, ?, ?)",
+                     (str(uuid4()), run_id, "queued", json.dumps(job_payload),
+                      payload["plan_id"], payload["step_id"], payload["execution_id"]))
+        return run_id
+
     def enqueue_batch(self, job_payloads: list[dict]) -> list[str]:
         """Atomically enqueue a batch of jobs and their run receipts."""
         if not job_payloads:
             return []
-        run_ids: list[str] = []
         stamp = self._now()
+        with self._transaction() as conn:
+            return [self._insert_run_and_job(conn, job_payload, stamp) for job_payload in job_payloads]
+
+    def accept_execution_plan(self, *, execution_id: str, steps: builtins.list[dict],
+                              audit: dict | None = None, conn=None) -> dict:
+        """Persist planned steps and enqueue their runs in one transaction.
+
+        Acceptance, the steps a run belongs to, the runs, the jobs and the audit
+        entry either all become durable or none of them do (spec 7.2.3).  A step
+        keeps its persisted id, so a resume can never regenerate its way around
+        the per-step submission dedupe.
+        """
+        stamp = self._now()
+        with self._transaction(conn) as tx:
+            row = tx.execute("select task_id, state from production_executions where execution_id=?",
+                             (execution_id,)).fetchone()
+            if row is None:
+                raise KeyError(execution_id)
+            if row[1] not in {"pending", "running"}:
+                raise ProductionConflict("execution_closed",
+                                         f"execution {execution_id} is already {row[1]}")
+            if tx.execute("select 1 from production_steps where execution_id=? limit 1",
+                          (execution_id,)).fetchone():
+                # A second planner (or a replay) must not expand the same round
+                # twice; the persisted steps are the proof it was planned.
+                raise ProductionConflict("plan_exists",
+                                         f"execution {execution_id} already has a persisted plan")
+            step_ids, run_ids = [], []
+            for step in steps:
+                step_id = step.get("step_id") or str(uuid4())
+                tx.execute(
+                    "insert into production_steps(step_id,execution_id,stage,window_start,window_end,state,"
+                    "created_at,submission_generation,updated_at) values (?,?,?,?,?,?,?,?,?)",
+                    (step_id, execution_id, step["stage"], step.get("window_start"), step.get("window_end"),
+                     "pending", stamp, int(step.get("submission_generation") or 0), stamp))
+                step_ids.append(step_id)
+                for payload in step.get("payloads") or []:
+                    payload = {**payload, "plan_id": row[0], "execution_id": execution_id,
+                               "step_id": step_id, "owner_plan_id": row[0],
+                               "owner_execution_id": execution_id, "owner_step_id": step_id}
+                    run_ids.append(self._insert_run_and_job(tx, payload, stamp))
+                if step.get("state") == "blocked":
+                    tx.execute("update production_steps set state='blocked', block_reason=? where step_id=?",
+                               (step.get("block_reason"), step_id))
+            tx.execute("update production_executions set state='running', updated_at=? "
+                       "where execution_id=? and state='pending'", (stamp, execution_id))
+            self._write_audit(tx, audit, outcome="accepted", task_id=row[0])
+        return {"execution_id": execution_id, "task_id": row[0], "step_ids": step_ids, "run_ids": run_ids}
+
+    STEP_TERMINAL_STATES = ("completed", "failed", "skipped")
+
+    def refresh_execution_steps(self, execution_id: str) -> builtins.list[dict]:
+        """Derive step state from the runs attributed to each step, in SQL.
+
+        The worker owns run outcomes; the scheduler only reads them back, so a
+        step's state is never guessed from a process-local event.
+        """
+        with self._transaction() as tx:
+            rows = tx.execute(
+                """
+                select s.step_id, s.state, s.block_reason,
+                       (select count(*) from runs r where r.step_id = s.step_id),
+                       (select count(*) from runs r where r.step_id = s.step_id
+                          and r.status in ('pass','succeeded')),
+                       (select count(*) from runs r where r.step_id = s.step_id
+                          and r.status in ('failed','dead_letter')),
+                       (select count(*) from runs r where r.step_id = s.step_id
+                          and r.status in ('queued','running'))
+                from production_steps s where s.execution_id=? order by s.created_at, s.step_id
+                """, (execution_id,)).fetchall()
+            stamp = self._now()
+            for row in rows:
+                step_id, state, _block_reason, total, passed, failed, open_runs = row
+                if state == "blocked" and not open_runs and not failed and total == 0:
+                    continue
+                if failed:
+                    derived = "failed"
+                elif open_runs:
+                    derived = "running"
+                elif total and passed == total:
+                    derived = "completed"
+                elif total == 0:
+                    derived = "skipped"
+                else:
+                    derived = "failed"
+                if derived != state:
+                    tx.execute("update production_steps set state=?, updated_at=? where step_id=?",
+                               (derived, stamp, step_id))
+        return self.list_production_steps(execution_id)
+
+    def close_finished_executions(self, *, limit: int = 50) -> builtins.list[dict]:
+        """Close executions whose steps reached a terminal state (spec 7.2.5).
+
+        A run that failed makes the execution ``failed``; a step that could not
+        be planned (a known source gap) leaves the execution ``degraded`` rather
+        than pretending the round succeeded.
+        """
+        closed = []
+        with self._transaction() as tx:
+            candidates = tx.execute(
+                "select execution_id, task_id from production_executions "
+                "where state in ('running','pausing') order by created_at limit ?",
+                (max(1, limit),)).fetchall()
+        for execution_id, task_id in candidates:
+            steps = self.refresh_execution_steps(execution_id)
+            if any(step["state"] not in self.STEP_TERMINAL_STATES for step in steps):
+                continue
+            if any(step["state"] == "failed" for step in steps):
+                state, outcome = "failed", "failed"
+            elif not steps:
+                state, outcome = "completed", "skipped"
+            elif any(step["state"] == "skipped" for step in steps):
+                state, outcome = "completed", "degraded"
+            else:
+                state, outcome = "completed", "pass"
+            result = self.finish_production_execution(execution_id, state=state, outcome=outcome)
+            if result is not None:
+                closed.append(result)
+        return closed
+
+    def record_progress(self, task_id: str, payload: dict) -> dict:
+        """Persist the per-output frontier and outstanding ranges for a plan."""
+        stamp = self._now()
+        with self._transaction() as tx:
+            existing = tx.execute("select payload from production_progress where task_id=?",
+                                  (task_id,)).fetchone()
+            merged = {**({} if existing is None else json.loads(existing[0])), **payload,
+                      "task_id": task_id, "updated_at": stamp}
+            tx.execute("insert into production_progress(task_id,payload,updated_at) values (?,?,?) "
+                       "on conflict(task_id) do update set payload=excluded.payload, updated_at=excluded.updated_at",
+                       (task_id, json.dumps(merged), stamp))
+        return merged
+
+    def production_progress(self, task_id: str) -> dict | None:
         with self._connect() as conn:
-            conn.execute("begin immediate")
-            for job_payload in job_payloads:
-                run_id = str(uuid4())
-                payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
-                           "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
-                           "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
-                           "recipe_version": job_payload.get("recipe_version"), "input_snapshot_id": job_payload.get("input_snapshot_id"),
-                           "run_scope": job_payload.get("run_scope", "production"), "run_kind": job_payload.get("run_kind", "ingest"),
-                           "execution_plan": job_payload.get("execution_plan"), "timeframe": job_payload.get("timeframe"),
-                           "asset_class": job_payload.get("asset_class"), "series_id": job_payload.get("series_id"),
-                           "price_basis": job_payload.get("price_basis"), "start": job_payload.get("start"), "end": job_payload.get("end"),
-                           "status": "queued", "created_at": stamp}
-                conn.execute("insert into runs(run_id,payload,status,created_at) values (?, ?, ?, ?)",
-                             (run_id, json.dumps(payload), "queued", stamp))
-                conn.execute("insert into jobs(job_id, run_id, status, payload, owner_plan_id, owner_step_id, owner_execution_id) values (?, ?, ?, ?, ?, ?, ?)",
-                             (str(uuid4()), run_id, "queued", json.dumps(job_payload), job_payload.get("owner_plan_id"), job_payload.get("owner_step_id"), job_payload.get("owner_execution_id")))
-                run_ids.append(run_id)
-        return run_ids
+            row = conn.execute("select payload from production_progress where task_id=?",
+                               (task_id,)).fetchone()
+        return None if row is None else json.loads(row[0])
 
     def claim_next_job(self, *, scan_limit: int = 50) -> dict | None:
         """Claim the oldest runnable job, honouring ownership and pause rules.
@@ -1168,7 +1359,7 @@ class RunLedger:
             run = json.loads(run_row[0])
             run["status"] = "running"
             run["started_at"] = self._now()
-            conn.execute("update runs set payload = ?, status = ?, created_at = coalesce(created_at, ?) where run_id = ?", (json.dumps(run), "running", run.get("created_at"), row[1]))
+            self._write_run(conn, row[1], run)
             conn.execute("update jobs set attempts = attempts + 1 where job_id = ?", (row[0],))
             return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
 
@@ -1195,7 +1386,7 @@ class RunLedger:
                        "attempt_errors": original.get("attempt_errors", []),
                        "finished_at": self._now(), "error": None, "error_type": None,
                        "failure_stage": None, "retryable": False}
-            conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
+            self._write_run(conn, run_id, payload)
             conn.execute("update jobs set status='completed' where job_id=?", (job_id,))
             if original.get("retry_of"):
                 resolved_at = payload["finished_at"]
@@ -1231,7 +1422,7 @@ class RunLedger:
             if status != "queued":
                 payload["finished_at"] = failure["at"]
             conn.execute("update jobs set status = ?, available_at = ? where job_id = ?", (status, available, job_id))
-            conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
+            self._write_run(conn, run_id, payload)
             if status == "dead_letter":
                 conn.execute("insert or ignore into dead_letter_state(run_id,state) values (?,'active')", (run_id,))
 
@@ -1254,9 +1445,14 @@ class RunLedger:
                        "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
                        "status": "queued", "retry_of": run_id,
                        "created_at": self._now()}
-            conn.execute("insert into runs(run_id,payload,status,created_at) values (?, ?, ?, ?)",
-                         (new_id, json.dumps(payload), "queued", payload["created_at"]))
-            conn.execute("insert into jobs(job_id,run_id,status,payload) values (?,?,?,?)", (str(uuid4()), new_id, "queued", job[0]))
+            conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id) "
+                         "values (?,?,?,?,?,?,?)",
+                         (new_id, json.dumps(payload), "queued", payload["created_at"],
+                          payload.get("plan_id"), payload.get("execution_id"), payload.get("step_id")))
+            conn.execute("insert into jobs(job_id,run_id,status,payload,owner_plan_id,owner_step_id,owner_execution_id) "
+                         "values (?,?,?,?,?,?,?)",
+                         (str(uuid4()), new_id, "queued", job[0], payload.get("plan_id"),
+                          payload.get("step_id"), payload.get("execution_id")))
         return new_id
 
     def acknowledge_dead_letter(self, run_id: str) -> dict:

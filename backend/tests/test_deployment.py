@@ -326,7 +326,8 @@ def test_systemd_units_use_immutable_release_and_non_overlapping_monitor_timer()
     repository = Path(__file__).resolve().parents[2]
     unit_root = repository / "deploy" / "systemd"
     for name in ("market-data-center-api.service", "market-data-center-worker.service",
-                 "market-data-center-monitor.service"):
+                 "market-data-center-monitor.service",
+                 "market-data-center-scheduler.service"):
         unit = (unit_root / name).read_text()
         assert "WorkingDirectory=%h/market-data-center/releases/current" in unit
         assert "DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json" in unit

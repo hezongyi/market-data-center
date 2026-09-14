@@ -724,6 +724,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
         return api_envelope(payload)
 
+    @app.get(f"{config.api_prefix}/operations/scheduler")
+    def operations_scheduler() -> dict:
+        """Scheduler heartbeat, dispatch switch, due backlog and plan counts.
+
+        The projection is observational: it reports what the ledger recorded and
+        never infers a healthy state the scheduler did not write (spec 3.2, 7.3).
+        """
+        state = ledger.scheduler_state()
+        due = ledger.list_due_production_tasks(now=datetime.now(timezone.utc).isoformat(), limit=50)
+        counts: dict[str, int] = {}
+        for task in ledger.list_production_tasks():
+            counts[task["desired_state"]] = counts.get(task["desired_state"], 0) + 1
+        return api_envelope({
+            "scheduler": state,
+            "dispatch_enabled": state["dispatch_enabled"],
+            "due_now": len(due),
+            "due_task_ids": [task["task_id"] for task in due],
+            "plans_by_state": counts,
+            "oldest_due_at": min([task["next_run_at"] for task in due], default=None),
+            "queue": ledger.job_queue_state(),
+            "blocked": [],
+        })
+
+    @app.post(f"{config.api_prefix}/operations/scheduler/actions")
+    def operations_scheduler_action(payload: dict, request: Request,
+                                    x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        command = str(payload.get("command") or "")
+        if command not in {"pause_dispatch", "resume_dispatch"}:
+            raise HTTPException(status_code=422, detail={
+                "code": "unsupported_command",
+                "message": "command must be pause_dispatch or resume_dispatch"})
+        result = ledger.set_global_dispatch(command == "resume_dispatch",
+                                            actor=operator_identity(request, config),
+                                            request_id=current_request_id())
+        return api_envelope({"command": command, **result})
+
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
     def retry(run_id: str, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)

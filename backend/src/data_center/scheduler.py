@@ -256,13 +256,18 @@ class Scheduler:
     """One bounded scheduler tick; dispatch remains opt-in for shadow mode."""
 
     def __init__(self, ledger, *, instance_id: str, dispatch_enabled: bool = False,
-                 budget: int = 50, lease_ttl_seconds: float = 30.0, clock=None):
+                 budget: int = 50, lease_ttl_seconds: float = 30.0, clock=None,
+                 planner=None, step_budget: int = 8):
         self.ledger = ledger
         self.instance_id = instance_id
         self.dispatch_enabled = dispatch_enabled
         self.budget = budget
         self.lease_ttl_seconds = lease_ttl_seconds
         self.clock = clock
+        # The production task module plans what an accepted execution expands;
+        # without it a tick only claims the slot (shadow and test runs).
+        self.planner = planner
+        self.step_budget = step_budget
 
     def _now(self) -> datetime:
         if self.clock is not None:
@@ -347,10 +352,50 @@ class Scheduler:
             decision["execution_id"] = execution["execution_id"] if execution else None
             decision["execution_created"] = bool(execution and execution.get("created"))
             decision["action"] = "execution_claimed" if execution else "claim_rejected"
+            if execution is not None and self.planner is not None:
+                # Planning happens outside the claim transaction: it reads
+                # policy and must never extend the write lock (spec 7.2.2).
+                try:
+                    planned = self.planner.dispatch(task=task, execution=execution, now=now,
+                                                    step_budget=self.step_budget)
+                    decision["steps"] = planned["planned_steps"]
+                    decision["runs"] = len(planned["run_ids"])
+                    decision["backlog"] = planned["plan"]["backlog"]
+                except (KeyError, ValueError) as exc:
+                    # A plan that cannot be expanded must not look dispatched.
+                    decision["action"] = "dispatch_rejected"
+                    decision["reason"] = str(exc)
             decisions.append(decision)
+        if self.dispatch_enabled and self.planner is not None and not globally_paused:
+            # Executions accepted by run_now/retry carry no schedule slot, so
+            # they are planned here instead of waiting for a due scan.
+            for execution in self.ledger.list_pending_executions(limit=max(0, limit)):
+                task = self.ledger.get_production_task(execution["task_id"])
+                if task is None or task["desired_state"] != "enabled" or task["deleted_at"]:
+                    continue
+                decision = {"task_id": task["task_id"], "action": "execution_claimed",
+                            "trigger_source": execution["trigger_source"],
+                            "execution_id": execution["execution_id"], "execution_created": False,
+                            "definition_version": task["definition_version"]}
+                try:
+                    planned = self.planner.dispatch(task=task, execution=execution, now=now,
+                                                    step_budget=self.step_budget)
+                    decision["steps"] = planned["planned_steps"]
+                    decision["runs"] = len(planned["run_ids"])
+                    decision["backlog"] = planned["plan"]["backlog"]
+                except (KeyError, ValueError) as exc:
+                    decision["action"] = "dispatch_rejected"
+                    decision["reason"] = str(exc)
+                decisions.append(decision)
+        reconcile = None
+        if self.planner is not None:
+            # Closure belongs to the same bounded tick: reading finished runs
+            # back and advancing a fixed-delay plan must not need a second loop.
+            reconcile = self.planner.reconcile(now=now, limit=max(0, limit))
         dispatched = sum(1 for item in decisions if item.get("action") == "execution_claimed")
         return {"instance_id": self.instance_id, "dispatch_enabled": self.dispatch_enabled,
                 "evaluated": len(decisions), "dispatched": dispatched, "decisions": decisions,
+                "reconcile": reconcile,
                 "tick_at": now.isoformat(), "tick_seconds": round(time.perf_counter() - started, 6)}
 
 

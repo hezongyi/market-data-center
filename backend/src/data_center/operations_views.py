@@ -18,7 +18,7 @@ CAPACITY_EVENTS = {"capacity_warning", "capacity_critical", "capacity_recovered"
 RECEIPT_ACTIONS = ("backup", "backup_verify", "restore", "recovery_drill", "capacity_check",
                    "deployment_stage", "deployment_activate", "deployment_rollback",
                    "deployment_runtime_failure", "monitor", "derived_market_bars_maintenance",
-                   "real_release_webui_acceptance", "post_release_rehearsal")
+                   "real_release_webui_acceptance", "post_release_rehearsal", "scheduler_tick")
 
 
 def _iso(value) -> str | None:

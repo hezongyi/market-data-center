@@ -45,8 +45,10 @@ def auth() -> dict:
 
 
 def create_plan(client, task_id="p1", **overrides) -> dict:
+    # ``desired_state`` belongs to the request, not to the plan definition.
+    desired_state = overrides.pop("desired_state", "paused")
     body = {"task_id": task_id, "name": overrides.pop("name", task_id),
-            "definition": definition(**overrides)}
+            "desired_state": desired_state, "definition": definition(**overrides)}
     response = client.post("/api/v1/production/tasks", json=body, headers=auth())
     assert response.status_code == 201, response.text
     return response.json()["data"]
@@ -213,3 +215,58 @@ def test_capabilities_route_still_answers_with_a_plan_aware_payload(client):
     response = client.get("/api/v1/capabilities", headers=auth())
     assert response.status_code == 200
     assert response.json()["data"]["providers"]
+
+
+def test_operations_scheduler_reports_state_and_due_plans(client, config):
+    create_plan(client, "p1", desired_state="enabled")
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    # A freshly created plan is scheduled ahead, and a scheduler that never ran
+    # reports no heartbeat instead of an invented healthy one.
+    assert payload["due_now"] == 0
+    assert payload["scheduler"]["heartbeat_at"] is None
+    assert payload["dispatch_enabled"] is True
+    assert payload["plans_by_state"] == {"enabled": 1}
+    # Once a slot is genuinely in the past the view lists it (the endpoint
+    # compares against the real clock, so the slot must really have passed).
+    RunLedger(config.ledger_path).set_task_next_run_at(
+        task_id="p1", next_run_at="2020-01-01T00:00:00+00:00")
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    assert payload["due_task_ids"] == ["p1"]
+    assert payload["oldest_due_at"] == "2020-01-01T00:00:00+00:00"
+
+
+def test_global_pause_action_stops_dispatch_and_is_audited(client, config):
+    create_plan(client, "p1", desired_state="enabled")
+    ledger = RunLedger(config.ledger_path)
+    # Make the plan genuinely due so the pause, not the schedule, is what holds it.
+    ledger.set_task_next_run_at(task_id="p1", next_run_at="2026-09-14T11:00:00+00:00")
+    paused = client.post("/api/v1/operations/scheduler/actions",
+                         json={"command": "pause_dispatch"}, headers=auth())
+    assert paused.status_code == 200
+    assert paused.json()["data"]["dispatch_enabled"] is False
+    assert ledger.dispatch_enabled() is False
+    assert next(iter(ledger.write_audit_entries()))["action"] == "scheduler.pause_dispatch"
+    # A scheduler tick that tries to dispatch while paused creates nothing.
+    from datetime import datetime, timezone
+
+    from data_center.scheduler import Scheduler
+    result = Scheduler(ledger, instance_id="one", dispatch_enabled=True).tick(
+        now=datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
+    assert [item.get("reason") for item in result["decisions"]] == ["global_pause"]
+    assert ledger.list_production_executions("p1") == []
+    resumed = client.post("/api/v1/operations/scheduler/actions",
+                          json={"command": "resume_dispatch"}, headers=auth())
+    assert resumed.json()["data"]["dispatch_enabled"] is True
+    claimed = Scheduler(ledger, instance_id="one", dispatch_enabled=True).tick(
+        now=datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
+    assert claimed["decisions"][0]["action"] == "execution_claimed"
+
+
+def test_operations_scheduler_action_rejects_an_unknown_command(client):
+    response = client.post("/api/v1/operations/scheduler/actions",
+                           json={"command": "delete_everything"}, headers=auth())
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "unsupported_command"
+    unauthenticated = client.post("/api/v1/operations/scheduler/actions",
+                                  json={"command": "pause_dispatch"})
+    assert unauthenticated.status_code == 401

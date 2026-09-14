@@ -92,6 +92,9 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
         True, True, {"command": "pause"}, audit_action="production.task.pause", expect_status=404),
     ("PATCH", "/api/v1/production/tasks/{task_id}"): RoutePolicy(
         True, False, {"desired_state": "paused"}, expect_status=404),
+    ("POST", "/api/v1/operations/scheduler/actions"): RoutePolicy(
+        True, True, {"command": "pause_dispatch"},
+        audit_action="scheduler.pause_dispatch", expect_status=200),
 }
 
 AUDITING_ROUTES = sorted(route for route, policy in MUTATING_ROUTES.items() if policy.writes_audit)
