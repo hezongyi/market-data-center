@@ -138,6 +138,7 @@ class DeploymentService:
         service_names: tuple[str, ...] = (
             "market-data-center-api.service",
             "market-data-center-worker.service",
+            "market-data-center-scheduler.service",
         ),
         monitor_service: str = "market-data-center-monitor.service",
         ready_url: str = "http://127.0.0.1:18380/api/v1/health/ready",
@@ -206,7 +207,8 @@ class DeploymentService:
         identity = runtime_identity(target / "deployment.json")
         previous = self._current_target()
         canonical_hash = _configured_data_hash("DATACENTER_CANONICAL_ROOT")
-        ledger_hash = _configured_data_hash("DATACENTER_LEDGER_PATH")
+        ledger_details: dict = {}
+        ledger_hash = _configured_data_hash("DATACENTER_LEDGER_PATH", details=ledger_details)
         try:
             self._point_current(target)
             self._restart_and_verify(identity)
@@ -241,6 +243,12 @@ class DeploymentService:
             "source_commit": identity["source_commit"],
             "canonical_hash_unchanged": canonical_hash == _configured_data_hash("DATACENTER_CANONICAL_ROOT"),
             "ledger_hash_unchanged": ledger_hash == _configured_data_hash("DATACENTER_LEDGER_PATH"),
+            # Activation cost stays observable: every hashed table reports its
+            # row count and duration instead of one opaque number (AC22).
+            "ledger_hash_tables": ledger_details.get("tables"),
+            "ledger_hash_table_count": ledger_details.get("table_count"),
+            "ledger_hash_row_count": ledger_details.get("row_count"),
+            "ledger_hash_seconds": ledger_details.get("hash_seconds"),
         }
         return {
             "action": action,
@@ -413,7 +421,7 @@ def _optional_hash(path: Path) -> str | None:
     return sha256_path(path) if path.exists() else None
 
 
-def _configured_data_hash(name: str) -> str | None:
+def _configured_data_hash(name: str, *, details: dict | None = None) -> str | None:
     value = os.environ.get(name)
     path = Path(value) if value else None
     if not path or not path.exists():
@@ -421,7 +429,7 @@ def _configured_data_hash(name: str) -> str | None:
     if path.is_file():
         if name == "DATACENTER_LEDGER_PATH":
             try:
-                return _sqlite_logical_hash(path)
+                return _sqlite_logical_hash(path, details=details)
             except sqlite3.Error:
                 pass
         return sha256_path(path)
@@ -432,9 +440,19 @@ def _configured_data_hash(name: str) -> str | None:
     return digest.hexdigest()
 
 
-def _sqlite_logical_hash(path: Path) -> str:
-    """Hash ledger state while excluding the expected mutable worker heartbeat."""
+def _sqlite_logical_hash(path: Path, *, details: dict | None = None) -> str:
+    """Hash every ledger table in rowid order, recording the cost per table.
+
+    Every table is included, including the scheduler state tables: an exclusion
+    list would create exactly the blind spot activation evidence exists to
+    prevent.  Rows are streamed in ``rowid`` order instead of being sorted, so
+    the cost stays linear, and each table's row count and duration are recorded
+    in the stage/activate receipt (spec 7.4.7, AC22).
+    """
     digest = hashlib.sha256()
+    costs: dict[str, dict] = {}
+    if details is not None:
+        details["tables"] = costs
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
         tables = [row[0] for row in database.execute(
             "select name from sqlite_master where type='table' and name not like 'sqlite_%' "
@@ -443,10 +461,18 @@ def _sqlite_logical_hash(path: Path) -> str:
         for table in tables:
             if not table:
                 continue
+            started = time.perf_counter()
             digest.update(table.encode())
-            columns = [row[1] for row in database.execute(f"pragma table_info({table})")]
-            for row in database.execute(f'select * from "{table}" order by rowid'):
+            rows = 0
+            cursor = database.execute(f'select * from "{table}" order by rowid')
+            for row in cursor:
                 digest.update(json.dumps(row, sort_keys=True, default=str).encode())
+                rows += 1
+            costs[table] = {"rows": rows, "seconds": round(time.perf_counter() - started, 6)}
+    if details is not None:
+        details["table_count"] = len(costs)
+        details["row_count"] = sum(item["rows"] for item in costs.values())
+        details["hash_seconds"] = round(sum(item["seconds"] for item in costs.values()), 6)
     return digest.hexdigest()
 
 

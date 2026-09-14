@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from data_center.runs.ledger import RunLedger
+from data_center.runs.ledger import SCHEMA_VERSION, RunLedger
 
 
 def test_ledger_initializes_versioned_wal_schema_and_batch_is_atomic(tmp_path):
@@ -18,7 +18,7 @@ def test_ledger_initializes_versioned_wal_schema_and_batch_is_atomic(tmp_path):
     assert len(run_ids) == 2
     assert all(ledger.get(run_id)["created_at"] == "2023-11-14T22:13:20+00:00" for run_id in run_ids)
     with sqlite3.connect(path) as conn:
-        assert conn.execute("pragma user_version").fetchone()[0] == 1
+        assert conn.execute("pragma user_version").fetchone()[0] == SCHEMA_VERSION
         assert conn.execute("pragma journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("select count(*) from jobs where owner_plan_id='plan-a'").fetchone()[0] == 2
 
@@ -28,8 +28,40 @@ def test_migration_is_idempotent(tmp_path):
     RunLedger(path)
     RunLedger(path)
     with sqlite3.connect(path) as conn:
-        assert conn.execute("pragma user_version").fetchone()[0] == 1
-        assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == 1
+        assert conn.execute("pragma user_version").fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_ledger_refuses_a_schema_written_by_a_newer_binary(tmp_path):
+    path = tmp_path / "ledger.sqlite"
+    RunLedger(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"pragma user_version={SCHEMA_VERSION + 1}")
+        conn.commit()
+    try:
+        RunLedger(path)
+    except RuntimeError as exc:
+        assert "newer than supported" in str(exc)
+    else:
+        raise AssertionError("a future schema version must not be opened")
+
+
+def test_unversioned_production_ledger_upgrades_in_place(tmp_path):
+    """A ledger written before migrations were versioned still upgrades."""
+    path = tmp_path / "ledger.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute("create table runs (run_id text primary key, payload text not null)")
+        conn.execute("create table jobs (job_id text primary key, run_id text not null, status text not null, payload text not null)")
+        conn.execute("insert into runs(run_id, payload) values ('r1', '{\"run_id\": \"r1\"}')")
+        conn.execute("pragma user_version=0")
+        conn.commit()
+    ledger = RunLedger(path)
+    assert ledger.schema_version() == SCHEMA_VERSION
+    assert ledger.get("r1")["run_id"] == "r1"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == SCHEMA_VERSION
+        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+        assert {"owner_plan_id", "owner_step_id", "owner_execution_id"} <= columns
 
 
 def test_claim_uses_persisted_plan_ownership_for_pause(tmp_path):

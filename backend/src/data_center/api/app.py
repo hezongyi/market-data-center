@@ -48,6 +48,11 @@ from data_center.operations_views import (
 )
 from data_center.platform import coverage_for_rows, enqueue_ingest_plan
 from data_center.platform_registry import REGISTRY
+from data_center.production_tasks import (
+    DefinitionError,
+    ProductionConflict,
+    ProductionTasks,
+)
 from data_center.run_views import RunCursorError, RunValidationError, RunView
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
@@ -507,66 +512,88 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_tasks() -> dict:
         return api_envelope(ledger.list_maintenance_tasks())
 
+    production_tasks_service = ProductionTasks(
+        ledger, cursor_secret=config.api_key or str(config.canonical_root))
+
     @app.get(f"{config.api_prefix}/production/tasks")
-    def production_tasks(include_deleted: bool = False) -> dict:
-        return api_envelope(ledger.list_production_tasks(include_deleted=include_deleted))
+    def production_tasks(provider: str | None = None, symbol: str | None = None,
+                         desired_state: str | None = None, include_deleted: bool = False,
+                         page_size: int | None = None, cursor: str | None = None) -> dict:
+        """Plan list with SQL-side filtering and a cursor bound to those filters."""
+        if desired_state is not None and desired_state not in {"enabled", "paused", "archived"}:
+            raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
+        try:
+            page = production_tasks_service.list(
+                provider=provider, symbol=symbol, desired_state=desired_state,
+                include_deleted=include_deleted, page_size=page_size, cursor=cursor)
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(page["tasks"], meta={"page": page["page"]})
 
     @app.post(f"{config.api_prefix}/production/tasks", status_code=201)
     def production_task_create(payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        task_id = str(payload.get("task_id") or uuid4())
-        name = str(payload.get("name") or "").strip()
-        if not name:
-            raise HTTPException(status_code=422, detail="name is required")
-        ownership = payload.get("ownership_keys") or []
-        if not isinstance(ownership, list) or not all(isinstance(item, str) and item for item in ownership):
-            raise HTTPException(status_code=422, detail="ownership_keys must be a non-empty string list")
+        actor = operator_identity(request, config)
         try:
-            task = ledger.create_production_task(task_id=task_id, name=name,
-                alias=payload.get("alias"), payload=payload.get("definition") or {},
-                ownership_keys=ownership, desired_state=payload.get("desired_state", "paused"),
-                config_digest=payload.get("config_digest"))
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        ledger.record_write_audit({"action": "production.task.create", "actor": operator_identity(request, config),
-                                  "request_id": current_request_id(), "task_id": task_id,
-                                  "outcome": "created", "message": name})
+            task = production_tasks_service.create(
+                definition=payload.get("definition") or {}, name=payload.get("name") or "",
+                task_id=payload.get("task_id"), alias=payload.get("alias"),
+                desired_state=payload.get("desired_state", "paused"), actor=actor,
+                request_id=current_request_id(),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except DefinitionError as exc:
+            ledger.record_write_audit({"action": "production.task.create", "actor": actor,
+                                       "request_id": current_request_id(), "outcome": "rejected",
+                                       "code": "invalid_definition", "message": str(exc)})
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "errors": exc.errors}) from exc
+        except ProductionConflict as exc:
+            ledger.record_write_audit({"action": "production.task.create", "actor": actor,
+                                       "request_id": current_request_id(),
+                                       "task_id": payload.get("task_id"), "outcome": "rejected",
+                                       "code": exc.code, "message": str(exc)})
+            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/production/plans")
     def production_plan_preview(payload: dict) -> dict:
-        """Side-effect-free preview endpoint; scheduler activation is separate."""
-        return api_envelope({"schedule": payload.get("schedule", "manual"),
-                             "desired_state": payload.get("desired_state", "paused"),
-                             "ownership_keys": payload.get("ownership_keys", []),
-                             "dispatch_enabled": False})
+        """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
+        return api_envelope(production_tasks_service.preview(payload.get("definition") or payload))
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
-    def production_task_detail(task_id: str, include_deleted: bool = True) -> dict:
-        tasks = [item for item in ledger.list_production_tasks(include_deleted=include_deleted)
-                 if item["task_id"] == task_id or item.get("alias") == task_id]
-        if not tasks:
+    def production_task_detail(task_id: str) -> dict:
+        task = production_tasks_service.read(task_id)
+        if task is None:
             raise HTTPException(status_code=404, detail="production task not found")
-        return api_envelope(tasks[0])
+        return api_envelope(task)
 
     @app.patch(f"{config.api_prefix}/production/tasks/{{task_id}}")
     def production_task_change(task_id: str, payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        actor = operator_identity(request, config)
+        if "desired_state" in payload and "definition" not in payload:
+            command = {"paused": "pause", "enabled": "resume", "archived": "archive"}.get(
+                str(payload["desired_state"]))
+            if command is None:
+                raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
+        else:
+            command = "update"
         try:
-            if "desired_state" in payload:
-                task = ledger.set_production_task_state(task_id, str(payload["desired_state"]))
-            else:
-                expected = int(payload.get("expected_version"))
-                task = ledger.update_production_task(task_id, payload.get("definition") or {}, expected_version=expected)
+            task = production_tasks_service.change(
+                task_id, command, definition=payload.get("definition"),
+                expected_version=payload.get("expected_version"), actor=actor,
+                request_id=current_request_id(), name=payload.get("name"),
+                alias=payload.get("alias"),
+                idempotency_key=request.headers.get("Idempotency-Key"))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="production task not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        ledger.record_write_audit({"action": "production.task.change", "actor": operator_identity(request, config),
-                                  "request_id": current_request_id(), "task_id": task_id,
-                                  "outcome": "updated", "message": str(payload)})
+        except DefinitionError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "errors": exc.errors}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(task)
 
     @app.post(f"{config.api_prefix}/production/tasks/{{task_id}}/actions")
@@ -574,40 +601,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
         command = str(payload.get("command") or "")
-        key = request.headers.get("Idempotency-Key")
-        def apply_action():
-            if command == "delete":
-                return ledger.delete_production_task(task_id)
-            if command == "pause":
-                return ledger.set_production_task_state(task_id, "paused")
-            if command == "resume":
-                return ledger.set_production_task_state(task_id, "enabled")
-            if command == "archive":
-                return ledger.set_production_task_state(task_id, "archived")
-            raise ValueError("unsupported production task command")
+        actor = operator_identity(request, config)
+        audit_action = f"production.task.{command or 'action'}"
         try:
-            result = ledger.production_idempotent(key, task_id=task_id, command=command, action=apply_action)
+            result = production_tasks_service.change(
+                task_id, command, definition=payload.get("definition"),
+                expected_version=payload.get("expected_version"), actor=actor,
+                request_id=current_request_id(), name=payload.get("name"),
+                alias=payload.get("alias"),
+                idempotency_key=request.headers.get("Idempotency-Key"))
         except KeyError as exc:
-            ledger.record_write_audit({"action": f"production.task.{command or 'action'}", "actor": operator_identity(request, config),
-                                      "request_id": current_request_id(), "task_id": task_id,
-                                      "outcome": "rejected", "code": "not_found", "message": command})
+            ledger.record_write_audit({"action": audit_action, "actor": actor,
+                                       "request_id": current_request_id(), "task_id": task_id,
+                                       "outcome": "rejected", "code": "not_found", "message": command})
             raise HTTPException(status_code=404, detail="production task not found") from exc
-        except ValueError as exc:
-            ledger.record_write_audit({"action": f"production.task.{command or 'action'}", "actor": operator_identity(request, config),
-                                      "request_id": current_request_id(), "task_id": task_id,
-                                      "outcome": "rejected", "code": "invalid", "message": str(exc)})
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        ledger.record_write_audit({"action": f"production.task.{command}", "actor": operator_identity(request, config),
-                                  "request_id": current_request_id(), "task_id": task_id,
-                                  "outcome": "updated", "message": command})
+        except DefinitionError as exc:
+            ledger.record_write_audit({"action": audit_action, "actor": actor,
+                                       "request_id": current_request_id(), "task_id": task_id,
+                                       "outcome": "rejected", "code": "invalid_definition",
+                                       "message": str(exc)})
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "errors": exc.errors}) from exc
+        except ProductionConflict as exc:
+            ledger.record_write_audit({"action": audit_action, "actor": actor,
+                                       "request_id": current_request_id(), "task_id": task_id,
+                                       "outcome": "rejected", "code": exc.code, "message": str(exc)})
+            status = 422 if exc.code in {"unsupported_command", "expected_version_required"} else 409
+            raise HTTPException(status_code=status,
+                                detail={"code": exc.code, "message": str(exc)}) from exc
         return api_envelope(result)
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}/executions")
     def production_task_executions(task_id: str, limit: int = 100) -> dict:
-        return api_envelope(ledger.list_production_executions(task_id, limit=limit))
+        task = production_tasks_service.read(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        return api_envelope(ledger.list_production_executions(task["task_id"], limit=limit))
+
+    @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}")
+    def production_execution_detail(execution_id: str) -> dict:
+        execution = ledger.get_production_execution(execution_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail="production execution not found")
+        return api_envelope(execution)
 
     @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}/steps")
     def production_execution_steps(execution_id: str, limit: int = 100) -> dict:
+        if ledger.get_production_execution(execution_id) is None:
+            raise HTTPException(status_code=404, detail="production execution not found")
         return api_envelope(ledger.list_production_steps(execution_id, limit=limit))
 
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")

@@ -27,6 +27,19 @@ TASK_BODY = {"run_kind": "ingest", "run_scope": "acceptance", "provider": "fixtu
 DERIVE_BODY = {"job_id": "surface-derive", "provider": "fixture", "symbol": "UI_TEST",
                "recipe_id": "utc-24x7-1m-to-1h-ohlcv", "recipe_version": "1", "start": START, "end": END,
                "run_scope": "acceptance"}
+# A production plan is validated against the registry, so the surface fixture
+# uses an approved instrument and a registered recipe chain rather than a
+# synthetic symbol: an invalid definition is expected to be refused, not stored.
+PLAN_BODY = {
+    "name": "surface",
+    "desired_state": "paused",
+    "definition": {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m", "price_basis": "bid",
+        "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "continuous", "history_start": START},
+        "schedule": {"schedule": "manual"},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -73,8 +86,7 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
         True, True, params={"series_id": "PAYEMS", "run_scope": "acceptance"},
         audit_action="maintenance.ingest"),
     ("POST", "/api/v1/production/tasks"): RoutePolicy(
-        True, True, {"name": "surface", "ownership_keys": ["surface"], "definition": {}, "desired_state": "paused"},
-        audit_action="production.task.create", expect_status=201),
+        True, True, PLAN_BODY, audit_action="production.task.create", expect_status=201),
     ("POST", "/api/v1/production/plans"): RoutePolicy(False, False, {"schedule": "manual"}, expect_status=200),
     ("POST", "/api/v1/production/tasks/{task_id}/actions"): RoutePolicy(
         True, True, {"command": "pause"}, audit_action="production.task.pause", expect_status=404),
