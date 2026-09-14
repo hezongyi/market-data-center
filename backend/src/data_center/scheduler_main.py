@@ -86,8 +86,17 @@ def main(argv: list[str] | None = None) -> int:
     if settings.deployment_manifest:
         from data_center.deployment import validated_runtime_identity
 
-        identity = validated_runtime_identity(settings.deployment_manifest, settings.evidence_root,
-                                              component="scheduler")
+        try:
+            identity = validated_runtime_identity(settings.deployment_manifest, settings.evidence_root,
+                                                  component="scheduler")
+        except (OSError, RuntimeError, ValueError) as exc:
+            # Fail closed *before* touching the ledger: a component that cannot
+            # prove which release it is must not plan production work.  The
+            # deployment module wrote the receipt; a distinct exit code tells
+            # systemd this was an identity failure rather than a tick failure.
+            print(json.dumps({"event": "scheduler_identity_failed",
+                              "error_category": type(exc).__name__}), flush=True)
+            return 3
     print(json.dumps({"event": "scheduler_started", "dispatch_enabled": dispatch,
                       "interval_seconds": interval,
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),

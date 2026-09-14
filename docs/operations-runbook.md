@@ -61,6 +61,47 @@ curl -fsS http://127.0.0.1:18380/api/v1/metrics
 systemctl --user show -p WorkingDirectory -p ExecStart market-data-center-api.service market-data-center-worker.service
 ```
 
+## Scheduler service
+
+The production task scheduler runs as its own unit and owns nothing but the tick loop; which plans exist and
+when they run always comes from the ledger, never from a unit file. It starts in shadow mode, so the first
+release observes what it *would* dispatch while the legacy timers still do the work. Real dispatch is enabled
+per machine through the operations action, not by editing the unit:
+
+```bash
+systemctl --user status market-data-center-scheduler.service
+curl -fsS http://127.0.0.1:18380/api/v1/operations/scheduler   # heartbeat, capacity gate, provider backoff
+curl -fsS -X POST http://127.0.0.1:18380/api/v1/operations/scheduler/actions \
+  -H "X-API-Key: $DATACENTER_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"command": "pause_dispatch"}'                            # global switch, honoured by every instance
+```
+
+Before any takeover, run the service drill against isolated roots — start from an immutable release, prove the
+identity fallback, kill and restart the process, and upgrade an existing ledger in place. It is automated as
+`backend/tests/test_scheduler_service_drill.py`, and it never touches production paths:
+
+```bash
+PYTHONPATH=backend/src python -m pytest backend/tests/test_scheduler_service_drill.py -q
+```
+
+What the drill asserts, and what to reproduce by hand when a release misbehaves:
+
+- **Isolated start**: the process reports the `deployment_id`, `software_version`, and `source_commit` it
+  validated, writes a `scheduler_tick` receipt under the evidence root, and creates no execution in shadow mode.
+- **Failure fallback**: a release whose artifact no longer matches its manifest exits with code `3`, prints
+  `scheduler_identity_failed`, and writes a `deployment_runtime_failure` receipt naming the component. It fails
+  closed *before* opening the ledger, so an unverifiable release can never plan work.
+- **Restart takeover**: after a crash the lease row survives until it expires; the next instance takes it over
+  with an advanced fencing token, so a stale writer from the previous process is rejected. `tick_count` keeps
+  counting across instances while `lease.owner_id` follows the live one.
+- **Schema upgrade**: a database written by the previous release upgrades to `SCHEMA_VERSION=5` in place,
+  keeping its runs, plans and progress; the scheduler service and the API must be restarted together so both
+  read the same version.
+
+Receipts for every drill stay under the evidence root (`operations/scheduler_tick`, and
+`operations/deployment_runtime_failure` for refused starts). Never repair a scheduler by editing the checkout,
+the ledger, or a unit file.
+
 ## Readiness and queue
 
 ```bash
