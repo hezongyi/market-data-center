@@ -81,7 +81,8 @@ The walkthrough receipt records the fix taking effect in production state: `GET 
 5. Create an annotated tag exactly once and push it without force. Never move or recreate a published tag.
 6. Publish release notes with API/schema/manifest/receipt, Python/Node, dependency, backup, and rollback details.
 7. Install from the tagged checkout, start API/worker, run smoke and browser acceptance, then execute the rollback rehearsal.
-8. Write a release receipt conforming to `docs/schemas/release-receipt.schema.json` and retain it permanently.
+8. Review the latest scheduled real-provider acceptance receipt as a release observation (it is deliberately outside `bash scripts/ci.sh`, see the operations runbook). Record the outcome, including a known-failing provider, in the release notes rather than treating a green CI gate as provider evidence.
+9. Write a release receipt conforming to `docs/schemas/release-receipt.schema.json` and retain it permanently.
 
 ## Immutable production activation
 
