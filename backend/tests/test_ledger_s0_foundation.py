@@ -52,3 +52,18 @@ def test_production_task_ownership_is_atomic_and_unique(tmp_path):
         pass
     else:
         raise AssertionError("ownership conflict must be rejected")
+
+
+def test_production_task_pause_archive_delete_retains_tombstone(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.create_production_task(task_id="p1", name="A", payload={}, ownership_keys=["k"], desired_state="enabled")
+    try:
+        ledger.delete_production_task("p1")
+    except ValueError:
+        pass
+    ledger.set_production_task_state("p1", "paused")
+    ledger.set_production_task_state("p1", "archived")
+    tombstone = ledger.delete_production_task("p1")
+    assert tombstone["task_id"] == "p1"
+    assert ledger.list_production_tasks() == []
+    assert ledger.list_production_tasks(include_deleted=True)[0]["deleted_at"]
