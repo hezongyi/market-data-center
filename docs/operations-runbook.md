@@ -102,6 +102,40 @@ Receipts for every drill stay under the evidence root (`operations/scheduler_tic
 `operations/deployment_runtime_failure` for refused starts). Never repair a scheduler by editing the checkout,
 the ledger, or a unit file.
 
+## Legacy timer takeover (prepared, operator-executed)
+
+The scheduler replaces the periodic runners, and the handover is deliberately manual: the tool below only
+*prepares* it. `data_center.takeover` never installs, stops or starts a unit, and its import is dry by default.
+
+```bash
+# 1. Capture what the host actually runs, not what the repository declares.
+PYTHONPATH=backend/src python -m data_center.takeover plan --inventory /path/to/host-units.json
+
+# 2. Import the legacy entries as paused plans and keep the comparison receipt.
+PYTHONPATH=backend/src python -m data_center.takeover import --inventory /path/to/host-units.json --apply
+
+# 3. Block the old entries, wait for in-flight windows, then enable a canary plan.
+systemctl --user disable --now market-data-center-1m-maintenance.timer marketlab-market-bars-maintenance.timer
+PYTHONPATH=backend/src python -m data_center.takeover verify --inventory /path/to/host-units.json
+```
+
+What the tool guarantees, and what the operator still has to decide:
+
+- **The host is the authority.** `plan` reads `systemctl --user list-unit-files` (or a JSON inventory) and marks
+  entries that exist only on the machine as `host_only`; a unit installed from an older branch is captured
+  instead of assumed away. An unreadable host reports `unknown`, never "not installed".
+- **The scope never widens.** A raw entry imports raw output only, a derived entry imports the recipes it names,
+  and the cadence comes from the timer (`OnUnitInactiveSec=15min` becomes a `fixed_delay` plan of 900 seconds).
+  Two entries for one instrument become **one** plan, because raw and derived share an ownership scope.
+- **Import is not enablement.** Every imported plan is created `paused`; enabling is a separate action, and the
+  canary should be one or two plans first (§7.2 step 5).
+- **`verify` is the gate for the next step.** It fails while any legacy unit is still installed, while an
+  imported plan's cadence differs from the entry it came from, or when two plans hold one ownership key.
+- Rollback is the reverse order: pause the new plan (or pause global dispatch), re-enable the old units, and keep
+  both receipts. The isolated drill for the scheduler process itself is
+  `backend/tests/test_scheduler_service_drill.py`; the takeover preparation is covered by
+  `backend/tests/test_takeover_preparation.py`.
+
 ## Readiness and queue
 
 ```bash
