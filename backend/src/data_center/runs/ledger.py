@@ -11,10 +11,20 @@ from uuid import uuid4
 
 
 class RunLedger:
-    def __init__(self, path: Path):
+    """SQLite-backed run ledger.
+
+    Schema changes are applied in order and are safe to repeat.  A clock can
+    be injected by tests and schedulers so time-based behaviour is deterministic.
+    """
+
+    def __init__(self, path: Path, *, clock=None):
         self.path = path
+        self.clock = clock or time.time
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(path) as conn:
+        with sqlite3.connect(path, timeout=5.0) as conn:
+            conn.execute("pragma busy_timeout=5000")
+            conn.execute("pragma journal_mode=WAL")
+            conn.execute("create table if not exists schema_migrations (version integer primary key, applied_at text not null)")
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
@@ -29,6 +39,27 @@ class RunLedger:
             dead_letter_columns = {row[1] for row in conn.execute("pragma table_info(dead_letter_state)")}
             if "resolved_at" not in dead_letter_columns:
                 conn.execute("alter table dead_letter_state add column resolved_at text")
+            job_columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+            for column in ("owner_plan_id", "owner_step_id", "owner_execution_id"):
+                if column not in job_columns:
+                    conn.execute(f"alter table jobs add column {column} text")
+            run_columns = {row[1] for row in conn.execute("pragma table_info(runs)")}
+            for column in ("plan_id", "execution_id", "step_id", "status", "created_at"):
+                if column not in run_columns:
+                    conn.execute(f"alter table runs add column {column} text")
+            conn.execute("create index if not exists jobs_status_available on jobs(status, available_at)")
+            conn.execute("create index if not exists jobs_owner_plan on jobs(owner_plan_id) where owner_plan_id is not null")
+            conn.execute("create index if not exists runs_plan_created on runs(plan_id, created_at)")
+            conn.execute("create index if not exists runs_execution_step on runs(execution_id, step_id)")
+            conn.execute("pragma user_version=1")
+
+    def _connect(self):
+        conn = sqlite3.connect(self.path, timeout=5.0)
+        conn.execute("pragma busy_timeout=5000")
+        return conn
+
+    def _now(self) -> str:
+        return datetime.fromtimestamp(self.clock(), tz=timezone.utc).isoformat()
 
     def put(self, run_id: str, payload: dict) -> None:
         with sqlite3.connect(self.path) as conn:
@@ -38,8 +69,11 @@ class RunLedger:
             self._assert_immutable(original, payload)
             if original.get("status") in {"pass", "failed", "dead_letter"} and original != payload:
                 raise ValueError("terminal receipt is immutable")
-            conn.execute("insert into runs values (?, ?) on conflict(run_id) do update set payload=excluded.payload",
-                         (run_id, json.dumps({**original, **payload})))
+            merged = {**original, **payload}
+            conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id) values (?, ?, ?, ?, ?, ?, ?) "
+                         "on conflict(run_id) do update set payload=excluded.payload,status=excluded.status",
+                         (run_id, json.dumps(merged), merged.get("status"), merged.get("created_at"),
+                          merged.get("plan_id"), merged.get("execution_id"), merged.get("step_id")))
 
     @staticmethod
     def _assert_immutable(original: dict, incoming: dict) -> None:
@@ -290,36 +324,40 @@ class RunLedger:
         return self.enqueue_job(job_payload)
 
     def enqueue_job(self, job_payload: dict) -> str:
-        import json
-        run_id = str(uuid4())
-        run_payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
-                       "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
-                       "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
-                       "recipe_version": job_payload.get("recipe_version"),
-                       "input_snapshot_id": job_payload.get("input_snapshot_id"),
-                       "run_scope": job_payload.get("run_scope", "production"),
-                       "run_kind": job_payload.get("run_kind", "ingest"),
-                       "execution_plan": job_payload.get("execution_plan"),
-                       # The selector and requested range are part of the run
-                       # record so the console can explain a run without
-                       # re-reading the job queue.
-                       "timeframe": job_payload.get("timeframe"),
-                       "asset_class": job_payload.get("asset_class"),
-                       "series_id": job_payload.get("series_id"),
-                       "price_basis": job_payload.get("price_basis"),
-                       "start": job_payload.get("start"), "end": job_payload.get("end"),
-                       "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
-        with sqlite3.connect(self.path) as conn:
-            conn.execute("insert into runs values (?, ?)", (run_id, json.dumps(run_payload)))
-            conn.execute("insert into jobs(job_id, run_id, status, payload) values (?, ?, ?, ?)", (str(uuid4()), run_id, "queued", json.dumps(job_payload)))
-        return run_id
+        return self.enqueue_batch([job_payload])[0]
+
+    def enqueue_batch(self, job_payloads: list[dict]) -> list[str]:
+        """Atomically enqueue a batch of jobs and their run receipts."""
+        if not job_payloads:
+            return []
+        run_ids: list[str] = []
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            for job_payload in job_payloads:
+                run_id = str(uuid4())
+                payload = {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
+                           "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
+                           "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
+                           "recipe_version": job_payload.get("recipe_version"), "input_snapshot_id": job_payload.get("input_snapshot_id"),
+                           "run_scope": job_payload.get("run_scope", "production"), "run_kind": job_payload.get("run_kind", "ingest"),
+                           "execution_plan": job_payload.get("execution_plan"), "timeframe": job_payload.get("timeframe"),
+                           "asset_class": job_payload.get("asset_class"), "series_id": job_payload.get("series_id"),
+                           "price_basis": job_payload.get("price_basis"), "start": job_payload.get("start"), "end": job_payload.get("end"),
+                           "status": "queued", "created_at": stamp}
+                conn.execute("insert into runs(run_id,payload,status,created_at) values (?, ?, ?, ?)",
+                             (run_id, json.dumps(payload), "queued", stamp))
+                conn.execute("insert into jobs(job_id, run_id, status, payload, owner_plan_id, owner_step_id, owner_execution_id) values (?, ?, ?, ?, ?, ?, ?)",
+                             (str(uuid4()), run_id, "queued", json.dumps(job_payload), job_payload.get("owner_plan_id"), job_payload.get("owner_step_id"), job_payload.get("owner_execution_id")))
+                run_ids.append(run_id)
+        return run_ids
 
     def claim_next_job(self) -> dict | None:
         import json
 
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("begin immediate")
-            candidates = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid", (time.time(),)).fetchall()
+            candidates = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid", (self.clock(),)).fetchall()
             paused = {item[0] for item in conn.execute("select task_id from maintenance_tasks where status='paused'").fetchall()}
             row = next((candidate for candidate in candidates
                         if not any(json.loads(candidate[2]).get("job_id", "").startswith(task_id) for task_id in paused)), None)
@@ -329,8 +367,8 @@ class RunLedger:
             run_row = conn.execute("select payload from runs where run_id = ?", (row[1],)).fetchone()
             run = json.loads(run_row[0])
             run["status"] = "running"
-            run["started_at"] = datetime.now(timezone.utc).isoformat()
-            conn.execute("update runs set payload = ? where run_id = ?", (json.dumps(run), row[1]))
+            run["started_at"] = self._now()
+            conn.execute("update runs set payload = ?, status = ?, created_at = coalesce(created_at, ?) where run_id = ?", (json.dumps(run), "running", run.get("created_at"), row[1]))
             conn.execute("update jobs set attempts = attempts + 1 where job_id = ?", (row[0],))
             return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
 
@@ -416,7 +454,8 @@ class RunLedger:
                        "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
                        "status": "queued", "retry_of": run_id,
                        "created_at": datetime.now(timezone.utc).isoformat()}
-            conn.execute("insert into runs values (?, ?)", (new_id, json.dumps(payload)))
+            conn.execute("insert into runs(run_id,payload,status,created_at) values (?, ?, ?, ?)",
+                         (new_id, json.dumps(payload), "queued", payload["created_at"]))
             conn.execute("insert into jobs(job_id,run_id,status,payload) values (?,?,?,?)", (str(uuid4()), new_id, "queued", job[0]))
         return new_id
 
