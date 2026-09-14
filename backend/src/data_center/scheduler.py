@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
+from .instants import parse_instant
+
 UTC = timezone.utc
 
 #: spec 5.1: the first release accepts nothing shorter than five minutes.
@@ -200,7 +202,7 @@ def _parse_iso(value, field: str) -> datetime | None:
     if value is None or isinstance(value, datetime):
         return value
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parse_instant(str(value).replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"{field} must be an ISO-8601 datetime") from exc
 
@@ -445,7 +447,7 @@ class Scheduler:
 def _parse_stored(value: str | None) -> datetime | None:
     if not value:
         return None
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    parsed = parse_instant(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("stored schedule time must be timezone-aware")
     return parsed.astimezone(UTC)

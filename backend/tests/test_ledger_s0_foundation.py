@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
+
+import pytest
 
 from data_center.runs.ledger import SCHEMA_VERSION, RunLedger
 
@@ -122,3 +125,28 @@ def test_execution_and_steps_are_durable(tmp_path):
     ledger.add_production_step(step_id="s", execution_id="e", stage="raw", window_start="a", window_end="b")
     assert ledger.list_production_executions("p")[0]["execution_id"] == execution["execution_id"]
     assert ledger.list_production_steps("e")[0]["stage"] == "raw"
+
+
+def test_one_instant_parser_accepts_what_every_supported_python_accepts():
+    """AC04/AC19: the console submits ``Date.toISOString()``; 3.10 must read it.
+
+    ``datetime.fromisoformat`` only learned the ``Z`` suffix in 3.11, so the
+    scheduler and the plan API used to reject the console's own instants on the
+    interpreter hosted CI still runs.  One parser owns that difference.
+    """
+    from data_center.instants import aware_utc, optional_instant, parse_instant
+
+    moment = datetime(2026, 9, 14, 11, 0, tzinfo=timezone.utc)
+    # The three spellings of the same instant must agree.
+    assert parse_instant("2026-09-14T11:00:00Z") == moment
+    assert parse_instant("2026-09-14T11:00:00z") == moment
+    assert parse_instant("2026-09-14T11:00:00+00:00") == moment
+    # An aware datetime passes through unchanged; a naive one is never guessed.
+    assert parse_instant(moment) is moment
+    assert optional_instant(None) is None
+    assert aware_utc("2026-09-14T13:00:00+02:00") == moment
+    with pytest.raises(ValueError, match="timezone"):
+        aware_utc("2026-09-14T11:00:00")
+    # A malformed instant is a validation error, not a silent guess.
+    with pytest.raises(ValueError):
+        parse_instant("not-an-instant")

@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from data_center.api.app import create_app
+from data_center.instants import parse_instant
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 
@@ -249,4 +250,4 @@ def test_queued_run_records_the_submitted_selector_and_window(tmp_path) -> None:
     assert run["status"] == "queued" and run["created_at"]
     assert run["run_scope"] == "acceptance"
     assert run["run_kind"] == "ingest"
-    assert datetime.fromisoformat(run["created_at"]).tzinfo == timezone.utc
+    assert parse_instant(run["created_at"]).tzinfo == timezone.utc

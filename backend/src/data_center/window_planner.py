@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from data_center.control_plane import CoverageResult, MaintenancePolicy
 from data_center.control_plane import plan_maintenance as plan_windows
 
+from .instants import parse_instant
+
 # Window coverage the provider itself cannot satisfy; the platform never synthesizes it.
 PROVIDER_COVERAGE_FINDING = "coverage_not_ready"
 
@@ -30,8 +32,8 @@ def utc(value: datetime) -> datetime:
 def window_key(window: dict) -> tuple[str, str]:
     """Normalize a half-open window for exact gap de-duplication."""
     return (
-        utc(datetime.fromisoformat(str(window["start"]))).isoformat(),
-        utc(datetime.fromisoformat(str(window["end"]))).isoformat(),
+        utc(parse_instant(str(window["start"]))).isoformat(),
+        utc(parse_instant(str(window["end"]))).isoformat(),
     )
 
 
@@ -52,7 +54,7 @@ def recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
         if not finished_text:
             continue
         try:
-            if utc(datetime.fromisoformat(str(finished_text))) < cutoff:
+            if utc(parse_instant(str(finished_text))) < cutoff:
                 continue
         except (TypeError, ValueError):
             continue
@@ -71,12 +73,12 @@ def recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
             missing_text = coverage.get("first_missing_ts")
             complete_text = coverage.get("latest_complete_boundary")
             if not missing_text and complete_text and seconds > 0:
-                missing_text = (utc(datetime.fromisoformat(str(complete_text)))
+                missing_text = (utc(parse_instant(str(complete_text)))
                                 + timedelta(seconds=seconds)).isoformat()
             if not missing_text or seconds <= 0:
                 continue
             try:
-                missing = utc(datetime.fromisoformat(str(missing_text)))
+                missing = utc(parse_instant(str(missing_text)))
             except (TypeError, ValueError):
                 continue
             recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
@@ -86,15 +88,15 @@ def recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
 def exclude_planned_windows(*, candidates: Iterable[dict], planned: Iterable[dict]) -> list[dict]:
     """Remove intervals already covered by the primary maintenance plan."""
     occupied = [
-        (utc(datetime.fromisoformat(str(window["start"]))),
-         utc(datetime.fromisoformat(str(window["end"]))))
+        (utc(parse_instant(str(window["start"]))),
+         utc(parse_instant(str(window["end"]))))
         for window in planned
     ]
     uncovered: list[dict] = []
     for candidate in candidates:
         segments = [
-            (utc(datetime.fromisoformat(str(candidate["start"]))),
-             utc(datetime.fromisoformat(str(candidate["end"]))))
+            (utc(parse_instant(str(candidate["start"]))),
+             utc(parse_instant(str(candidate["end"]))))
         ]
         for occupied_start, occupied_end in occupied:
             remaining: list[tuple[datetime, datetime]] = []

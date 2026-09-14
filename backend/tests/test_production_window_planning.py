@@ -13,6 +13,7 @@ import pytest
 
 from data_center import maintenance_runner, window_planner
 from data_center.control_plane import evaluate_coverage, timeframe_delta
+from data_center.instants import parse_instant
 from data_center.production_tasks import (
     DEFAULT_RAW_TIMEFRAME,
     plan_execution,
@@ -301,7 +302,7 @@ def test_dispatch_records_what_the_provider_showed_and_what_stays_owed(tmp_path)
 
     # The round fetched exactly the missing window, and says why.
     runs = [run for run in ledger.list() if run.get("execution_id") == execution["execution_id"]]
-    assert [(datetime.fromisoformat(str(run["start"])), datetime.fromisoformat(str(run["end"])),
+    assert [(parse_instant(str(run["start"])), parse_instant(str(run["end"])),
              run["execution_plan"]["windows"][0]["reason"]) for run in runs] == [
         (hole[0], hole[1], "gap_repair")]
     assert task["task_id"] == "p1"

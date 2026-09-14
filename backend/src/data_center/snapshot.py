@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .instants import parse_instant
+
 SCOPES = ("production", "acceptance", "migration", "maintenance", "legacy_unclassified")
 TERMINAL = {"pass", "failed", "dead_letter"}
 
@@ -163,7 +165,7 @@ def count_temporary_artifacts(*roots: Path | None, limit: int = 100_000) -> dict
 
 def _window(rows: list[dict], now: datetime, duration: timedelta) -> dict:
     cutoff = now - duration
-    selected = [row for row in rows if row.get("finished_at") and datetime.fromisoformat(row["finished_at"]) >= cutoff]
+    selected = [row for row in rows if row.get("finished_at") and parse_instant(row["finished_at"]) >= cutoff]
     passed = sum(row.get("status") == "pass" for row in selected)
     return {"runs": len(selected), "passed": passed,
             "success_rate": passed / len(selected) if selected else None}
@@ -187,14 +189,14 @@ def build_snapshot(
               for scope in SCOPES}
     production = [row for row in scoped["production"] if row.get("status") in TERMINAL]
     lifetime_durations = [
-        (datetime.fromisoformat(row["finished_at"]) - datetime.fromisoformat(row["started_at"])).total_seconds()
+        (parse_instant(row["finished_at"]) - parse_instant(row["started_at"])).total_seconds()
         for row in runs if row.get("finished_at") and row.get("started_at")
     ]
     production_durations = [
-        (datetime.fromisoformat(row["finished_at"]) - datetime.fromisoformat(row["started_at"])).total_seconds()
+        (parse_instant(row["finished_at"]) - parse_instant(row["started_at"])).total_seconds()
         for row in production if row.get("finished_at") and row.get("started_at")
     ]
-    queue_ages = [(now - datetime.fromisoformat(row["created_at"])).total_seconds()
+    queue_ages = [(now - parse_instant(row["created_at"])).total_seconds()
                   for row in runs if row.get("status") == "queued"]
     lifetime_failures = [row for row in runs if row.get("status") in {"failed", "dead_letter"}]
     production_failures = [row for row in production if row.get("status") in {"failed", "dead_letter"}]

@@ -71,6 +71,8 @@ from data_center.storage.query import (
     query_provider_bars,
 )
 
+from ..instants import parse_instant
+
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
 _auth_store = ContextVar("auth_store", default=None)
@@ -214,7 +216,7 @@ def economic_boundary(value: str | None, field: str) -> datetime:
     """
     if not value:
         return datetime(1900, 1, 1, tzinfo=timezone.utc) if field == "start" else datetime.now(timezone.utc)
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = parse_instant(value.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -939,12 +941,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/bars")
     def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None,
              end: str | None = None, page_size: int | None = None, cursor: str | None = None) -> dict:
-        from datetime import datetime
         started = time.monotonic()
         page = query_engine.provider_bars_page(
             provider=provider, symbol=symbol, timeframe=timeframe,
-            start=datetime.fromisoformat(start) if start else None,
-            end=datetime.fromisoformat(end) if end else None,
+            start=parse_instant(start) if start else None,
+            end=parse_instant(end) if end else None,
             page_size=page_size, cursor=cursor,
         )
         print(json.dumps({"event": "data_query", "request_id": current_request_id(),
@@ -988,8 +989,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
                     rows=rows,
                     session_profile=session,
-                    requested_start=datetime.fromisoformat(start),
-                    requested_end=datetime.fromisoformat(end),
+                    requested_start=parse_instant(start),
+                    requested_end=parse_instant(end),
                     timeframe=timedelta(minutes=1),
                 ).as_dict()
                 detail_unavailable = None
@@ -1013,14 +1014,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     recipe_id: str, recipe_version: str, start: str | None = None,
                     end: str | None = None, page_size: int | None = None,
                     cursor: str | None = None) -> dict:
-        from datetime import datetime
 
         started = time.monotonic()
         page = query_engine.market_bars_page(
             provider=provider, symbol=symbol, timeframe=timeframe, price_basis=price_basis,
             recipe_id=recipe_id, recipe_version=recipe_version,
-            start=datetime.fromisoformat(start) if start else None,
-            end=datetime.fromisoformat(end) if end else None,
+            start=parse_instant(start) if start else None,
+            end=parse_instant(end) if end else None,
             page_size=page_size, cursor=cursor,
         )
         print(json.dumps({"event": "data_query", "request_id": current_request_id(),
@@ -1202,8 +1202,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   "price_basis": price_basis, "recipe_id": recipe_id,
                                   "recipe_version": recipe_version},
                         rows=rows, session_profile=REGISTRY.session(session_id),
-                        requested_start=datetime.fromisoformat(start),
-                        requested_end=datetime.fromisoformat(end),
+                        requested_start=parse_instant(start),
+                        requested_end=parse_instant(end),
                         timeframe=timeframe_delta(timeframe),
                     ).as_dict() | {"recipe": payload["recipe"], "recipe_status": "registered",
                                    "price_basis": price_basis}

@@ -23,6 +23,7 @@ from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
 from .control_plane import timeframe_delta
 from .domain.models import DeriveJob, IngestJob
+from .instants import aware_utc
 from .platform import coverage_from_catalog, ingest_window_payloads
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
 from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
@@ -87,16 +88,10 @@ class DefinitionError(ValueError):
 
 def _as_utc(value, field: str) -> datetime:
     """Parse an ISO-8601 timestamp, rejecting a missing timezone (spec 5.1)."""
-    if isinstance(value, datetime):
-        parsed = value
-    else:
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{field} must be an ISO-8601 datetime") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"{field} must include a timezone")
-    return parsed.astimezone(timezone.utc)
+    try:
+        return aware_utc(value, field=field)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an ISO-8601 datetime") from exc
 
 
 def ownership_key(*, dataset_id: str, provider: str | None = None, symbol: str | None = None,

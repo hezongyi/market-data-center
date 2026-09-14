@@ -13,6 +13,7 @@ import pytest
 
 from data_center.control_plane import InstrumentMetadata
 from data_center.ingest.worker import LocalWorker
+from data_center.instants import parse_instant
 from data_center.platform_registry import REGISTRY
 from data_center.production_tasks import (
     ProductionTasks,
@@ -161,8 +162,8 @@ def test_planning_is_bounded_by_policy_and_reports_a_backlog(tmp_path):
     assert plan["backlog"] is True
     assert plan["truncated_windows"] > 0
     # The bounded round never plans past its policy window.
-    planned_end = datetime.fromisoformat(plan["planned_end"])
-    assert planned_end <= datetime.fromisoformat(plan["planned_start"]) + timedelta(days=31)
+    planned_end = parse_instant(plan["planned_end"])
+    assert planned_end <= parse_instant(plan["planned_start"]) + timedelta(days=31)
 
 
 def test_scheduled_end_respects_the_provider_availability_lag():
@@ -186,7 +187,7 @@ def test_fixed_delay_advances_only_after_the_round_ends(tmp_path):
     while worker.run_next():
         pass
     scheduler.tick(now=NOW + timedelta(minutes=1))
-    finished_at = datetime.fromisoformat(ledger.get_production_execution(execution["execution_id"])["finished_at"])
+    finished_at = parse_instant(ledger.get_production_execution(execution["execution_id"])["finished_at"])
     assert ledger.get_production_task("p1")["next_run_at"] == (finished_at + timedelta(seconds=900)).isoformat()
 
 
@@ -258,7 +259,7 @@ def test_one_symbols_gap_does_not_block_another_symbol(tmp_path):
         run = ledger.get(claim["run_id"])
         step = next(item for item in ledger.list_production_steps(run["execution_id"])
                     if item["step_id"] == run["step_id"])
-        start = datetime.fromisoformat(step["window_start"])
+        start = parse_instant(step["window_start"])
         publish_raw(tmp_path / "lake", start=start, minutes=60, run_id=claim["run_id"],
                     provider=run["provider"], symbol=run["symbol"],
                     skip_minute=32 if run["plan_id"] == "p2" else None)
@@ -360,7 +361,7 @@ def test_a_hole_blocks_only_the_bucket_that_covers_it(tmp_path):
     # The raw window is published with a hole inside its 11:30-11:35 bucket.
     scheduler.tick(now=NOW)
     raw = ledger.list_production_steps(execution["execution_id"])[0]
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw["window_start"]),
                      provider="binance", symbol="BTCUSDT", skip_minute=32)
 
     second = scheduler.tick(now=NOW + timedelta(minutes=1))
@@ -396,7 +397,7 @@ def test_a_hole_blocks_only_the_bucket_that_covers_it(tmp_path):
         step = next(item for item in ledger.list_production_steps(repair_round["execution_id"])
                     if item["step_id"] == claimed["step_id"])
         assert claimed["execution_plan"]["windows"][0]["reason"] in {"gap_repair", "tail"}
-        publish_raw(tmp_path / "lake", start=datetime.fromisoformat(step["window_start"]),
+        publish_raw(tmp_path / "lake", start=parse_instant(step["window_start"]),
                     minutes=1, run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
         ledger.finish_job(claim["job_id"], claim["run_id"],
                           {"status": "pass", "run_id": claim["run_id"], "row_count": 1})
@@ -459,7 +460,7 @@ def test_a_plan_produces_its_derived_output_after_the_raw_publication(tmp_path):
     raw_steps = [step for step in ledger.list_production_steps(execution["execution_id"])
                  if step["stage"] == "raw"]
     assert len(raw_steps) == 1
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
 
     # The next tick sees the published raw window and plans the derive step.
@@ -489,7 +490,7 @@ def test_derived_planning_is_deduplicated_across_ticks(tmp_path):
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw_steps = ledger.list_production_steps(execution["execution_id"])
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     first = scheduler.tick(now=NOW + timedelta(minutes=1))
     assert len(first["reconcile"]["derived_planned"]) == 1
@@ -513,7 +514,7 @@ def test_a_derived_output_waits_until_its_window_holds_a_complete_bucket(tmp_pat
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw_steps = ledger.list_production_steps(execution["execution_id"])
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     first, _ = derived_plan(tmp_path, ledger, service, NOW)
     assert first["steps"] == []
@@ -538,7 +539,7 @@ def test_reconciliation_derives_what_a_crashed_round_never_planned(tmp_path):
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw_steps = ledger.list_production_steps(execution["execution_id"])
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     # The round terminates with no derived plan at all.
     ledger.refresh_execution_steps(execution["execution_id"])
@@ -570,7 +571,7 @@ def test_the_derivation_cursor_stops_the_work_being_planned_twice(tmp_path):
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw_steps = ledger.list_production_steps(execution["execution_id"])
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     first = service.reconcile_publications(limit=5, step_budget=4)
     assert len(first["planned"]) == 1
@@ -594,7 +595,7 @@ def test_raw_progress_without_a_derivation_is_repaired_without_new_raw(tmp_path)
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw_steps = ledger.list_production_steps(execution["execution_id"])
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw_steps[0]["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw_steps[0]["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     # Two ticks with no new raw: the second must not duplicate the derived work.
     scheduler.tick(now=NOW + timedelta(minutes=1))
@@ -642,7 +643,7 @@ def test_retry_replans_only_the_unfinished_windows_as_a_linked_round(tmp_path):
     follow_up_raw = ledger.list_production_steps(retried["execution_id"])[0]
     claim = ledger.claim_next_job()
     assert claim["run_id"] in retried["run_ids"]
-    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(follow_up_raw["window_start"]),
+    publish_raw(tmp_path / "lake", start=parse_instant(follow_up_raw["window_start"]),
                 run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
     ledger.finish_job(claim["job_id"], claim["run_id"],
                       {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
@@ -709,7 +710,7 @@ def test_a_republished_raw_window_sends_its_derived_output_back_for_recompute(tm
     # Round one: raw published, 5m derived and completed.
     scheduler.tick(now=NOW)
     raw = ledger.list_production_steps(execution["execution_id"])[0]
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     scheduler.tick(now=NOW + timedelta(minutes=1))
     assert drain(worker) == 1
@@ -732,7 +733,7 @@ def test_a_republished_raw_window_sends_its_derived_output_back_for_recompute(tm
         claimed_runs.append(claim["run_id"])
         repair_raw = next(step for step in ledger.list_production_steps(repair["execution_id"])
                           if step["step_id"] == claimed["step_id"])
-        publish_raw(tmp_path / "lake", start=datetime.fromisoformat(repair_raw["window_start"]),
+        publish_raw(tmp_path / "lake", start=parse_instant(repair_raw["window_start"]),
                     run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
         ledger.finish_job(claim["job_id"], claim["run_id"],
                           {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
@@ -791,7 +792,7 @@ def test_raw_published_outside_the_plan_owes_its_derived_windows(tmp_path):
 
     scheduler.tick(now=NOW)
     raw = ledger.list_production_steps(execution["execution_id"])[0]
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     scheduler.tick(now=NOW + timedelta(minutes=1))
     assert drain(worker) == 1
@@ -808,7 +809,7 @@ def test_raw_published_outside_the_plan_owes_its_derived_windows(tmp_path):
                                        "run_kind": "gap_repair", "run_scope": "maintenance"})
     claim = ledger.claim_next_job()
     assert claim["run_id"] == repaired_run
-    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+    publish_raw(tmp_path / "lake", start=parse_instant(raw["window_start"]),
                 run_id=repaired_run, provider="binance", symbol="BTCUSDT")
     ledger.finish_job(claim["job_id"], repaired_run,
                       {"status": "pass", "run_id": repaired_run, "row_count": 60})
@@ -832,7 +833,7 @@ def test_the_first_observation_of_the_raw_layer_is_not_a_repair(tmp_path):
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
     raw = ledger.list_production_steps(execution["execution_id"])[0]
-    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+    complete_raw_run(ledger, tmp_path / "lake", start=parse_instant(raw["window_start"]),
                      provider="binance", symbol="BTCUSDT")
     # A plan adopted over an existing raw layer must not recompute all of history.
     assert service._record_external_publications(task=ledger.get_production_task("p1"),

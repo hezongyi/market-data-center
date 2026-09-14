@@ -25,6 +25,8 @@ from data_center.ingest.service import run_fixture_ingest
 from data_center.platform_registry import REGISTRY, config_digest, resolve_capability
 from data_center.storage.query import query_provider_bars
 
+from .instants import parse_instant
+
 
 def _metadata_value(metadata, field: str):
     return getattr(metadata, field) if hasattr(metadata, field) else metadata.get(field)
@@ -115,8 +117,8 @@ def ingest_window_payloads(*, job: IngestJob, coverage: CoverageResult | None = 
     for window in windows:
         bounded_job = job.model_copy(update={
             "job_id": job.job_id if len(windows) == 1 else f"{job.job_id}:w{window['ordinal']:04d}",
-            "start": datetime.fromisoformat(window["start"]),
-            "end": datetime.fromisoformat(window["end"]),
+            "start": parse_instant(window["start"]),
+            "end": parse_instant(window["end"]),
         })
         execution_plan = {**plan, "windows": [window], "maintenance_plan_id": plan_id}
         payload = bounded_job.model_dump(mode="json")

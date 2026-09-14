@@ -35,6 +35,8 @@ from data_center.window_planner import recent_gap_windows as _recent_gap_windows
 from data_center.window_planner import tail_recovery_windows as _tail_recovery_windows
 from data_center.window_planner import window_key as _window_key
 
+from .instants import parse_instant
+
 # Run receipts carry the error type name, so the provider-gap classification is
 # matched by name against this value.
 PROVIDER_GAP_ERROR = ProviderGapError.__name__
@@ -143,12 +145,12 @@ def _isolate_incomplete_window(*, start: datetime, end: datetime,
     missing_text = coverage.get("first_missing_ts")
     complete_text = coverage.get("latest_complete_boundary")
     if not missing_text and complete_text:
-        missing_text = (_utc(datetime.fromisoformat(str(complete_text))) + cadence).isoformat()
+        missing_text = (_utc(parse_instant(str(complete_text))) + cadence).isoformat()
     if not missing_text:
         return None
     try:
-        missing_start = _utc(datetime.fromisoformat(str(missing_text)))
-        observed_max = _utc(datetime.fromisoformat(str(coverage["max_ts"])))
+        missing_start = _utc(parse_instant(str(missing_text)))
+        observed_max = _utc(parse_instant(str(coverage["max_ts"])))
     except (KeyError, TypeError, ValueError):
         return None
     start, end = _utc(start), _utc(end)
@@ -247,8 +249,8 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                 degraded_windows = 0
                 while pending:
                     window, recovery_of, isolation_depth = pending.pop(0)
-                    window_start = datetime.fromisoformat(window["start"])
-                    window_end = datetime.fromisoformat(window["end"])
+                    window_start = parse_instant(window["start"])
+                    window_end = parse_instant(window["end"])
                     reason = window.get("reason", "ingest")
                     run_kind = "gap_repair" if reason == "gap_repair" else "ingest"
                     ordinal = len(result["runs"])
@@ -377,8 +379,8 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:18380")
     parser.add_argument("--provider", default="dukascopy")
     parser.add_argument("--symbols", nargs="*", default=None)
-    parser.add_argument("--start", type=datetime.fromisoformat)
-    parser.add_argument("--end", type=datetime.fromisoformat)
+    parser.add_argument("--start", type=parse_instant)
+    parser.add_argument("--end", type=parse_instant)
     parser.add_argument("--run-scope", choices=("maintenance", "production"), default="maintenance")
     args = parser.parse_args()
     policy = maintenance_policy_for(args.provider, "1m")

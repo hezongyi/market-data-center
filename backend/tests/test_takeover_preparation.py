@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from data_center.instants import parse_instant
 from data_center.production_tasks import ProductionConflict, ProductionTasks
 from data_center.runs.ledger import RunLedger
 from data_center.takeover import (
@@ -95,7 +96,7 @@ def test_plan_definitions_never_widen_the_legacy_scope():
     # The old raw entry produced raw only; the imported plan must not add outputs.
     assert raw_definition["bar_timeframes"] == []
     assert raw_definition["schedule"] == {"schedule": "fixed_delay", "interval_seconds": 900}
-    start = datetime.fromisoformat(raw_definition["window_policy"]["history_start"])
+    start = parse_instant(raw_definition["window_policy"]["history_start"])
     assert 1 <= (NOW - start).days <= 3, "the plan starts where the legacy tail window started"
 
     derived_definition = plan_definitions(derived)[0]

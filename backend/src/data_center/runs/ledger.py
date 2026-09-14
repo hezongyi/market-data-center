@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from ..instants import parse_instant
+
 #: Highest schema version this binary understands.  A ledger recorded by a
 #: newer binary is refused instead of being silently downgraded.
 SCHEMA_VERSION = 5
@@ -1862,4 +1864,4 @@ class RunLedger:
             row = conn.execute("select heartbeat from worker_heartbeat where id=1").fetchone()
         if not row:
             return None
-        return max(0.0, (datetime.fromtimestamp(self.clock(), tz=timezone.utc) - datetime.fromisoformat(row[0])).total_seconds())
+        return max(0.0, (datetime.fromtimestamp(self.clock(), tz=timezone.utc) - parse_instant(row[0])).total_seconds())
