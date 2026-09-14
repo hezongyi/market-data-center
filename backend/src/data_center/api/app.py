@@ -507,6 +507,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_tasks() -> dict:
         return api_envelope(ledger.list_maintenance_tasks())
 
+    @app.get(f"{config.api_prefix}/production/tasks")
+    def production_tasks(include_deleted: bool = False) -> dict:
+        return api_envelope(ledger.list_production_tasks(include_deleted=include_deleted))
+
+    @app.post(f"{config.api_prefix}/production/tasks", status_code=201)
+    def production_task_create(payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        task_id = str(payload.get("task_id") or uuid4())
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        ownership = payload.get("ownership_keys") or []
+        if not isinstance(ownership, list) or not all(isinstance(item, str) and item for item in ownership):
+            raise HTTPException(status_code=422, detail="ownership_keys must be a non-empty string list")
+        try:
+            task = ledger.create_production_task(task_id=task_id, name=name,
+                alias=payload.get("alias"), payload=payload.get("definition") or {},
+                ownership_keys=ownership, desired_state=payload.get("desired_state", "paused"),
+                config_digest=payload.get("config_digest"))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        ledger.record_write_audit({"action": "production.task.create", "actor": operator_identity(request, config),
+                                  "request_id": current_request_id(), "task_id": task_id,
+                                  "outcome": "created", "message": name})
+        return api_envelope(task)
+
+    @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
+    def production_task_detail(task_id: str, include_deleted: bool = True) -> dict:
+        tasks = [item for item in ledger.list_production_tasks(include_deleted=include_deleted)
+                 if item["task_id"] == task_id or item.get("alias") == task_id]
+        if not tasks:
+            raise HTTPException(status_code=404, detail="production task not found")
+        return api_envelope(tasks[0])
+
+    @app.patch(f"{config.api_prefix}/production/tasks/{{task_id}}")
+    def production_task_change(task_id: str, payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try:
+            if "desired_state" in payload:
+                task = ledger.set_production_task_state(task_id, str(payload["desired_state"]))
+            else:
+                expected = int(payload.get("expected_version"))
+                task = ledger.update_production_task(task_id, payload.get("definition") or {}, expected_version=expected)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="production task not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        ledger.record_write_audit({"action": "production.task.change", "actor": operator_identity(request, config),
+                                  "request_id": current_request_id(), "task_id": task_id,
+                                  "outcome": "updated", "message": str(payload)})
+        return api_envelope(task)
+
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
     def maintenance_task_status(task_id: str, payload: dict, request: Request,
                                 x_api_key: str | None = Header(default=None, alias="X-API-Key"),

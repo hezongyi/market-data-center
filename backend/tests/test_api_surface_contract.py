@@ -72,6 +72,11 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/economic/ingest"): RoutePolicy(
         True, True, params={"series_id": "PAYEMS", "run_scope": "acceptance"},
         audit_action="maintenance.ingest"),
+    ("POST", "/api/v1/production/tasks"): RoutePolicy(
+        True, True, {"name": "surface", "ownership_keys": ["surface"], "definition": {}, "desired_state": "paused"},
+        audit_action="production.task.create", expect_status=201),
+    ("PATCH", "/api/v1/production/tasks/{task_id}"): RoutePolicy(
+        True, False, {"desired_state": "paused"}, expect_status=404),
 }
 
 AUDITING_ROUTES = sorted(route for route, policy in MUTATING_ROUTES.items() if policy.writes_audit)
@@ -92,6 +97,7 @@ def route_path(template: str, ledger: RunLedger | None = None) -> str:
     if "{finding_id}" in template:
         finding = ledger.findings()[0] if ledger and ledger.findings() else None
         path = path.replace("{finding_id}", finding["finding_id"] if finding else "absent-finding")
+    path = path.replace("{task_id}", "absent-task")
     return path
 
 
