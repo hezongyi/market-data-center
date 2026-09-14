@@ -440,6 +440,22 @@ export function ProductionPage({ services, onMessage, onChanged }: {
         </>
         : <LoadingSkeleton rows={1} />}
     </section>
+    {selected && selected.progress && <section className="panel">
+      <PanelHeading eyebrow="Progress" title="Recorded boundaries" />
+      <div className="metric-grid">
+        <article className="metric"><span>{t("Raw planned to")}</span>
+          <strong>{selected.progress.raw_frontier ? <TimeDisplay value={selected.progress.raw_frontier} /> : t("nothing yet")}</strong>
+          <small>{t("provider-bounded end")} {selected.progress.provider_bounded_end
+            ? <TimeDisplay value={selected.progress.provider_bounded_end} /> : "—"}</small></article>
+        <article className="metric"><span>{t("Derived to")}</span>
+          <strong>{selected.progress.derived_cursor ? <TimeDisplay value={selected.progress.derived_cursor} /> : t("nothing yet")}</strong>
+          <small>{t("recompute owed")}: {selected.progress.recompute_pending}</small></article>
+        <article className={`metric${selected.progress.backlog ? " metric-warn" : ""}`}><span>{t("Backlog")}</span>
+          <strong>{selected.progress.backlog ? t("yes") : t("no")}</strong>
+          <small>{t("last outcome")}: {selected.progress.last_outcome ?? t("none")}</small></article>
+      </div>
+      <p className="muted">{t(selected.progress.note)}</p>
+    </section>}
     {selected && <section className="panel">
       <PanelHeading eyebrow="Round" title={`${selected.name} · ${selected.current_execution?.state ?? selected.executions?.[0]?.state ?? t("no round")}`} action={
         <div className="row-actions">

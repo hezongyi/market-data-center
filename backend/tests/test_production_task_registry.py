@@ -372,3 +372,25 @@ def test_preview_reports_the_plan_contract(service):
     found = service.preview(definition(), now=NOW)
     assert found["minimum_interval_seconds"] == MIN_INTERVAL_SECONDS
     assert set(found["schedule"]) >= {"kind", "next_runs", "rule"}
+
+
+def test_plan_detail_reports_recorded_progress_not_a_guess(ledger, service):
+    service.create(definition=definition(), name="first", task_id="p1", now=NOW,
+                   desired_state="enabled")
+    empty = service.read("p1")["progress"]
+    # Nothing has been planned yet, and the read model says so instead of
+    # inventing a frontier.
+    assert empty["recorded"] is False and empty["raw_frontier"] is None
+
+    ledger.record_progress("p1", {"frontier": "2026-09-14T11:59:00+00:00",
+                                  "effective_end": "2026-09-14T11:59:00+00:00",
+                                  "derived_cursor": "2026-09-14T11:55:00+00:00",
+                                  "backlog": True, "last_outcome": "pass"})
+    service.record_recompute("p1", window_start="2026-09-14T11:00:00+00:00",
+                             window_end="2026-09-14T11:05:00+00:00", reason="raw_republished_after_derivation")
+    progress = service.read("p1")["progress"]
+    assert progress["raw_frontier"] == "2026-09-14T11:59:00+00:00"
+    assert progress["derived_cursor"] == "2026-09-14T11:55:00+00:00"
+    assert progress["backlog"] is True and progress["last_outcome"] == "pass"
+    assert progress["recompute_pending"] == 1
+    assert "not live provider freshness" in progress["note"]

@@ -449,6 +449,7 @@ class ProductionTasks:
         active = next((item for item in executions
                        if item["state"] in RunLedger.ACTIVE_EXECUTION_STATES), None)
         definition = task.get("payload") or {}
+        progress = self.ledger.production_progress(task["task_id"])
         return {
             **task,
             "ownership": self.ledger.ownership_of(task["task_id"]),
@@ -458,6 +459,25 @@ class ProductionTasks:
             "tombstone": bool(task["deleted_at"]),
             "schedule": {"kind": (definition.get("schedule") or {}).get("schedule"),
                          "next_run_at": task.get("next_run_at")},
+            # The recorded progress, not a guess: how far raw has been planned
+            # and derived, what is still owed, and how the last round ended.
+            "progress": self._progress_view(progress),
+        }
+
+    @staticmethod
+    def _progress_view(progress: dict | None) -> dict:
+        progress = progress or {}
+        return {
+            "raw_frontier": progress.get("frontier"),
+            "provider_bounded_end": progress.get("effective_end"),
+            "backlog": bool(progress.get("backlog")),
+            "derived_cursor": progress.get("derived_cursor"),
+            "last_outcome": progress.get("last_outcome"),
+            "last_finished_at": progress.get("last_finished_at"),
+            "last_execution_id": progress.get("last_execution_id"),
+            "recompute_pending": len(progress.get("recompute") or []),
+            "recorded": bool(progress),
+            "note": "Recorded planning boundaries, not live provider freshness.",
         }
 
     def _health(self, task: dict, active_execution: dict | None) -> str:

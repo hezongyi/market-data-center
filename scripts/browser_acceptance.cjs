@@ -670,6 +670,18 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
       "the saved plan must be readable through the plan registry");
 
+    // Opening a plan shows its recorded progress: boundaries the scheduler
+    // actually persisted, or an explicit "nothing yet", never an estimate.
+    await page.locator("tr").filter({ hasText: "Acceptance plan" })
+      .getByRole("button", { name: /Details/ }).click();
+    await page.getByText("Recorded boundaries", { exact: true }).waitFor();
+    await page.getByText("not live provider freshness", { exact: false }).waitFor();
+    const registeredPlans = await call("GET", "/production/tasks");
+    const acceptancePlan = registeredPlans.find(plan => plan.name === "Acceptance plan");
+    assert.ok(acceptancePlan, "the plan saved by the wizard must be readable");
+    const detail = await call("GET", `/production/tasks/${acceptancePlan.task_id}`);
+    assert.equal(typeof detail.progress.recorded, "boolean");
+
     // The matrix and the governance list are read-only projections: they must
     // render, and a governance unit must carry no lifecycle control.
     await page.getByText("Registered × planned", { exact: true }).waitFor();
@@ -732,7 +744,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
-      "governance_unit_list"],
+      "governance_unit_list", "production_plan_progress"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
