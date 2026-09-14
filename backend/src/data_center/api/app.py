@@ -5,10 +5,12 @@ import json
 import math
 import os
 import sqlite3
+import subprocess
 import tempfile
 import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
@@ -43,13 +45,19 @@ from data_center.maintenance_tasks import (
 from data_center.observability import AlertSink, run_metrics
 from data_center.operations_views import (
     capacity_history,
+    governance_units,
     operations_receipts,
     worker_activity,
 )
 from data_center.platform import coverage_for_rows, enqueue_ingest_plan
 from data_center.platform_registry import REGISTRY
+from data_center.production_tasks import (
+    DefinitionError,
+    ProductionConflict,
+    ProductionTasks,
+)
 from data_center.run_views import RunCursorError, RunValidationError, RunView
-from data_center.runs.ledger import RunLedger
+from data_center.runs.ledger import IdempotencyConflict, RunLedger
 from data_center.settings import Settings
 from data_center.snapshot import ReceiptIndex, build_snapshot
 from data_center.storage.query import (
@@ -62,6 +70,8 @@ from data_center.storage.query import (
     query_market_bars,
     query_provider_bars,
 )
+
+from ..instants import parse_instant
 
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
@@ -206,7 +216,7 @@ def economic_boundary(value: str | None, field: str) -> datetime:
     """
     if not value:
         return datetime(1900, 1, 1, tzinfo=timezone.utc) if field == "start" else datetime.now(timezone.utc)
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = parse_instant(value.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
@@ -346,16 +356,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Write failures carry a stable, safe semantic code so a console can
         # distinguish permission, protection, conflict and validation without
         # parsing prose; the message stays human-readable.
-        code = {
-            401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
-            422: "invalid_request", 507: "capacity_protected",
-        }.get(exc.status_code, "internal_error" if exc.status_code >= 500 else str(exc.status_code))
+        detail = exc.detail
+        errors = None
+        if isinstance(detail, dict) and detail.get("code"):
+            # A route that knows *why* it refused keeps its stable code instead
+            # of being flattened into the generic status code (spec 8).
+            code = str(detail["code"])
+            message = str(detail.get("message") or code)
+            errors = [{"code": code, "message": message}]
+            errors.extend({**item, "code": item.get("code", code)} for item in detail.get("errors") or [])
+        else:
+            code = {
+                401: "unauthorized", 403: "forbidden", 404: "not_found", 409: "conflict",
+                422: "invalid_request", 507: "capacity_protected",
+            }.get(exc.status_code, "internal_error" if exc.status_code >= 500 else str(exc.status_code))
+            message = str(detail)
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "data": None,
                 "meta": {"request_id": current_request_id(), "schema_version": "v1"},
-                "errors": [{"code": code, "message": str(exc.detail)}],
+                "errors": errors or [{"code": code, "message": message}],
             },
         )
 
@@ -507,6 +528,191 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_tasks() -> dict:
         return api_envelope(ledger.list_maintenance_tasks())
 
+    def installed_governance_units() -> list[str] | None:
+        """Ask the host which Data Center timers exist; ``None`` when unanswerable.
+
+        The repository's unit files are the declaration, the host is the reality,
+        and an unreadable host is reported as unknown rather than as empty.
+        """
+        try:
+            probe = subprocess.run(
+                ["systemctl", "--user", "list-unit-files", "market-data-center-*.timer", "--no-legend"],
+                capture_output=True, text=True, timeout=5.0, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if probe.returncode != 0:
+            return None
+        return [line.split()[0] for line in probe.stdout.splitlines() if line.split()]
+
+    production_tasks_service = ProductionTasks(
+        ledger, cursor_secret=config.api_key or str(config.canonical_root),
+        canonical_root=config.canonical_root, capacity_policy=capacity_policy)
+
+    def production_conflict_status(code: str) -> int:
+        """Refusals that are bad requests stay 422; genuine state conflicts are 409."""
+        return 422 if code in {"expected_version_required", "unsupported_command", "cursor_error",
+                               "page_size_error", "filter_error"} else 409
+
+    @app.get(f"{config.api_prefix}/production/tasks")
+    def production_tasks(provider: str | None = None, symbol: str | None = None,
+                         desired_state: str | None = None, health: str | None = None,
+                         phase: str | None = None, include_deleted: bool = False,
+                         page_size: int | None = None, cursor: str | None = None) -> dict:
+        """Plan list with SQL-side filtering and a cursor bound to those filters."""
+        if desired_state is not None and desired_state not in {"enabled", "paused", "archived"}:
+            raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
+        try:
+            page = production_tasks_service.list(
+                provider=provider, symbol=symbol, desired_state=desired_state, health=health,
+                phase=phase, include_deleted=include_deleted, page_size=page_size, cursor=cursor)
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(page["tasks"], meta={"page": page["page"]})
+
+    @app.post(f"{config.api_prefix}/production/tasks", status_code=201)
+    def production_task_create(payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        actor = operator_identity(request, config)
+        try:
+            task = production_tasks_service.create(
+                definition=payload.get("definition") or {}, name=payload.get("name") or "",
+                task_id=payload.get("task_id"), alias=payload.get("alias"),
+                desired_state=payload.get("desired_state", "paused"), actor=actor,
+                request_id=current_request_id(),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except DefinitionError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
+                                                         "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(task)
+
+    @app.post(f"{config.api_prefix}/production/plans")
+    def production_plan_preview(payload: dict) -> dict:
+        """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
+        return api_envelope(production_tasks_service.preview(payload.get("definition") or payload))
+
+    @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
+    def production_task_detail(task_id: str) -> dict:
+        task = production_tasks_service.read(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        return api_envelope(task)
+
+    @app.patch(f"{config.api_prefix}/production/tasks/{{task_id}}")
+    def production_task_change(task_id: str, payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        actor = operator_identity(request, config)
+        if "desired_state" in payload and "definition" not in payload:
+            command = {"paused": "pause", "enabled": "resume", "archived": "archive"}.get(
+                str(payload["desired_state"]))
+            if command is None:
+                raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
+        else:
+            command = "update"
+        try:
+            task = production_tasks_service.change(
+                task_id, command, definition=payload.get("definition"),
+                expected_version=payload.get("expected_version"), actor=actor,
+                request_id=current_request_id(), name=payload.get("name"),
+                alias=payload.get("alias"),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="production task not found") from exc
+        except DefinitionError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
+                                                         "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(task)
+
+    @app.post(f"{config.api_prefix}/production/tasks/{{task_id}}/actions")
+    def production_task_action(task_id: str, payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        command = str(payload.get("command") or "")
+        actor = operator_identity(request, config)
+        try:
+            result = production_tasks_service.change(
+                task_id, command, definition=payload.get("definition"),
+                expected_version=payload.get("expected_version"), actor=actor,
+                request_id=current_request_id(), name=payload.get("name"),
+                alias=payload.get("alias"),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="production task not found") from exc
+        except DefinitionError as exc:
+            raise HTTPException(status_code=422, detail={"code": "invalid_definition",
+                                                         "message": str(exc),
+                                                         "errors": exc.errors}) from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(result)
+
+    @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}/executions")
+    def production_task_executions(task_id: str, page_size: int | None = None,
+                                   cursor: str | None = None) -> dict:
+        task = production_tasks_service.read(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        try:
+            page = production_tasks_service.executions(
+                task["task_id"], page_size=page_size, cursor=cursor)
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(page["executions"], meta={"page": page["page"]})
+
+    @app.post(f"{config.api_prefix}/production/executions/{{execution_id}}/retry", status_code=202)
+    def production_execution_retry(execution_id: str, request: Request,
+                                   x_api_key: str | None = Header(default=None)) -> dict:
+        """Re-plan the unfinished needs of a terminal round as a linked follow-up."""
+        require_api_key(config, x_api_key)
+        try:
+            result = production_tasks_service.retry(
+                execution_id=execution_id, actor=operator_identity(request, config),
+                request_id=current_request_id(),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="production execution not found") from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(result)
+
+    @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}")
+    def production_execution_detail(execution_id: str) -> dict:
+        execution = ledger.get_production_execution(execution_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail="production execution not found")
+        return api_envelope(execution)
+
+    @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}/steps")
+    def production_execution_steps(execution_id: str, limit: int = 100) -> dict:
+        if ledger.get_production_execution(execution_id) is None:
+            raise HTTPException(status_code=404, detail="production execution not found")
+        return api_envelope(ledger.list_production_steps(execution_id, limit=limit))
+
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
     def maintenance_task_status(task_id: str, payload: dict, request: Request,
                                 x_api_key: str | None = Header(default=None, alias="X-API-Key"),
@@ -567,6 +773,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def operations_receipts_view(limit: int = 5) -> dict:
         payload = operations_receipts(receipt_index, limit_per_action=max(1, min(limit, 50)))
         return api_envelope(payload)
+
+    @app.get(f"{config.api_prefix}/production/catalog-matrix")
+    def production_catalog_matrix() -> dict:
+        """Registered x planned matrix; a read model that never widens scope."""
+        return api_envelope(production_tasks_service.catalog_matrix())
+
+    @app.get(f"{config.api_prefix}/operations/units")
+    def operations_units() -> dict:
+        """Governance timers: owner, cadence, latest receipt, declaration differences."""
+        return api_envelope(governance_units(
+            declared_root=Path(__file__).resolve().parents[4] / "deploy" / "systemd",
+            installed=installed_governance_units(),
+            receipt_index=receipt_index))
+
+    @app.get(f"{config.api_prefix}/operations/scheduler")
+    def operations_scheduler() -> dict:
+        """Scheduler heartbeat, dispatch switch, due backlog and plan counts.
+
+        The projection is observational: it reports what the ledger recorded and
+        never infers a healthy state the scheduler did not write (spec 3.2, 7.3).
+        """
+        moment = datetime.now(timezone.utc)
+        state = ledger.scheduler_state()
+        due = ledger.list_due_production_tasks(now=moment.isoformat(), limit=50)
+        counts: dict[str, int] = {}
+        blocked: list[dict] = []
+        for task in ledger.list_production_tasks():
+            counts[task["desired_state"]] = counts.get(task["desired_state"], 0) + 1
+            document = production_tasks_service.read(task["task_id"])
+            if document is not None and document["block_reason"] is not None:
+                blocked.append({"task_id": document["task_id"], "reason": document["block_reason"],
+                                "health": document["health"]})
+        gate = production_tasks_service.dispatch_gate(now=moment)
+        return api_envelope({
+            "scheduler": state,
+            "dispatch_enabled": state["dispatch_enabled"],
+            "due_now": len(due),
+            "due_task_ids": [task["task_id"] for task in due],
+            "plans_by_state": counts,
+            "oldest_due_at": min([task["next_run_at"] for task in due], default=None),
+            "queue": ledger.job_queue_state(),
+            # A critical capacity state refuses new publishing work; warning is
+            # decided per plan against its unattended catch-up span (spec 5.6).
+            "capacity": gate["capacity"],
+            "publishing_allowed": gate["allowed"],
+            # Governed provider backoff (durable, per provider) next to the jobs
+            # that are waiting on their own retry delay.
+            "provider_backoff": ledger.provider_backoff(now=moment),
+            "queue_backoff": ledger.provider_backoff_state(now=moment),
+            "blocked": blocked,
+        })
+
+    @app.post(f"{config.api_prefix}/operations/scheduler/actions")
+    def operations_scheduler_action(payload: dict, request: Request,
+                                    x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        command = str(payload.get("command") or "")
+        if command not in {"pause_dispatch", "resume_dispatch"}:
+            raise HTTPException(status_code=422, detail={
+                "code": "unsupported_command",
+                "message": "command must be pause_dispatch or resume_dispatch"})
+        result = ledger.set_global_dispatch(command == "resume_dispatch",
+                                            actor=operator_identity(request, config),
+                                            request_id=current_request_id())
+        return api_envelope({"command": command, **result})
 
     @app.post(f"{config.api_prefix}/runs/{{run_id}}/retry", status_code=202)
     def retry(run_id: str, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
@@ -670,12 +941,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/bars")
     def bars(symbol: str, provider: str, timeframe: str = "1d", start: str | None = None,
              end: str | None = None, page_size: int | None = None, cursor: str | None = None) -> dict:
-        from datetime import datetime
         started = time.monotonic()
         page = query_engine.provider_bars_page(
             provider=provider, symbol=symbol, timeframe=timeframe,
-            start=datetime.fromisoformat(start) if start else None,
-            end=datetime.fromisoformat(end) if end else None,
+            start=parse_instant(start) if start else None,
+            end=parse_instant(end) if end else None,
             page_size=page_size, cursor=cursor,
         )
         print(json.dumps({"event": "data_query", "request_id": current_request_id(),
@@ -719,8 +989,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
                     rows=rows,
                     session_profile=session,
-                    requested_start=datetime.fromisoformat(start),
-                    requested_end=datetime.fromisoformat(end),
+                    requested_start=parse_instant(start),
+                    requested_end=parse_instant(end),
                     timeframe=timedelta(minutes=1),
                 ).as_dict()
                 detail_unavailable = None
@@ -744,14 +1014,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     recipe_id: str, recipe_version: str, start: str | None = None,
                     end: str | None = None, page_size: int | None = None,
                     cursor: str | None = None) -> dict:
-        from datetime import datetime
 
         started = time.monotonic()
         page = query_engine.market_bars_page(
             provider=provider, symbol=symbol, timeframe=timeframe, price_basis=price_basis,
             recipe_id=recipe_id, recipe_version=recipe_version,
-            start=datetime.fromisoformat(start) if start else None,
-            end=datetime.fromisoformat(end) if end else None,
+            start=parse_instant(start) if start else None,
+            end=parse_instant(end) if end else None,
             page_size=page_size, cursor=cursor,
         )
         print(json.dumps({"event": "data_query", "request_id": current_request_id(),
@@ -933,8 +1202,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   "price_basis": price_basis, "recipe_id": recipe_id,
                                   "recipe_version": recipe_version},
                         rows=rows, session_profile=REGISTRY.session(session_id),
-                        requested_start=datetime.fromisoformat(start),
-                        requested_end=datetime.fromisoformat(end),
+                        requested_start=parse_instant(start),
+                        requested_end=parse_instant(end),
                         timeframe=timeframe_delta(timeframe),
                     ).as_dict() | {"recipe": payload["recipe"], "recipe_status": "registered",
                                    "price_basis": price_basis}

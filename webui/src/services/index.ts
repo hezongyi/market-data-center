@@ -105,6 +105,29 @@ export function createServices(apiKey: string) {
       metrics: async () => (await client.metrics()).data,
       ingest: async (job: Parameters<typeof client.ingest>[0]) => (await client.ingest(job)).data,
     },
+    // The plan registry and the scheduler are one workspace: a plan is only
+    // meaningful next to whether the scheduler may dispatch it.
+    production: {
+      plans: async (query: Parameters<typeof client.productionPlans>[0] = {}) => (await client.productionPlans(query)).data,
+      plan: async (taskId: string) => (await client.productionPlan(taskId)).data,
+      create: async (body: Parameters<typeof client.createProductionTask>[0], idempotencyKey: string) =>
+        (await client.createProductionTask(body, idempotencyKey)).data,
+      preview: async (definition: Record<string, unknown>) => (await client.productionPreview(definition)).data,
+      act: async (taskId: string, command: string, idempotencyKey: string,
+                  options: Parameters<typeof client.productionPlanAction>[3] = {}) =>
+        (await client.productionPlanAction(taskId, command, idempotencyKey, options)).data,
+      executions: async (taskId: string, pageSize = 10, cursor?: string | null) => {
+        const result = await client.productionExecutions(taskId, pageSize, cursor);
+        return { items: result.data, nextCursor: result.meta.next_cursor ?? null };
+      },
+      steps: async (executionId: string, limit = 100) => (await client.productionExecutionSteps(executionId, limit)).data,
+      retry: async (executionId: string, idempotencyKey: string) =>
+        (await client.retryProductionExecution(executionId, idempotencyKey)).data,
+      matrix: async () => (await client.catalogMatrix()).data,
+      governance: async () => (await client.governanceUnits()).data,
+      scheduler: async () => (await client.scheduler()).data,
+      dispatch: async (command: "pause_dispatch" | "resume_dispatch") => (await client.schedulerAction(command)).data,
+    },
   };
 }
 

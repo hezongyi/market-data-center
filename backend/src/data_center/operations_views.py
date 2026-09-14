@@ -7,6 +7,7 @@ and a state the platform never recorded is reported as unknown.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Capacity transitions are recorded by the monitor as alert events; these are
 # the only historical capacity states this platform actually persists.
@@ -18,7 +19,8 @@ CAPACITY_EVENTS = {"capacity_warning", "capacity_critical", "capacity_recovered"
 RECEIPT_ACTIONS = ("backup", "backup_verify", "restore", "recovery_drill", "capacity_check",
                    "deployment_stage", "deployment_activate", "deployment_rollback",
                    "deployment_runtime_failure", "monitor", "derived_market_bars_maintenance",
-                   "real_release_webui_acceptance", "post_release_rehearsal")
+                   "real_release_webui_acceptance", "post_release_rehearsal", "scheduler_tick",
+                   "retention_audit")
 
 
 def _iso(value) -> str | None:
@@ -67,6 +69,72 @@ def capacity_history(alert_sink, live: dict, *, limit: int = 50) -> dict:
             "measurement_source": live.get("measurement_source"),
             "recorded_only": True,
             "note": "Only capacity transitions the monitor recorded are shown; no history is interpolated."}
+
+
+#: Units that govern the platform rather than produce data.  The scheduler
+#: never starts, stops or reorders them; the list exists so the unified view
+#: does not claim to manage everything the host runs (spec 3.4).
+GOVERNANCE_UNITS = (
+    ("market-data-center-monitor.timer", "monitor"),
+    ("market-data-center-smoke.timer", None),
+    ("market-data-center-provider-acceptance.timer", None),
+    ("market-data-center-retention-audit.timer", "retention_audit"),
+    ("market-data-center-backup.timer", "backup"),
+    ("market-data-center-restore.timer", "restore"),
+    ("market-data-center-release.timer", "deployment_activate"),
+)
+
+
+def _unit_cadence(text: str) -> dict:
+    """The declared schedule of a timer, read from its unit file and nothing else."""
+    cadence = {}
+    for line in text.splitlines():
+        for directive in ("OnCalendar", "OnUnitInactiveSec", "OnUnitActiveSec", "OnBootSec", "OnActiveSec"):
+            if line.strip().startswith(f"{directive}="):
+                cadence[directive] = line.split("=", 1)[1].strip()
+    return cadence
+
+
+def governance_units(*, declared_root, installed: list[str] | None, receipt_index,
+                     limit_per_action: int = 1) -> dict:
+    """Read-only projection of the timers that govern the platform.
+
+    Two sources are compared and both are named: the repository declares units
+    under ``deploy/systemd``, and the host reports what it actually installed.
+    A difference is reported, never reconciled (spec 3.4, AC23).
+    """
+    root = Path(declared_root)
+    declared = {path.name: path.read_text() for path in sorted(root.glob("*.timer"))} if root.is_dir() else {}
+    installed_set = None if installed is None else set(installed)
+    known = set(declared) | (installed_set or set())
+    entries = []
+    for name, receipt_action in GOVERNANCE_UNITS:
+        if name not in known:
+            continue
+        declaration = ("installed" if installed_set is not None and name in installed_set else
+                       "declared_not_installed" if installed_set is not None else "unknown")
+        if installed_set is not None and name not in declared:
+            declaration = "installed_not_declared"
+        receipt = None
+        if receipt_action and receipt_index is not None and getattr(receipt_index, "available", False):
+            history = receipt_index.history(receipt_action, limit=limit_per_action)
+            receipt = history[0] if history else None
+        entries.append({
+            "unit": name,
+            "owner": "market-data-center",
+            # Read-only by construction: this projection carries no lifecycle verb.
+            "read_only": True,
+            "declaration": declaration,
+            "cadence": _unit_cadence(declared.get(name, "")),
+            "receipt_action": receipt_action,
+            "latest_receipt": receipt,
+            "evidence": "deploy/systemd unit file and receipt index",
+        })
+    extra = sorted((installed_set or set()) - set(declared))
+    return {"available": installed_set is not None, "units": entries,
+            "declared_not_installed": sorted(set(declared) - (installed_set or set())) if installed_set is not None else [],
+            "installed_not_declared": [name for name in extra if name.startswith("market-data-center-")],
+            "note": "Observational projection: the scheduler cannot start, stop or reorder these units."}
 
 
 def operations_receipts(receipt_index, *, actions: tuple[str, ...] = RECEIPT_ACTIONS,

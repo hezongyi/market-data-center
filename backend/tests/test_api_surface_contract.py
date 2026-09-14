@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from data_center.api.app import create_app
+from data_center.instants import parse_instant
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 
@@ -27,6 +28,19 @@ TASK_BODY = {"run_kind": "ingest", "run_scope": "acceptance", "provider": "fixtu
 DERIVE_BODY = {"job_id": "surface-derive", "provider": "fixture", "symbol": "UI_TEST",
                "recipe_id": "utc-24x7-1m-to-1h-ohlcv", "recipe_version": "1", "start": START, "end": END,
                "run_scope": "acceptance"}
+# A production plan is validated against the registry, so the surface fixture
+# uses an approved instrument and a registered recipe chain rather than a
+# synthetic symbol: an invalid definition is expected to be refused, not stored.
+PLAN_BODY = {
+    "name": "surface",
+    "desired_state": "paused",
+    "definition": {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m", "price_basis": "bid",
+        "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "continuous", "history_start": START},
+        "schedule": {"schedule": "manual"},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -72,6 +86,18 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/economic/ingest"): RoutePolicy(
         True, True, params={"series_id": "PAYEMS", "run_scope": "acceptance"},
         audit_action="maintenance.ingest"),
+    ("POST", "/api/v1/production/tasks"): RoutePolicy(
+        True, True, PLAN_BODY, audit_action="production.task.create", expect_status=201),
+    ("POST", "/api/v1/production/plans"): RoutePolicy(False, False, {"schedule": "manual"}, expect_status=200),
+    ("POST", "/api/v1/production/tasks/{task_id}/actions"): RoutePolicy(
+        True, True, {"command": "pause"}, audit_action="production.task.pause", expect_status=404),
+    ("PATCH", "/api/v1/production/tasks/{task_id}"): RoutePolicy(
+        True, False, {"desired_state": "paused"}, expect_status=404),
+    ("POST", "/api/v1/production/executions/{execution_id}/retry"): RoutePolicy(
+        True, True, audit_action="production.execution.retry", expect_status=404),
+    ("POST", "/api/v1/operations/scheduler/actions"): RoutePolicy(
+        True, True, {"command": "pause_dispatch"},
+        audit_action="scheduler.pause_dispatch", expect_status=200),
 }
 
 AUDITING_ROUTES = sorted(route for route, policy in MUTATING_ROUTES.items() if policy.writes_audit)
@@ -92,6 +118,7 @@ def route_path(template: str, ledger: RunLedger | None = None) -> str:
     if "{finding_id}" in template:
         finding = ledger.findings()[0] if ledger and ledger.findings() else None
         path = path.replace("{finding_id}", finding["finding_id"] if finding else "absent-finding")
+    path = path.replace("{task_id}", "absent-task")
     return path
 
 
@@ -223,4 +250,4 @@ def test_queued_run_records_the_submitted_selector_and_window(tmp_path) -> None:
     assert run["status"] == "queued" and run["created_at"]
     assert run["run_scope"] == "acceptance"
     assert run["run_kind"] == "ingest"
-    assert datetime.fromisoformat(run["created_at"]).tzinfo == timezone.utc
+    assert parse_instant(run["created_at"]).tzinfo == timezone.utc

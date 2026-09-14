@@ -358,12 +358,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     // The console disables run kinds the platform cannot serve for the selected
     // dataset, instead of letting the planner reject the submission later.
     await page.getByLabel("Task provider").selectOption("fred");
-    assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled(), true,
-      "gap repair is not available for the economic dataset");
-    assert.equal(await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled(), true,
-      "derive is not available for the economic dataset");
-    assert.equal(await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(), true,
-      "quality checks are available for the economic dataset");
+    // The run-kind availability follows the selected provider, so wait for the
+    // radios to settle instead of reading them mid-render.
+    await waitFor(async () => await page.getByRole("radio", { name: "Gap repair", exact: true }).isDisabled()
+      && await page.getByRole("radio", { name: "Derive", exact: true }).isDisabled()
+      && await page.getByRole("radio", { name: "Quality check", exact: true }).isEnabled(),
+      "run kinds must follow the selected dataset (gap repair/derive off, quality on)");
     await page.getByLabel("Task provider").selectOption("fixture");
     assert.equal(await page.getByRole("radio", { name: "Gap repair", exact: true }).isEnabled(), true,
       "gap repair stays available for provider bars");
@@ -566,8 +566,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Acknowledge finding", exact: true }).waitFor();
     await page.getByRole("button", { name: "Acknowledge finding", exact: true }).click();
     await page.locator(".notice, [role=status]").filter({ hasText: "acknowledg" }).first().waitFor();
-    const acknowledged = await call("GET", "/quality/findings?state=acknowledged");
-    assert.ok(acknowledged.length > 0, "the finding handling state was not persisted");
+    // The write lands when the API says so; polling avoids reading the list
+    // between the click and its persistence (the old assertion flaked).
+    const acknowledged = await waitFor(async () => {
+      const rows = await call("GET", "/quality/findings?state=acknowledged");
+      return Array.isArray(rows) && rows.length > 0 ? rows : null;
+    }, "the finding handling state was not persisted");
     assert.ok(acknowledged.every(item => item.run_id), "a finding must stay linked to its reporting run");
     await page.getByRole("button", { name: "Close details", exact: true }).last().click();
     await page.getByLabel("Finding state").selectOption("open");
@@ -638,6 +642,148 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Next page", exact: true }).isDisabled();
     await page.getByText(/Page 1 · \d+ run\(s\)/, { exact: false }).waitFor();
 
+    // The production plan workspace reports the plan registry and the persisted
+    // dispatch switch; it must say "no plans" rather than invent one, and the
+    // scheduler strip must exist before an operator can pause dispatch.
+    await page.getByRole("button", { name: "production", exact: true }).click();
+    await page.getByText("Unified dispatch", { exact: true }).waitFor();
+    await page.getByText("Registered plans", { exact: true }).waitFor();
+    // The registry renders after its own load, so wait for whichever of the two
+    // honest states appears instead of sampling the table mid-load.
+    await waitFor(async () => (await page.locator("table tbody tr").count()) > 0
+      || (await page.getByText("No production plans yet", { exact: false }).count()) > 0,
+      "the plan registry must list plans or state that there are none");
+    const schedulerView = await call("GET", "/operations/scheduler");
+    assert.equal(typeof schedulerView.dispatch_enabled, "boolean");
+    // The capacity gate and provider backoff are observed values, and the strip
+    // must agree with the API instead of showing a hard-coded green state.
+    assert.equal(schedulerView.publishing_allowed, schedulerView.capacity.status !== "critical");
+    assert.ok(Array.isArray(schedulerView.provider_backoff));
+    assert.ok(Array.isArray(schedulerView.queue_backoff),
+      "the queue-level retry waits must stay distinct from the governed backoff");
+    assert.ok(await page.getByText("New publishing", { exact: true }).count() > 0);
+    assert.ok(await page.getByText("Provider backoff", { exact: true }).count() > 0);
+    assert.ok(await page.getByText("Dispatch", { exact: true }).count() > 0);
+
+    // The wizard validates against the live registry before anything is saved:
+    // a preview must render either the field errors or the computed plan.
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Acceptance plan");
+    await page.getByRole("button", { name: "Preview", exact: true }).click();
+    await page.getByText("Submittable", { exact: false }).waitFor();
+    assert.ok(await page.getByLabel("Provider", { exact: true }).inputValue(),
+      "the wizard must be seeded from the registry");
+    // Saving is a real write.  The plan owns its outputs, so a second run only
+    // verifies the plan the first run created rather than colliding with it.
+    const registeredBefore = await call("GET", "/production/tasks");
+    if (!registeredBefore.some(plan => plan.name === "Acceptance plan")) {
+      await page.getByRole("button", { name: "Save as paused", exact: true }).click();
+    }
+    await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
+    const created = await call("GET", "/production/tasks");
+    assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
+      "the saved plan must be readable through the plan registry");
+
+    // Opening a plan shows its recorded progress: boundaries the scheduler
+    // actually persisted, or an explicit "nothing yet", never an estimate.
+    await page.locator("tr").filter({ hasText: "Acceptance plan" })
+      .getByRole("button", { name: /Details/ }).click();
+    await page.getByText("Recorded boundaries", { exact: true }).waitFor();
+    await page.getByText("not live provider freshness", { exact: false }).waitFor();
+    const registeredPlans = await call("GET", "/production/tasks");
+    const acceptancePlan = registeredPlans.find(plan => plan.name === "Acceptance plan");
+    assert.ok(acceptancePlan, "the plan saved by the wizard must be readable");
+    const detail = await call("GET", `/production/tasks/${acceptancePlan.task_id}`);
+    assert.equal(typeof detail.progress.recorded, "boolean");
+    // Phase and health are read-model values the API must report, and the list
+    // filter has to accept them; the console offers exactly those values.
+    assert.ok(["initializing", "catching_up", "maintaining"].includes(detail.phase),
+      `unexpected plan phase: ${detail.phase}`);
+    assert.ok(detail.health, "the plan must report a health value");
+    const filtered = await call("GET", `/production/tasks?health=${encodeURIComponent(detail.health)}`);
+    assert.ok(filtered.some(plan => plan.task_id === acceptancePlan.task_id),
+      "a plan must be listed under its own health value");
+    const healthFilter = page.getByLabel("plan health filter", { exact: true });
+    assert.ok(await healthFilter.count() > 0, "the registry must offer the read-model health filter");
+    await healthFilter.selectOption(detail.health);
+    await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
+    await healthFilter.selectOption("");
+
+    // Editing is an optimistic-locked write against the version the console
+    // loaded, and it must not change desired_state on its own (spec 3.3).
+    await page.getByRole("button", { name: "Edit Acceptance plan", exact: true }).click();
+    await page.getByText("Edit Acceptance plan", { exact: true }).waitFor();
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Acceptance plan (edited)");
+    await page.getByRole("button", { name: "Save changes", exact: true }).click();
+    await page.locator("tr").filter({ hasText: "Acceptance plan (edited)" }).waitFor();
+    const edited = (await call("GET", "/production/tasks"))
+      .find(plan => plan.name === "Acceptance plan (edited)");
+    assert.ok(edited, "the edited plan must be readable through the registry");
+    assert.equal(edited.desired_state, "paused", "editing must not resume a paused plan");
+    assert.ok(edited.definition_version > acceptancePlan.definition_version,
+      "a definition edit must create a new version");
+    // Replaying the stale version is refused rather than silently overwriting.
+    const stale = await envelope("PATCH", `/production/tasks/${edited.task_id}`, {
+      expected_version: acceptancePlan.definition_version,
+      definition: edited.payload,
+    });
+    assert.ok([409, 422].includes(stale.response.status),
+      `a stale expected_version must be refused, got ${stale.response.status}`);
+    // A display field is not a definition change: it updates in place (no new
+    // version), which also leaves the registry as this check found it.
+    const restore = await envelope("PATCH", `/production/tasks/${edited.task_id}`, {
+      expected_version: edited.definition_version, name: "Acceptance plan",
+    });
+    assert.ok(restore.response.ok, `restoring the plan name failed: ${restore.response.status}`);
+    const restored = (await call("GET", "/production/tasks"))
+      .find(plan => plan.task_id === edited.task_id);
+    assert.equal(restored.name, "Acceptance plan");
+    assert.equal(restored.definition_version, edited.definition_version,
+      "renaming must not form a new definition version");
+
+    // Lifecycle controls are the operator's daily path, so the acceptance clicks
+    // them instead of only creating plans (AC15): trigger, resume, trigger, pause.
+    const planRow = () => page.locator("tr").filter({ hasText: "Acceptance plan" });
+    // ``call`` already unwraps the response envelope.
+    const readPlan = async () => call("GET", `/production/tasks/${edited.task_id}`);
+    assert.equal((await readPlan()).desired_state, "paused");
+
+    // A paused plan refuses "run now" with a conflict rather than producing.
+    await planRow().getByRole("button", { name: /^Run now/ }).click();
+    await page.getByText("resume the plan before triggering it", { exact: false }).waitFor();
+    assert.equal((await readPlan()).desired_state, "paused");
+
+    await planRow().getByRole("button", { name: /^Resume/ }).click();
+    await planRow().getByRole("button", { name: /^Pause/ }).waitFor();
+    assert.equal((await readPlan()).desired_state, "enabled");
+
+    await planRow().getByRole("button", { name: /^Run now/ }).click();
+    await waitFor(async () => (await readPlan()).current_execution !== null,
+      "triggering an enabled plan must open a round");
+    const triggered = await readPlan();
+    const firstExecution = triggered.current_execution.execution_id;
+
+    // Pausing lets the round in flight finish instead of cancelling it.
+    await planRow().getByRole("button", { name: /^Pause/ }).click();
+    await waitFor(async () => (await readPlan()).desired_state === "paused",
+      "pausing must be recorded on the plan");
+    const paused = await readPlan();
+    assert.ok(["pending", "running", "pausing", "paused"].includes(paused.current_execution.state),
+      `unexpected round state after pause: ${paused.current_execution.state}`);
+    assert.equal(paused.current_execution.execution_id, firstExecution);
+
+    // The matrix and the governance list are read-only projections: they must
+    // render, and a governance unit must carry no lifecycle control.
+    await page.getByText("Registered × planned", { exact: true }).waitFor();
+    await page.getByText("Units this view does not manage", { exact: true }).waitFor();
+    const matrix = await call("GET", "/production/catalog-matrix");
+    assert.ok(matrix.rows.length > 0, "the matrix must cover the registered outputs");
+    assert.equal(Object.values(matrix.counts).reduce((total, count) => total + count, 0), matrix.rows.length);
+    const units = await call("GET", "/operations/units");
+    assert.ok(units.units.every(unit => unit.read_only === true),
+      "the governance list must be read-only by construction");
+
+    await page.getByRole("button", { name: "overview", exact: true }).click();
+
     const widths = await page.evaluate(() => ({
       body: document.body.scrollWidth, html: document.documentElement.scrollWidth, inner: innerWidth,
       overflow: [...document.querySelectorAll("*")].filter(element => element.scrollWidth > element.clientWidth + 1).slice(0, 10).map(element => ({ tag: element.tagName, className: element.className, scroll: element.scrollWidth, client: element.clientWidth })),
@@ -685,7 +831,10 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
-      "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions"],
+      "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
+      "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
+      "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
+      "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

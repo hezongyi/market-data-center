@@ -11,6 +11,7 @@ import { CatalogPage } from "./pages/CatalogPage";
 import { ExplorerPage, type ExplorerMode } from "./pages/ExplorerPage";
 import { MaintenancePage } from "./pages/MaintenancePage";
 import { OperationsPage } from "./pages/OperationsPage";
+import { ProductionPage } from "./pages/ProductionPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { QualityPage } from "./pages/QualityPage";
 import { RunsPage } from "./pages/RunsPage";
@@ -39,6 +40,9 @@ function App() {
     {!error && (loadedOnce || !loading) && tab === "runs" && <RunsPage services={services} refreshToken={refreshToken} onMessage={setMessage} onChanged={changed} />}
     {!error && (loadedOnce || !loading) && tab === "quality" && <QualityPage findings={findings} services={services} onMessage={setMessage} onChanged={changed} onMaintenance={handoff} />}
     {!error && (loadedOnce || !loading) && tab === "explorer" && <ExplorerPage apiKey={apiKey} initialMode={explorerMode} services={services} onMaintenance={handoff} key={explorerMode} />}
+    {/* Production plans is a write workspace too, so it stays reachable while
+        reads are loading for the same reason Maintenance does. */}
+    {!error && tab === "production" && <ProductionPage services={services} onMessage={setMessage} onChanged={changed} />}
     {!error && (loadedOnce || !loading) && tab === "operations" && <OperationsPage apiKey={apiKey} health={health} metrics={metrics} services={services} onChanged={changed} onMessage={setMessage} />}
   </AppShell>;
 }

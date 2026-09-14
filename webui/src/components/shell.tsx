@@ -1,15 +1,16 @@
 import { TimeDisplay, usePreferences, type TimeMode } from "../preferences";
-import { Activity, ChevronLeft, ChevronRight, Database, FlaskConical, Gauge, Hammer, KeyRound, Search, ShieldCheck } from "lucide-react";
+import { Activity, ChevronLeft, ChevronRight, Database, FlaskConical, Gauge, Hammer, KeyRound, Search, ShieldCheck, CalendarClock } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { createDataCenterClient } from "../lib/api";
 import { PageHeader, StatusBadge } from "./ui";
 import { freshnessOf } from "../hooks";
 import type { ReadyState } from "../lib/api";
 
-export type Tab = "overview" | "datasets" | "maintenance" | "runs" | "quality" | "explorer" | "operations";
+export type Tab = "overview" | "datasets" | "maintenance" | "production" | "runs" | "quality" | "explorer" | "operations";
 const items: Array<{ key: Tab; label: string; icon: typeof Gauge }> = [
   { key: "overview", label: "Overview", icon: Gauge }, { key: "datasets", label: "Data catalog", icon: Database },
   { key: "maintenance", label: "Maintenance", icon: Hammer }, { key: "runs", label: "Runs", icon: Activity },
+  { key: "production", label: "Production plans", icon: CalendarClock },
   { key: "quality", label: "Quality", icon: ShieldCheck },
   { key: "explorer", label: "Explorer", icon: Search }, { key: "operations", label: "Operations", icon: FlaskConical },
 ];
