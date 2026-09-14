@@ -20,12 +20,15 @@ from data_center.takeover import (
     LegacyEntry,
     compare_entries,
     declared_entries,
+    default_unit_root,
     entries_from_inventory,
     host_inventory,
     import_entries,
+    legacy_symbols,
     main,
     plan_definitions,
     planned_entries,
+    schedule_for,
     verify_takeover,
 )
 
@@ -231,3 +234,82 @@ def test_entries_from_inventory_ignores_units_that_are_not_legacy_runners():
     assert [entry.unit for entry in entries] == ["legacy.service"]
     assert entries[0].cadence_seconds == 600 and entries[0].cadence_source == "host_inventory"
     assert isinstance(entries[0], LegacyEntry)
+
+
+def test_unit_root_is_found_from_an_installed_release(tmp_path):
+    """A release installs the package under .venv/lib, where parents[3] is not the root.
+
+    The default used to land inside the virtualenv, so a production run reported
+    no declared units and every host unit as host-only.
+    """
+    release = tmp_path / "releases" / "abc123"
+    (release / "deploy" / "systemd").mkdir(parents=True)
+    (release / "deploy" / "systemd" / "market-data-center-1m-maintenance.service").write_text(
+        "[Service]\nExecStart=/x/.venv/bin/python -m data_center.maintenance_runner\n")
+    installed = release / ".venv" / "lib" / "python3.11" / "site-packages" / "data_center"
+    installed.mkdir(parents=True)
+    module = installed / "takeover.py"
+    module.write_text("")
+
+    assert default_unit_root(module_file=module,
+                             manifest=release / "deployment.json") == release / "deploy" / "systemd"
+    # Without a manifest the search still finds the release by walking up.
+    assert default_unit_root(module_file=module) == release / "deploy" / "systemd"
+    # A tree with no unit files at all is reported as unknown, not as "none declared".
+    empty = tmp_path / "elsewhere" / "data_center"
+    empty.mkdir(parents=True)
+    (empty / "takeover.py").write_text("")
+    assert default_unit_root(module_file=empty / "takeover.py") is None
+
+
+def test_a_wrapper_unit_is_recognised_with_an_unknown_scope(tmp_path):
+    """The macro-market-lab entry runs a script: it is captured, never guessed."""
+    script = tmp_path / "marketlab-maintain-market-bars.sh"
+    script.write_text("#!/bin/sh\nexec python -m data_center.derived_maintenance_runner --start x\n")
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(f"""#!/bin/sh
+if [ "$1" = "list-unit-files" ]; then
+  echo "marketlab-market-bars-maintenance.service static"
+  echo "market-data-center-unknown-producer.service static"
+  echo "dbus.service static"
+  exit 0
+fi
+if [ "$1" = "show" ]; then
+  case "$2" in
+    marketlab-market-bars-maintenance.service)
+      case "$3" in
+        Environment) echo "MARKETLAB_MARKET_BARS_BACKEND=data_center MARKETLAB_DATA_ROOT=/x" ;;
+        *) echo "{{ path=/bin/sh ; argv[]=/bin/sh {script} ; }}" ;;
+      esac ;;
+    marketlab-market-bars-maintenance.timer)
+      echo "{{ OnCalendar=*-*-* 06:30:00 UTC }}" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+exit 0
+""")
+    systemctl.chmod(0o755)
+    inventory = host_inventory(systemctl=(str(systemctl),))
+    entries = entries_from_inventory(inventory)
+    assert [entry.unit for entry in entries] == ["marketlab-market-bars-maintenance.service"]
+    entry = entries[0]
+    assert "wrapper" in entry.command and entry.calendar == "*-*-* 06:30:00 UTC"
+    # The wrapper names no symbols (the machine allowlist is the scope it really
+    # had) and no recipes: the cadence is readable from its timer, the outputs are
+    # not, so the entry is captured yet not importable without the operator.
+    assert legacy_symbols(entry, maintenance_symbols=LEGACY_SYMBOLS) == sorted(LEGACY_SYMBOLS)
+    assert schedule_for(entry) == {"schedule": "daily", "timezone": "UTC", "local_time": "06:30"}
+    comparison = compare_entries(planned_entries(UNIT_ROOT, inventory), inventory,
+                                 declared_units=set(), maintenance_symbols=LEGACY_SYMBOLS)
+    assert comparison["unmappable"] == ["marketlab-market-bars-maintenance.service"]
+    # The captured wrapper is not "undeclared"; the report stays a governance
+    # list, so a governed-looking unit shows up while a system daemon does not.
+    assert comparison["installed_not_declared"] == ["market-data-center-unknown-producer.service"]
+
+
+def test_declared_entry_is_not_reported_as_host_only(tmp_path):
+    entry = planned_entries(UNIT_ROOT)[0]
+    comparison = compare_entries([entry], {"status": "known", "units": [entry.unit]},
+                                 declared_units={entry.unit}, maintenance_symbols=LEGACY_SYMBOLS)
+    assert comparison["entries"][0]["host_only"] is False
