@@ -5,7 +5,7 @@ import "./style.css";
 import "./modernization.css";
 import { AppShell, type Tab } from "./components/shell";
 import { ErrorState, LoadingSkeleton } from "./components/ui";
-import { createDataCenterClient, DataCenterError, type Dataset, type Finding, type MaintenanceTaskRequest, type Metrics, type ReadyState, type Run } from "./lib/api";
+import { createDataCenterClient, DataCenterError, type Dataset, type Finding, type MaintenanceTaskDraft, type Metrics, type ReadyState, type Run } from "./lib/api";
 import { createServices } from "./services";
 import { CatalogPage } from "./pages/CatalogPage";
 import { ExplorerPage, type ExplorerMode } from "./pages/ExplorerPage";
@@ -17,14 +17,15 @@ import { RunsPage } from "./pages/RunsPage";
 
 function App() {
   const [explorerMode, setExplorerMode] = useState<ExplorerMode>("bars");
-  const [tab, setTab] = useState<Tab>("overview"); const [apiKey, setApiKey] = useState(""); const [health, setHealth] = useState<ReadyState | null>(null); const [metrics, setMetrics] = useState<Metrics | null>(null); const [datasets, setDatasets] = useState<Dataset[]>([]); const [runs, setRuns] = useState<Run[]>([]); const [findings, setFindings] = useState<Finding[]>([]); const [loading, setLoading] = useState(true); const [loadedOnce, setLoadedOnce] = useState(false); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [refreshToken, setRefreshToken] = useState(0); const [maintenanceDraft, setMaintenanceDraft] = useState<MaintenanceTaskRequest | null>(null);
+  const [tab, setTab] = useState<Tab>("overview"); const [apiKey, setApiKey] = useState(""); const [health, setHealth] = useState<ReadyState | null>(null); const [metrics, setMetrics] = useState<Metrics | null>(null); const [datasets, setDatasets] = useState<Dataset[]>([]); const [runs, setRuns] = useState<Run[]>([]); const [findings, setFindings] = useState<Finding[]>([]); const [loading, setLoading] = useState(true); const [loadedOnce, setLoadedOnce] = useState(false); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [refreshToken, setRefreshToken] = useState(0); const [maintenanceDraft, setMaintenanceDraft] = useState<MaintenanceTaskDraft | null>(null);
   const services = useMemo(() => createServices(apiKey), [apiKey]);
   const refresh = async () => { setLoading(true); setError(""); const client = createDataCenterClient(apiKey); try { const [ready, metricResult, registry, runList, quality] = await Promise.all([client.ready(), client.metrics(), client.datasets(), client.runs(), client.findings()]); setHealth(ready.data); setMetrics(metricResult.data); setDatasets(registry.data); setRuns(runList.data); setFindings(quality.data); setRefreshToken(value => value + 1); } catch (reason) { const requestError = reason as DataCenterError; setError(`${requestError.message}${requestError.requestId ? ` · request ${requestError.requestId}` : ""}`); } finally { setLoading(false); setLoadedOnce(true); } };
   useEffect(() => { void refresh(); }, []);
   const changed = () => { void refresh(); };
-  // Handing work to the maintenance workspace carries the selector and window
-  // with it; the workspace still revalidates before anything is queued.
-  const handoff = (draft?: MaintenanceTaskRequest) => { setMaintenanceDraft(draft ?? null); setTab("maintenance"); };
+  // Handing work to the maintenance workspace carries whatever the originating
+  // page actually established; the workspace still revalidates before anything
+  // is queued, and reports the fields its own defaults had to fill in.
+  const handoff = (draft?: MaintenanceTaskDraft) => { setMaintenanceDraft(draft ?? null); setTab("maintenance"); };
   return <AppShell tab={tab} onTab={setTab} health={health} apiKey={apiKey} onApiKey={setApiKey} onRefresh={() => void refresh()} message={message}>
     {error && <ErrorState message={error} onRetry={() => void refresh()} />}
     {/* Only the first load gates the workspace: a background refresh must not

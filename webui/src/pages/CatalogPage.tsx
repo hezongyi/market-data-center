@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { DataTable, DetailDrawer, EmptyState, ErrorState, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { useQuery } from "../hooks";
-import type { CoverageReport, Dataset, EconomicCoverage, ProviderCapability, RecipeInfo } from "../lib/api";
+import type { CoverageReport, Dataset, EconomicCoverage, MaintenanceTaskDraft, ProviderCapability, RecipeInfo, RunKind } from "../lib/api";
 import { createServices, type Services } from "../services";
 import "./CatalogPage.css";
 
@@ -28,10 +28,21 @@ type CatalogPageProps = {
   loading: boolean;
   onExplore: (dataset: Dataset) => void;
   services?: Services;
-  onMaintenance?: () => void;
+  onMaintenance?: (draft?: MaintenanceTaskDraft) => void;
 };
 
 type ProbeResult = CoverageReport | EconomicCoverage;
+
+/**
+ * The catalog knows which run kinds can write a dataset, so it locks those in the hand-off. It does
+ * not know the provider, symbol or window, and deliberately leaves them out rather than guessing:
+ * Maintenance keeps its own values and says which fields the operator still has to set.
+ */
+const catalogDraft = (dataset: CatalogDataset, runKind?: string): MaintenanceTaskDraft => ({
+  dataset_id: dataset.dataset_id,
+  ...(runKind ? { run_kind: runKind as RunKind } : {}),
+  source: "Data catalog",
+});
 
 const kindLabel = (dataset: CatalogDataset) => {
   if (dataset.kind === "derived") return "derived · recipe output";
@@ -87,8 +98,13 @@ export function CatalogPage({ apiKey, datasets, loading, onExplore, services, on
   );
 
   const requestMaintenance = (dataset: CatalogDataset) => {
+    const runKind = writeKindsFor(dataset.dataset_id)[0];
+    if (onMaintenance) {
+      onMaintenance(catalogDraft(dataset, runKind));
+      return;
+    }
+    // Mounted standalone: there is no maintenance workspace to hand over to, so state the intent.
     setTaskRequest(dataset.dataset_id);
-    onMaintenance?.();
   };
 
   const columns: ColumnDef<CatalogDataset>[] = [
@@ -183,7 +199,7 @@ export function CatalogPage({ apiKey, datasets, loading, onExplore, services, on
 
     {selected && <DetailDrawer title={selected.dataset_id} onClose={() => setSelected(null)}>
       <DatasetDetail key={selected.dataset_id} dataset={selected} recipes={recipes} runKinds={runKinds}
-        services={svc} onExplore={onExplore} onMaintenance={onMaintenance ? () => { setTaskRequest(selected.dataset_id); onMaintenance(); } : undefined} />
+        services={svc} onExplore={onExplore} onMaintenance={onMaintenance ? () => requestMaintenance(selected) : undefined} />
     </DetailDrawer>}
   </div>;
 }

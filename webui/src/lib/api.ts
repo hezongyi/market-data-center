@@ -338,6 +338,14 @@ export type MaintenanceTaskRequest = {
   schedule?: "manual";
 };
 
+/**
+ * A hand-off from another workspace into Maintenance. Each workspace carries only
+ * the facts it actually established: provider, symbol, window and the rest stay
+ * absent when the page never recorded them, and Maintenance keeps its own values
+ * for those fields instead of guessing on the operator's behalf.
+ */
+export type MaintenanceTaskDraft = Partial<MaintenanceTaskRequest> & { source?: string };
+
 export type MaintenanceTask = {
   task_id: string;
   run_kind: RunKind;
