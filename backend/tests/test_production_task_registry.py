@@ -394,3 +394,75 @@ def test_plan_detail_reports_recorded_progress_not_a_guess(ledger, service):
     assert progress["backlog"] is True and progress["last_outcome"] == "pass"
     assert progress["recompute_pending"] == 1
     assert "not live provider freshness" in progress["note"]
+
+
+def test_plan_phase_and_health_are_read_from_recorded_progress(ledger, service):
+    """Spec 4.1: phase and health describe the plan; desired_state stays the intent."""
+    service.create(definition=definition(), name="first", task_id="p1", now=NOW,
+                   desired_state="enabled")
+    # Nothing recorded yet: the plan is initializing, not "healthy by default".
+    fresh = service.read("p1")
+    assert (fresh["phase"], fresh["health"], fresh["block_reason"]) == ("initializing", "healthy", None)
+    assert fresh["desired_state"] == "enabled"
+
+    # A recorded backlog is lagging, and still enabled: health never flips intent.
+    ledger.record_progress("p1", {"frontier": "2026-09-14T11:00:00+00:00",
+                                  "effective_end": "2026-09-14T11:59:00+00:00",
+                                  "backlog": True, "last_outcome": "pass"})
+    lagging = service.read("p1")
+    assert (lagging["phase"], lagging["health"], lagging["block_reason"]) == (
+        "catching_up", "lagging", "backlog")
+    assert lagging["desired_state"] == "enabled"
+
+    # An unresolved gap is lagging on its input, not merely behind.
+    ledger.record_progress("p1", {"gaps": [{"window_start": "2026-09-14T11:32:00+00:00",
+                                            "window_end": "2026-09-14T11:33:00+00:00",
+                                            "state": "cooldown", "attempts": 1}]})
+    assert service.read("p1")["block_reason"] == "input_unavailable"
+    assert service.read("p1")["health"] == "lagging"
+
+    # Outputs waiting on an unavailable dependency are blocked.
+    ledger.record_progress("p1", {"deferred_derived": [
+        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:30:00+00:00:2026-09-14T11:35:00+00:00"]})
+    blocked = service.read("p1")
+    assert (blocked["phase"], blocked["health"], blocked["block_reason"]) == (
+        "catching_up", "blocked", "dependency")
+
+    # Debt cleared and nothing owed: the plan is maintaining.
+    ledger.record_progress("p1", {"gaps": [], "deferred_derived": [], "backlog": False,
+                                  "last_outcome": "pass"})
+    maintaining = service.read("p1")
+    assert (maintaining["phase"], maintaining["health"], maintaining["block_reason"]) == (
+        "maintaining", "healthy", None)
+
+    # A failed last round is attention, not blocked, and still not paused.
+    ledger.record_progress("p1", {"last_outcome": "failed"})
+    attention = service.read("p1")
+    assert (attention["health"], attention["phase"], attention["desired_state"]) == (
+        "attention", "maintaining", "enabled")
+
+
+def test_plan_list_filters_by_health_and_phase(ledger, service):
+    for task_id, symbol, backlog in (("p1", "EURUSD", True), ("p2", "GBPUSD", False)):
+        service.create(definition=definition(symbol=symbol), name=task_id, task_id=task_id, now=NOW,
+                       desired_state="enabled")
+        ledger.record_progress(task_id, {"frontier": "2026-09-14T11:00:00+00:00",
+                                         "effective_end": "2026-09-14T11:59:00+00:00",
+                                         "backlog": backlog, "last_outcome": "pass"})
+    lagging = service.list(health="lagging")
+    assert [item["task_id"] for item in lagging["tasks"]] == ["p1"]
+    maintaining = service.list(phase="maintaining")
+    assert [item["task_id"] for item in maintaining["tasks"]] == ["p2"]
+    # The keyset advances over the scanned page, so a filtered page may be empty
+    # while the next one still matches; nothing is skipped by the filter.
+    first = service.list(health="lagging", page_size=1)
+    assert first["tasks"] == [] and first["page"]["next_cursor"]
+    second = service.list(health="lagging", page_size=1, cursor=first["page"]["next_cursor"])
+    assert [item["task_id"] for item in second["tasks"]] == ["p1"]
+    # The cursor stays bound to the filter set it was issued for.
+    with pytest.raises(ProductionConflict) as caught:
+        service.list(health="healthy", page_size=1, cursor=first["page"]["next_cursor"])
+    assert caught.value.code == "cursor_error"
+    with pytest.raises(ProductionConflict) as invalid:
+        service.list(health="glowing")
+    assert invalid.value.code == "filter_error"

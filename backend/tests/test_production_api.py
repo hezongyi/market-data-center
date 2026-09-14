@@ -220,6 +220,22 @@ def test_deleted_plan_stays_resolvable_through_its_alias(client):
     assert listed.json()["data"] == []
 
 
+def test_plan_list_filters_on_read_model_health(client, config):
+    """Spec 8: the list filters on provider/symbol/state/health with a bound cursor."""
+    create_plan(client, "p1", desired_state="enabled")
+    RunLedger(config.ledger_path).record_progress("p1", {
+        "frontier": "2026-09-14T11:00:00+00:00", "effective_end": "2026-09-14T11:59:00+00:00",
+        "backlog": True, "last_outcome": "pass"})
+    listed = client.get("/api/v1/production/tasks?health=lagging", headers=auth()).json()["data"]
+    assert [item["task_id"] for item in listed] == ["p1"]
+    assert listed[0]["phase"] == "catching_up" and listed[0]["block_reason"] == "backlog"
+    healthy = client.get("/api/v1/production/tasks?health=healthy", headers=auth()).json()
+    assert healthy["data"] == []
+    invalid = client.get("/api/v1/production/tasks?health=glowing", headers=auth())
+    assert invalid.status_code == 422
+    assert invalid.json()["errors"][0]["code"] == "filter_error"
+
+
 def test_capabilities_route_reports_the_plan_contract(client):
     """A console enables a plan option only because this read model says it can."""
     response = client.get("/api/v1/capabilities", headers=auth())
@@ -230,8 +246,10 @@ def test_capabilities_route_reports_the_plan_contract(client):
     assert production["schedule_kinds"] == ["daily", "fixed_delay", "fixed_rate", "manual", "once"]
     assert production["minimum_interval_seconds"] == 300
     assert production["plan_states"] == ["enabled", "paused", "archived"]
-    assert "config_drift" in production["plan_health"]
-    assert {"paused", "global_pause", "config_drift"} <= set(production["block_reasons"])
+    assert {"healthy", "lagging", "blocked", "attention", "config_drift"} <= set(production["plan_health"])
+    assert production["plan_phases"] == ["catching_up", "initializing", "maintaining"]
+    assert {"paused", "global_pause", "config_drift", "dependency", "input_unavailable", "backlog"} <= set(
+        production["block_reasons"])
     assert production["scheduler_enabled"] is True
     assert {item["dataset_id"] for item in production["outputs"]} == {"provider_bars", "market_bars"}
 

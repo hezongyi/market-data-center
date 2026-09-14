@@ -681,6 +681,19 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     assert.ok(acceptancePlan, "the plan saved by the wizard must be readable");
     const detail = await call("GET", `/production/tasks/${acceptancePlan.task_id}`);
     assert.equal(typeof detail.progress.recorded, "boolean");
+    // Phase and health are read-model values the API must report, and the list
+    // filter has to accept them; the console offers exactly those values.
+    assert.ok(["initializing", "catching_up", "maintaining"].includes(detail.phase),
+      `unexpected plan phase: ${detail.phase}`);
+    assert.ok(detail.health, "the plan must report a health value");
+    const filtered = await call("GET", `/production/tasks?health=${encodeURIComponent(detail.health)}`);
+    assert.ok(filtered.some(plan => plan.task_id === acceptancePlan.task_id),
+      "a plan must be listed under its own health value");
+    const healthFilter = page.getByLabel("plan health filter", { exact: true });
+    assert.ok(await healthFilter.count() > 0, "the registry must offer the read-model health filter");
+    await healthFilter.selectOption(detail.health);
+    await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
+    await healthFilter.selectOption("");
 
     // The matrix and the governance list are read-only projections: they must
     // render, and a governance unit must carry no lifecycle control.
@@ -744,7 +757,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
-      "governance_unit_list", "production_plan_progress"],
+      "governance_unit_list", "production_plan_progress", "production_plan_health_filter"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

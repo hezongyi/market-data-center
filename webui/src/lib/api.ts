@@ -449,6 +449,7 @@ export type Capabilities = {
     minimum_interval_seconds: number;
     plan_states: string[];
     plan_health: string[];
+    plan_phases: string[];
     block_reasons: string[];
     outputs: Array<{ dataset_id: string; timeframes: string[] }>;
     scheduler_enabled: boolean;
@@ -516,6 +517,8 @@ export type RunFilters = {
 // API reports and never derives plan state from a run status.
 export type ProductionPlanHealth = "healthy" | "lagging" | "blocked" | "attention" | "config_drift"
   | "paused" | "archived" | "deleted";
+// The plan's own lifecycle stage, reported by the API and never inferred here.
+export type ProductionPlanPhase = "initializing" | "catching_up" | "maintaining";
 export type ProductionExecution = {
   execution_id: string; task_id: string; definition_version: number; trigger_source: string;
   scheduled_for: string | null; state: string; outcome: string | null; created_at: string;
@@ -541,6 +544,7 @@ export type ProductionPlan = {
   task_id: string; alias: string | null; name: string; desired_state: "enabled" | "paused" | "archived";
   definition_version: number; created_at: string; updated_at: string; deleted_at: string | null;
   provider: string | null; symbol: string | null; next_run_at: string | null; health: string | null;
+  phase?: ProductionPlanPhase; block_reason?: string | null;
   payload: Record<string, unknown>;
   ownership?: Array<{ ownership_key: string; state: string; updated_at: string }>;
   executions?: ProductionExecution[];
@@ -801,7 +805,9 @@ export function createDataCenterClient(apiKey: string) {
     capacityHistory: (limit = 50) => request<CapacityHistory>(`/operations/capacity-history${queryString({ limit })}`),
     worker: () => request<WorkerActivity>("/operations/worker"),
     receipts: (limit = 5) => request<ReceiptHistory>(`/operations/receipts${queryString({ limit })}`),
-    productionPlans: (query: { provider?: string; symbol?: string; desired_state?: string; page_size?: number; cursor?: string | null } = {}) =>
+    productionPlans: (query: { provider?: string; symbol?: string; desired_state?: string;
+                              health?: string; phase?: string; page_size?: number;
+                              cursor?: string | null } = {}) =>
       request<ProductionPlan[]>(`/production/tasks${queryString(query)}`),
     productionPlan: (taskId: string) => request<ProductionPlan>(`/production/tasks/${encodeURIComponent(taskId)}`),
     createProductionTask: (body: { name: string; definition: Record<string, unknown>; desired_state: string },

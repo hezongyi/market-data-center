@@ -99,6 +99,9 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   const [previewing, setPreviewing] = useState(false);
   const [matrix, setMatrix] = useState<CatalogMatrix | null>(null);
   const [history, setHistory] = useState<{ items: ProductionExecution[]; nextCursor: string | null } | null>(null);
+  // Read-model filters the API already supports: the console offers only the
+  // values the capabilities read model advertises.
+  const [healthFilter, setHealthFilter] = useState("");
   const [governance, setGovernance] = useState<GovernanceUnits | null>(null);
   const [steps, setSteps] = useState<Array<{ step_id: string; stage: string; state: string; block_reason: string | null; window_start: string | null; window_end: string | null }>>([]);
 
@@ -106,7 +109,7 @@ export function ProductionPage({ services, onMessage, onChanged }: {
     setLoading(true); setError("");
     try {
       const [registered, schedulerView, registry] = await Promise.all([
-        services.production.plans({ page_size: 50 }),
+        services.production.plans({ page_size: 50, ...(healthFilter ? { health: healthFilter } : {}) }),
         services.production.scheduler(),
         services.catalog.capabilities(),
       ]);
@@ -127,7 +130,7 @@ export function ProductionPage({ services, onMessage, onChanged }: {
     } finally {
       setLoading(false);
     }
-  }, [services]);
+  }, [services, healthFilter]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -269,6 +272,7 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       header: t("State"),
       cell: info => <StatusBadge tone={healthTone(info.row.original.health, info.row.original.desired_state)}>
         {info.row.original.health ?? info.row.original.desired_state}
+        {info.row.original.block_reason ? <span className="muted"> · {info.row.original.block_reason}</span> : null}
       </StatusBadge>,
     },
     {
@@ -399,7 +403,17 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       </div>}
     </section>
     <section className="panel">
-      <PanelHeading eyebrow="Registry" title="Registered plans" />
+      <PanelHeading eyebrow="Registry" title="Registered plans" action={
+        <label className="inline-field">
+          <span>{t("Health")}</span>
+          <select aria-label="plan health filter" value={healthFilter}
+                  onChange={event => setHealthFilter(event.target.value)}>
+            <option value="">{t("all")}</option>
+            {(capabilities?.production?.plan_health ?? []).map(value =>
+              <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+      } />
       {error && <ErrorState message={error} onRetry={() => void load()} />}
       {!error && loading && <LoadingSkeleton rows={3} />}
       {!error && !loading && plans.length === 0 && <EmptyState title="No production plans yet" detail="Plans are created through POST /production/tasks; the guide describes the definition fields." />}
@@ -470,6 +484,9 @@ export function ProductionPage({ services, onMessage, onChanged }: {
         <article className={`metric${selected.progress.backlog ? " metric-warn" : ""}`}><span>{t("Backlog")}</span>
           <strong>{selected.progress.backlog ? t("yes") : t("no")}</strong>
           <small>{t("last outcome")}: {selected.progress.last_outcome ?? t("none")}</small></article>
+        <article className="metric"><span>{t("Phase")}</span>
+          <strong>{selected.phase ? t(selected.phase) : "—"}</strong>
+          <small>{selected.block_reason ? `${t("blocked on")}: ${selected.block_reason}` : t("nothing blocked")}</small></article>
         <article className="metric"><span>{t("Provider showed")}</span>
           <strong>{selected.progress.observed_boundary ? <TimeDisplay value={selected.progress.observed_boundary} /> : t("nothing yet")}</strong>
           <small>{t("complete to")} {selected.progress.complete_boundary

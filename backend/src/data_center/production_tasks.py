@@ -54,6 +54,12 @@ CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",
 #: Active plan states; archived and deleted plans have released their ownership.
 ACTIVE_STATES = ("enabled", "paused")
 
+#: Read-model health and phase values (spec 4.1).  They describe the plan; they
+#: never replace ``desired_state``, which is the user's intent.
+PLAN_HEALTH = frozenset({"healthy", "lagging", "blocked", "attention", "config_drift",
+                         "paused", "archived", "deleted"})
+PLAN_PHASES = frozenset({"initializing", "catching_up", "maintaining"})
+
 
 class DefinitionError(ValueError):
     """Field-level definition errors, reported together so the wizard can point at fields."""
@@ -470,7 +476,9 @@ class ProductionTasks:
             "ownership": self.ledger.ownership_of(task["task_id"]),
             "executions": executions,
             "current_execution": active,
-            "health": self._health(task, active),
+            "health": self._health(task, active, progress),
+            "phase": self._phase(progress),
+            "block_reason": self.block_reason(task, progress),
             "tombstone": bool(task["deleted_at"]),
             "schedule": {"kind": (definition.get("schedule") or {}).get("schedule"),
                          "next_run_at": task.get("next_run_at")},
@@ -502,12 +510,21 @@ class ProductionTasks:
                  "reason": item.get("reason")}
                 for item in (progress.get("gaps") or [])
             ],
-            "deferred_derived": [item.get("step") for item in (progress.get("deferred_derived") or [])],
+            "deferred_derived": [
+                item.get("step") if isinstance(item, dict) else str(item)
+                for item in (progress.get("deferred_derived") or [])
+            ],
             "recorded": bool(progress),
             "note": "Recorded planning boundaries, not live provider freshness.",
         }
 
-    def _health(self, task: dict, active_execution: dict | None) -> str:
+    def _health(self, task: dict, active_execution: dict | None, progress: dict | None) -> str:
+        """The plan's read-model health (spec 4.1).
+
+        Health is derived from recorded facts only and never replaces the user's
+        ``desired_state``: a plan can be ``lagging`` while still enabled and
+        producing, which is exactly what the console has to show.
+        """
         if task["deleted_at"]:
             return "deleted"
         if task.get("health") == "config_drift":
@@ -518,7 +535,45 @@ class ProductionTasks:
             return "archived"
         if active_execution is not None and active_execution["state"] in {"pausing", "paused"}:
             return "attention"
+        block_reason = self.block_reason(task, progress)
+        if block_reason == "dependency":
+            # Outputs are owed but their input cannot be built yet: the plan is
+            # blocked on a dependency rather than on its own progress.
+            return "blocked"
+        if block_reason in {"input_unavailable", "backlog"}:
+            return "lagging"
+        if (progress or {}).get("last_outcome") == "failed":
+            return "attention"
         return "healthy"
+
+    @staticmethod
+    def block_reason(task: dict, progress: dict | None) -> str | None:
+        """Why a plan is not simply healthy, using the capabilities enum."""
+        if task["deleted_at"] or task.get("health") == "config_drift":
+            return None
+        progress = progress or {}
+        if progress.get("deferred_derived"):
+            return "dependency"
+        if progress.get("gaps"):
+            return "input_unavailable"
+        if progress.get("backlog"):
+            return "backlog"
+        return None
+
+    @staticmethod
+    def _phase(progress: dict | None) -> str:
+        """Where the plan is in its own lifecycle (spec 4.1).
+
+        ``initializing`` before anything has been recorded, ``catching_up`` while
+        any debt or backlog is recorded, ``maintaining`` once it is current.
+        """
+        progress = progress or {}
+        if not progress:
+            return "initializing"
+        if (progress.get("backlog") or progress.get("gaps") or progress.get("deferred_derived")
+                or progress.get("recompute")):
+            return "catching_up"
+        return "maintaining"
 
     def executions(self, task_id: str, *, page_size: int | None = None,
                    cursor: str | None = None) -> dict:
@@ -544,14 +599,24 @@ class ProductionTasks:
                          "next_cursor": next_cursor, "filters": filters}}
 
     def list(self, *, provider: str | None = None, symbol: str | None = None,
-             desired_state: str | None = None, include_deleted: bool = False,
+             desired_state: str | None = None, health: str | None = None, phase: str | None = None,
+             include_deleted: bool = False,
              page_size: int | None = None, cursor: str | None = None) -> dict:
-        """Cursor-paginated plan list; the cursor is bound to the filter set (spec 8)."""
+        """Cursor-paginated plan list; the cursor is bound to the filter set (spec 8).
+
+        ``health`` and ``phase`` are read-model values, so they are filtered after
+        the derived document is built; the cursor still advances over the *scanned*
+        page, so paging stays complete and stable while those values change.
+        """
         effective = DEFAULT_PAGE_SIZE if page_size is None else page_size
         if effective < 1 or effective > MAX_PAGE_SIZE:
             raise ProductionConflict("page_size_error", f"page_size must be between 1 and {MAX_PAGE_SIZE}")
+        if health is not None and health not in PLAN_HEALTH:
+            raise ProductionConflict("filter_error", f"health must be one of {sorted(PLAN_HEALTH)}")
+        if phase is not None and phase not in PLAN_PHASES:
+            raise ProductionConflict("filter_error", f"phase must be one of {sorted(PLAN_PHASES)}")
         filters = {"provider": provider, "symbol": symbol, "desired_state": desired_state,
-                   "include_deleted": bool(include_deleted)}
+                   "health": health, "phase": phase, "include_deleted": bool(include_deleted)}
         before = None
         if cursor:
             payload = self._decode_cursor(cursor)
@@ -563,7 +628,12 @@ class ProductionTasks:
             include_deleted=include_deleted, page_size=effective, before=before)
         items = []
         for task in page["items"]:
-            items.append(self.read(task["task_id"]))
+            document = self.read(task["task_id"])
+            if health is not None and document["health"] != health:
+                continue
+            if phase is not None and document["phase"] != phase:
+                continue
+            items.append(document)
         next_cursor = None
         if page["has_more"] and page["items"]:
             last = page["items"][-1]

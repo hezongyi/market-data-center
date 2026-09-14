@@ -548,20 +548,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def production_conflict_status(code: str) -> int:
         """Refusals that are bad requests stay 422; genuine state conflicts are 409."""
-        return 422 if code in {"expected_version_required", "unsupported_command",
-                               "cursor_error", "page_size_error"} else 409
+        return 422 if code in {"expected_version_required", "unsupported_command", "cursor_error",
+                               "page_size_error", "filter_error"} else 409
 
     @app.get(f"{config.api_prefix}/production/tasks")
     def production_tasks(provider: str | None = None, symbol: str | None = None,
-                         desired_state: str | None = None, include_deleted: bool = False,
+                         desired_state: str | None = None, health: str | None = None,
+                         phase: str | None = None, include_deleted: bool = False,
                          page_size: int | None = None, cursor: str | None = None) -> dict:
         """Plan list with SQL-side filtering and a cursor bound to those filters."""
         if desired_state is not None and desired_state not in {"enabled", "paused", "archived"}:
             raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
         try:
             page = production_tasks_service.list(
-                provider=provider, symbol=symbol, desired_state=desired_state,
-                include_deleted=include_deleted, page_size=page_size, cursor=cursor)
+                provider=provider, symbol=symbol, desired_state=desired_state, health=health,
+                phase=phase, include_deleted=include_deleted, page_size=page_size, cursor=cursor)
         except ProductionConflict as exc:
             raise HTTPException(status_code=production_conflict_status(exc.code),
                                 detail={"code": exc.code, "message": str(exc)}) from exc

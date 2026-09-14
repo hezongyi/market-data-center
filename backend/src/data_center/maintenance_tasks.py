@@ -29,6 +29,7 @@ from data_center.platform_registry import (
     maintenance_policy_for,
     resolve_capability,
 )
+from data_center.production_tasks import PLAN_HEALTH, PLAN_PHASES
 from data_center.scheduler import MIN_INTERVAL_SECONDS, SUPPORTED_SCHEDULES
 
 PROVIDER_DATASET = "provider_bars"
@@ -557,7 +558,10 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
         "schedule_kinds": sorted(SUPPORTED_SCHEDULES),
         "minimum_interval_seconds": MIN_INTERVAL_SECONDS,
         "plan_states": ["enabled", "paused", "archived"],
-        "plan_health": ["healthy", "lagging", "blocked", "attention", "config_drift"],
+        # The enums come from the module that produces them, so a value the read
+        # model can return is always one the form is allowed to offer (spec 8).
+        "plan_health": sorted(PLAN_HEALTH),
+        "plan_phases": sorted(PLAN_PHASES),
         "block_reasons": ["provider_backoff", "capacity", "dependency", "backlog", "input_unavailable",
                           "paused", "global_pause", "execution_in_progress", "config_drift"],
         "outputs": [{"dataset_id": "provider_bars", "timeframes": sorted({
