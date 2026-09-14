@@ -36,3 +36,19 @@ def test_claim_uses_persisted_plan_ownership_for_pause(tmp_path):
     ledger.upsert_maintenance_task("plan-a", {"name": "A"}, status="paused")
     ledger.enqueue_job({"job_id": "unrelated-id", "dataset_id": "provider_bars", "owner_plan_id": "plan-a"})
     assert ledger.claim_next_job() is None
+
+
+def test_production_task_ownership_is_atomic_and_unique(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    task = ledger.create_production_task(task_id="p1", name="EURUSD", alias="eurusd",
+                                         payload={"provider": "fixture"}, ownership_keys=["provider_bars:fixture:EURUSD:1m"],
+                                         desired_state="paused")
+    assert task["definition_version"] == 1
+    assert ledger.list_production_tasks()[0]["task_id"] == "p1"
+    try:
+        ledger.create_production_task(task_id="p2", name="Other", payload={},
+                                      ownership_keys=["provider_bars:fixture:EURUSD:1m"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ownership conflict must be rejected")

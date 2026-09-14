@@ -29,6 +29,10 @@ class RunLedger:
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
             conn.execute("create table if not exists worker_heartbeat (id integer primary key check (id=1), heartbeat text not null)")
             conn.execute("create table if not exists maintenance_tasks (task_id text primary key, payload text not null, status text not null, updated_at text not null)")
+            conn.execute("create table if not exists production_tasks (task_id text primary key, alias text unique, name text not null, desired_state text not null, definition_version integer not null, payload text not null, created_at text not null, updated_at text not null, deleted_at text)")
+            conn.execute("create table if not exists production_task_versions (task_id text not null, definition_version integer not null, payload text not null, config_digest text, created_at text not null, primary key(task_id, definition_version))")
+            conn.execute("create table if not exists plan_ownership (ownership_key text primary key, task_id text not null, state text not null, updated_at text not null)")
+            conn.execute("create unique index if not exists plan_ownership_active on plan_ownership(ownership_key) where state in ('enabled','paused')")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -62,6 +66,39 @@ class RunLedger:
 
     def _now(self) -> str:
         return datetime.fromtimestamp(self.clock(), tz=timezone.utc).isoformat()
+
+    def create_production_task(self, *, task_id: str, name: str, payload: dict,
+                               ownership_keys: list[str], desired_state: str = "paused",
+                               alias: str | None = None, config_digest: str | None = None) -> dict:
+        """Create a versioned production task and claim its ownership atomically."""
+        if desired_state not in {"enabled", "paused"}:
+            raise ValueError("production task must start enabled or paused")
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            try:
+                conn.execute("insert into production_tasks(task_id,alias,name,desired_state,definition_version,payload,created_at,updated_at) values (?,?,?,?,?,?,?,?)",
+                             (task_id, alias, name, desired_state, 1, json.dumps(payload), stamp, stamp))
+                conn.execute("insert into production_task_versions(task_id,definition_version,payload,config_digest,created_at) values (?,?,?,?,?)",
+                             (task_id, 1, json.dumps(payload), config_digest, stamp))
+                for key in ownership_keys:
+                    conn.execute("insert into plan_ownership(ownership_key,task_id,state,updated_at) values (?,?,?,?)",
+                                 (key, task_id, desired_state, stamp))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("production task or ownership already exists") from exc
+        return {"task_id": task_id, "alias": alias, "name": name, "desired_state": desired_state,
+                "definition_version": 1, "payload": payload, "created_at": stamp, "updated_at": stamp}
+
+    def list_production_tasks(self, *, include_deleted: bool = False) -> list[dict]:
+        with self._connect() as conn:
+            sql = "select task_id,alias,name,desired_state,definition_version,payload,created_at,updated_at,deleted_at from production_tasks"
+            if not include_deleted:
+                sql += " where deleted_at is null"
+            sql += " order by updated_at desc"
+            rows = conn.execute(sql).fetchall()
+        return [{"task_id": r[0], "alias": r[1], "name": r[2], "desired_state": r[3],
+                 "definition_version": r[4], "payload": json.loads(r[5]), "created_at": r[6],
+                 "updated_at": r[7], "deleted_at": r[8]} for r in rows]
 
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:
