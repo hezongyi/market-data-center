@@ -52,7 +52,7 @@ class LocalWorker:
                                         "schema_version": schema_version})
 
     def submit_derive(self, job: DeriveJob) -> str:
-        from data_center.catalog.snapshot import Catalog
+        from data_center.catalog.snapshot import Catalog, snapshot_reference
         from data_center.platform_registry import REGISTRY
 
         recipe = REGISTRY.recipe(job.recipe_id, job.recipe_version)
@@ -64,7 +64,15 @@ class LocalWorker:
             raise ValueError("derive input snapshot is empty")
         if job.input_snapshot_id is not None and job.input_snapshot_id != snapshot.snapshot_id:
             raise ValueError("derive input snapshot does not match current catalog")
-        payload = job.model_copy(update={"input_snapshot_id": snapshot.snapshot_id}).model_dump(mode="json")
+        # Persist the parts this execution is accepted against.  The row stays
+        # one shared record per snapshot, and the run only carries its id, so a
+        # later publication cannot invalidate the accepted input (spec 6.3).
+        input_id = self.ledger.store_production_input(snapshot_reference(self.root, snapshot))
+        # The fixed-input id is carried beside the model dump, not inside the
+        # model: a pydantic dump would silently drop an undeclared field and the
+        # run would fall back to comparing against the current catalog.
+        payload = {**job.model_dump(mode="json"), "input_snapshot_id": snapshot.snapshot_id,
+                   "input_id": input_id}
         return self.ledger.enqueue_job(payload)
 
     @contextmanager
@@ -179,7 +187,11 @@ class LocalWorker:
                 return False
             directory = self.root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
             directory.mkdir(parents=True, exist_ok=True)
-            (directory / "request.json").write_text(json.dumps({**claimed, "canonical_root": str(self.root)}))
+            (directory / "request.json").write_text(json.dumps({
+                **claimed, "canonical_root": str(self.root),
+                # The child reads its fixed input from the ledger read-only; it
+                # never opens it for writing (spec 6.3).
+                "ledger_path": str(self.ledger.path)}))
             started = time.monotonic()
             process = None
             result = {}

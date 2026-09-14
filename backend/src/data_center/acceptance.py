@@ -19,6 +19,8 @@ from data_center.deployment import runtime_identity
 from data_center.observability import AlertSink
 from data_center.settings import Settings
 
+from .instants import parse_instant
+
 
 def evidence_context() -> dict:
     repo_root = Path(__file__).resolve().parents[3]
@@ -160,8 +162,8 @@ def verify_provider(provider, symbol, asset_class, *, call, envelope, acceptance
     rows = readback["data"]
     if len(rows) < receipt["row_count"]:
         raise ValueError("API readback incomplete")
-    started = datetime.fromisoformat(receipt["started_at"])
-    fresh = [row for row in rows if datetime.fromisoformat(row["ingest_ts"].replace("Z", "+00:00")) >= started]
+    started = parse_instant(receipt["started_at"])
+    fresh = [row for row in rows if parse_instant(row["ingest_ts"].replace("Z", "+00:00")) >= started]
     if len(fresh) < receipt["row_count"]:
         raise ValueError("API readback does not include newly ingested rows")
     result.update(status="pass", read_count=len(rows), fresh_read_count=len(fresh),

@@ -26,6 +26,8 @@ from data_center.platform_registry import REGISTRY
 from data_center.settings import Settings
 from data_center.transform import recomputation_plan
 
+from .instants import parse_instant
+
 
 @dataclass(frozen=True)
 class DerivedTarget:
@@ -74,7 +76,7 @@ def select_recipes(recipe_specs: list[str] | None = None) -> tuple:
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
-    return _utc(datetime.fromisoformat(value))
+    return _utc(parse_instant(value))
 
 
 def _manifest_covers(*, root: Path, provider: str, symbol: str, recipe, input_snapshot_id: str,
@@ -155,8 +157,8 @@ def plan_derived_maintenance(*, root: Path, provider: str, targets: tuple[Derive
                 # interval to avoid an extra bucket when ``end`` is aligned.
                 affected_start=start, affected_end=end - timedelta(microseconds=2),
             )
-            window_start, window_end = _utc(datetime.fromisoformat(recompute["affected_start"])), _utc(
-                datetime.fromisoformat(recompute["affected_end"])
+            window_start, window_end = _utc(parse_instant(recompute["affected_start"])), _utc(
+                parse_instant(recompute["affected_end"])
             )
             item["window"] = {"start": window_start.isoformat(), "end": window_end.isoformat(),
                               "semantics": "half-open"}
@@ -292,8 +294,8 @@ def main() -> None:
     parser.add_argument("--symbols", nargs="*", default=None)
     parser.add_argument("--recipes", nargs="*", default=None,
                         help="recipe_id[@version] values; default is all canonical recipes")
-    parser.add_argument("--start", type=datetime.fromisoformat, required=True)
-    parser.add_argument("--end", type=datetime.fromisoformat, required=True)
+    parser.add_argument("--start", type=parse_instant, required=True)
+    parser.add_argument("--end", type=parse_instant, required=True)
     parser.add_argument("--run-scope", choices=("maintenance", "production", "acceptance"), default="maintenance")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

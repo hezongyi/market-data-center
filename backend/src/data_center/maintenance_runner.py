@@ -18,18 +18,28 @@ from pathlib import Path
 
 import requests
 
-from data_center.control_plane import plan_maintenance as plan_windows
 from data_center.domain.errors import ProviderGapError
 from data_center.evidence import operation_receipt, write_receipt
 from data_center.platform import build_ingest_plan, coverage_from_catalog
 from data_center.platform_registry import REGISTRY, maintenance_policy_for
 from data_center.settings import Settings
 
+# The window rules live in one place so the production scheduler cannot drift
+# from this runner (plan S4.4).  These aliases keep this module's historical
+# private names working for existing callers and tests.
+from data_center.window_planner import PROVIDER_COVERAGE_FINDING
+from data_center.window_planner import (
+    exclude_planned_windows as _exclude_planned_windows,
+)
+from data_center.window_planner import recent_gap_windows as _recent_gap_windows
+from data_center.window_planner import tail_recovery_windows as _tail_recovery_windows
+from data_center.window_planner import window_key as _window_key
+
+from .instants import parse_instant
+
 # Run receipts carry the error type name, so the provider-gap classification is
 # matched by name against this value.
 PROVIDER_GAP_ERROR = ProviderGapError.__name__
-# Window coverage the provider itself cannot satisfy; the platform never synthesizes it.
-PROVIDER_COVERAGE_FINDING = "coverage_not_ready"
 
 
 @dataclass(frozen=True)
@@ -89,14 +99,6 @@ def _wait_run(session: requests.Session, base_url: str, run_id: str, deadline: f
         time.sleep(1.0)
 
 
-def _window_key(window: dict) -> tuple[str, str]:
-    """Normalize a half-open window for exact gap de-duplication."""
-    return (
-        _utc(datetime.fromisoformat(str(window["start"]))).isoformat(),
-        _utc(datetime.fromisoformat(str(window["end"]))).isoformat(),
-    )
-
-
 def _coverage_failure(receipt: dict) -> dict | None:
     """Return the structured coverage finding from a failed worker run."""
     findings = (receipt.get("quality_summary") or {}).get("findings") or ()
@@ -143,12 +145,12 @@ def _isolate_incomplete_window(*, start: datetime, end: datetime,
     missing_text = coverage.get("first_missing_ts")
     complete_text = coverage.get("latest_complete_boundary")
     if not missing_text and complete_text:
-        missing_text = (_utc(datetime.fromisoformat(str(complete_text))) + cadence).isoformat()
+        missing_text = (_utc(parse_instant(str(complete_text))) + cadence).isoformat()
     if not missing_text:
         return None
     try:
-        missing_start = _utc(datetime.fromisoformat(str(missing_text)))
-        observed_max = _utc(datetime.fromisoformat(str(coverage["max_ts"])))
+        missing_start = _utc(parse_instant(str(missing_text)))
+        observed_max = _utc(parse_instant(str(coverage["max_ts"])))
     except (KeyError, TypeError, ValueError):
         return None
     start, end = _utc(start), _utc(end)
@@ -163,132 +165,6 @@ def _isolate_incomplete_window(*, start: datetime, end: datetime,
     if not segments:
         return None
     return missing_start, missing_end, segments
-
-
-def _recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
-                        run_scope: str, now: datetime,
-                        cooldown_minutes: int) -> set[tuple[str, str]]:
-    """Find terminal gap windows still inside the configured retry cooldown."""
-    if cooldown_minutes <= 0:
-        return set()
-    cutoff = _utc(now) - timedelta(minutes=cooldown_minutes)
-    recent: set[tuple[str, str]] = set()
-    for run in runs:
-        if (run.get("status") not in {"failed", "dead_letter"} or run.get("provider") != provider
-                or run.get("symbol") != symbol or run.get("run_scope") != run_scope
-                or run.get("run_kind") != "gap_repair"):
-            continue
-        finished_text = run.get("finished_at") or run.get("at")
-        if not finished_text:
-            continue
-        try:
-            if _utc(datetime.fromisoformat(str(finished_text))) < cutoff:
-                continue
-        except (TypeError, ValueError):
-            continue
-        execution_plan = run.get("execution_plan") or {}
-        for window in execution_plan.get("windows") or ():
-            if window.get("reason") == "gap_repair":
-                try:
-                    recent.add(_window_key(window))
-                except (KeyError, TypeError, ValueError):
-                    continue
-        for finding in (run.get("quality_summary") or {}).get("findings") or ():
-            if finding.get("code") != PROVIDER_COVERAGE_FINDING:
-                continue
-            coverage = finding.get("coverage") or {}
-            seconds = int(coverage.get("timeframe_seconds") or 0)
-            missing_text = coverage.get("first_missing_ts")
-            complete_text = coverage.get("latest_complete_boundary")
-            if not missing_text and complete_text and seconds > 0:
-                missing_text = (_utc(datetime.fromisoformat(str(complete_text)))
-                                + timedelta(seconds=seconds)).isoformat()
-            if not missing_text or seconds <= 0:
-                continue
-            try:
-                missing = _utc(datetime.fromisoformat(str(missing_text)))
-            except (TypeError, ValueError):
-                continue
-            recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
-        findings = (run.get("quality_summary") or {}).get("findings") or ()
-        for finding in findings:
-            if finding.get("code") != PROVIDER_COVERAGE_FINDING:
-                continue
-            coverage = finding.get("coverage") or {}
-            seconds = int(coverage.get("timeframe_seconds") or 0)
-            missing_text = coverage.get("first_missing_ts")
-            complete_text = coverage.get("latest_complete_boundary")
-            if not missing_text and complete_text and seconds > 0:
-                missing_text = (_utc(datetime.fromisoformat(str(complete_text)))
-                                + timedelta(seconds=seconds)).isoformat()
-            if not missing_text or seconds <= 0:
-                continue
-            try:
-                missing = _utc(datetime.fromisoformat(str(missing_text)))
-            except (TypeError, ValueError):
-                continue
-            recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
-    return recent
-
-
-def _exclude_planned_windows(*, candidates: Iterable[dict], planned: Iterable[dict]) -> list[dict]:
-    """Remove intervals already covered by the primary maintenance plan."""
-    occupied = [
-        (_utc(datetime.fromisoformat(str(window["start"]))),
-         _utc(datetime.fromisoformat(str(window["end"]))))
-        for window in planned
-    ]
-    uncovered: list[dict] = []
-    for candidate in candidates:
-        segments = [
-            (_utc(datetime.fromisoformat(str(candidate["start"]))),
-             _utc(datetime.fromisoformat(str(candidate["end"]))))
-        ]
-        for occupied_start, occupied_end in occupied:
-            remaining: list[tuple[datetime, datetime]] = []
-            for segment_start, segment_end in segments:
-                if occupied_end <= segment_start or occupied_start >= segment_end:
-                    remaining.append((segment_start, segment_end))
-                    continue
-                if segment_start < occupied_start:
-                    remaining.append((segment_start, occupied_start))
-                if occupied_end < segment_end:
-                    remaining.append((occupied_end, segment_end))
-            segments = remaining
-        for segment_start, segment_end in segments:
-            uncovered.append({
-                **candidate,
-                "start": segment_start.isoformat(),
-                "end": segment_end.isoformat(),
-                "ordinal": len(uncovered),
-            })
-    return uncovered
-
-
-def _tail_recovery_windows(*, coverage, start: datetime, end: datetime, policy,
-                           session_profile=None) -> list[dict]:
-    """Plan the observed suffix after an interior provider gap.
-
-    ``plan_maintenance`` correctly prioritizes gap repair when a coverage
-    object contains missing timestamps.  For a provider that permanently omits
-    one minute, that alone would also stop the watermark from advancing.  A
-    suffix is safe to fetch when rows exist after the last missing cadence; it
-    starts strictly after the observed maximum and can therefore never include
-    the unresolved gap.
-    """
-    if not coverage.missing_timestamps or coverage.max_ts is None:
-        return []
-    cadence = coverage.timeframe
-    interior_missing = [stamp for stamp in coverage.missing_timestamps if stamp <= coverage.max_ts]
-    if not interior_missing:
-        return []
-    suffix_start = max(_utc(start), coverage.max_ts + cadence)
-    if suffix_start >= _utc(end):
-        return []
-    return [window.as_dict() for window in plan_windows(
-        start=suffix_start, end=_utc(end), coverage=None, policy=policy,
-        reason="tail", timeframe=cadence, session_profile=session_profile,
-    )]
 
 
 def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider: str = "dukascopy",
@@ -373,8 +249,8 @@ def run_maintenance(*, base_url: str, root: Path, evidence_root: Path, provider:
                 degraded_windows = 0
                 while pending:
                     window, recovery_of, isolation_depth = pending.pop(0)
-                    window_start = datetime.fromisoformat(window["start"])
-                    window_end = datetime.fromisoformat(window["end"])
+                    window_start = parse_instant(window["start"])
+                    window_end = parse_instant(window["end"])
                     reason = window.get("reason", "ingest")
                     run_kind = "gap_repair" if reason == "gap_repair" else "ingest"
                     ordinal = len(result["runs"])
@@ -503,8 +379,8 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:18380")
     parser.add_argument("--provider", default="dukascopy")
     parser.add_argument("--symbols", nargs="*", default=None)
-    parser.add_argument("--start", type=datetime.fromisoformat)
-    parser.add_argument("--end", type=datetime.fromisoformat)
+    parser.add_argument("--start", type=parse_instant)
+    parser.add_argument("--end", type=parse_instant)
     parser.add_argument("--run-scope", choices=("maintenance", "production"), default="maintenance")
     args = parser.parse_args()
     policy = maintenance_policy_for(args.provider, "1m")

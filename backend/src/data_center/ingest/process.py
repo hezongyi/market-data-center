@@ -1,10 +1,15 @@
 """Isolated ingest entry point. Only the supervisor publishes canonical parts."""
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
-from data_center.catalog.snapshot import Catalog
-from data_center.domain.errors import ProviderGapError
+from data_center.catalog.snapshot import (
+    Catalog,
+    CatalogSnapshot,
+    snapshot_from_reference,
+)
+from data_center.domain.errors import InputUnavailableError, ProviderGapError
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.ingest.economic import run_fred_ingest
 from data_center.ingest.service import run_fixture_ingest
@@ -15,6 +20,52 @@ from data_center.quality.verification import (
     run_quality_verification,
 )
 from data_center.transform import TransformExecutor
+
+
+def _fixed_input(request: dict, job: dict, derive_job: DeriveJob, recipe) -> CatalogSnapshot:
+    """Rebuild the accepted input, never the current one.
+
+    A run submitted before fixed inputs existed has no reference and keeps the
+    old comparison so its failure mode is unchanged; every new run carries the
+    parts it was accepted against and is rebuilt from them, so publishing more
+    raw data cannot turn a queued derivation into a permanent failure.
+    """
+    root = Path(request["canonical_root"])
+    reference = _stored_input(request, job)
+    if reference is not None:
+        return snapshot_from_reference(root, reference)
+    snapshot = Catalog(root).resolve(
+        recipe.input_dataset,
+        {"provider": derive_job.provider, "symbol": derive_job.symbol,
+         "timeframe": recipe.source_timeframe},
+    )
+    if snapshot.snapshot_id != derive_job.input_snapshot_id:
+        raise InputUnavailableError("derive input snapshot changed after submission")
+    return snapshot
+
+
+def _stored_input(request: dict, job: dict) -> dict | None:
+    """Read the run's fixed input reference straight from the ledger, read-only.
+
+    The child never migrates or writes the ledger: it opens the file in
+    read-only mode for one lookup, so reconstructing an input cannot contend
+    with the supervisor's writes.
+    """
+    input_id = job.get("input_id")
+    if not input_id:
+        return None
+    path = request.get("ledger_path")
+    if not path:
+        raise InputUnavailableError("the run carries a fixed input but no ledger to read it from")
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            row = connection.execute("select payload from production_inputs where input_id=?",
+                                     (str(input_id),)).fetchone()
+    except sqlite3.Error as exc:
+        raise InputUnavailableError("the fixed input store is unreadable") from exc
+    if row is None:
+        raise InputUnavailableError(f"fixed input reference is not stored: {input_id}")
+    return json.loads(row[0])
 
 
 def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
@@ -31,6 +82,11 @@ def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
                 "retryable": retryable_coverage,
                 "quality_summary": {"status": "fail", "finding_count": len(exc.findings),
                                     "findings": exc.findings}}
+    if isinstance(exc, InputUnavailableError):
+        # Stopped and reported, never retried into a different computation.
+        return {"error_type": "InputUnavailableError", "failure_stage": "input",
+                "error": "input unavailable", "retryable": False,
+                "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
     return {"error_type": type(exc).__name__, "failure_stage": "execute", "error": "ingest failed",
             "retryable": isinstance(exc, ProviderGapError) or not isinstance(exc, (ValueError, KeyError, ModuleNotFoundError)),
             "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
@@ -52,13 +108,7 @@ def main():
             if job.get("run_kind") == "derive":
                 derive_job = DeriveJob.model_validate(job)
                 recipe = REGISTRY.recipe(derive_job.recipe_id, derive_job.recipe_version)
-                snapshot = Catalog(Path(request["canonical_root"])).resolve(
-                    recipe.input_dataset,
-                    {"provider": derive_job.provider, "symbol": derive_job.symbol,
-                     "timeframe": recipe.source_timeframe},
-                )
-                if snapshot.snapshot_id != derive_job.input_snapshot_id:
-                    raise ValueError("derive input snapshot changed after submission")
+                snapshot = _fixed_input(request, job, derive_job, recipe)
                 receipt = TransformExecutor().derive(
                     recipe=recipe, input_snapshot=snapshot,
                     selector={"provider": derive_job.provider, "symbol": derive_job.symbol},

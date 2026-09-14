@@ -20,6 +20,8 @@ from data_center.storage.query import (
     query_provider_bars,
 )
 
+from ..instants import parse_instant
+
 VERIFICATION_RUN_KINDS = ("quality", "parity")
 
 
@@ -116,8 +118,8 @@ def run_parity_verification(*, job: dict, root: Path, run_id: str) -> dict:
     provider = job["provider"]
     symbol = job["symbol"]
     price_basis = job.get("price_basis") or (recipe.allowed_price_bases[0] if recipe.allowed_price_bases else "raw")
-    start = datetime.fromisoformat(str(job["start"]))
-    end = datetime.fromisoformat(str(job["end"]))
+    start = parse_instant(str(job["start"]))
+    end = parse_instant(str(job["end"]))
     stored = query_market_bars(root, provider=provider, symbol=symbol, timeframe=recipe.target_timeframe,
                                price_basis=price_basis, recipe_id=recipe_id, recipe_version=recipe_version,
                                start=start, end=end)
