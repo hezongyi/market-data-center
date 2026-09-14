@@ -1088,6 +1088,50 @@ class RunLedger:
                 payload["dead_letter_state"] = states[payload["run_id"]]
         return payloads
 
+    def recent_plan_runs(self, task_id: str, *, since: datetime | None = None,
+                         statuses: tuple[str, ...] = ("failed", "dead_letter"),
+                         limit: int = 50) -> builtins.list[dict]:
+        """Terminal runs of one plan, newest first, for governed retry cooldowns.
+
+        The provider-gap cooldown rule matches runs by their persisted execution
+        plan, so the payload is returned decoded rather than summarized.
+        """
+        clauses = ["plan_id=?"]
+        params: list[object] = [task_id]
+        if statuses:
+            clauses.append("status in (" + ",".join("?" for _ in statuses) + ")")
+            params.extend(statuses)
+        if since is not None:
+            clauses.append("coalesce(finished_at, created_at) >= ?")
+            params.append(since.astimezone(timezone.utc).isoformat() if since.tzinfo
+                          else since.replace(tzinfo=timezone.utc).isoformat())
+        params.append(max(1, limit))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select payload from runs where " + " and ".join(clauses) +
+                " order by created_at desc limit ?", tuple(params)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def outstanding_gap_windows(self, task_id: str, *, limit: int = 50) -> builtins.list[dict]:
+        """Raw windows this plan still owes because their run ended terminally.
+
+        The debt is derived from persisted step state, never from the observed
+        maximum timestamp: a bar the provider permanently omits stays owed until
+        a later run for the same window actually completes, and advancing the
+        watermark cannot retire it (spec 5.5, AC12).
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select s.window_start, s.window_end, s.updated_at from production_steps s "
+                "where s.stage='raw' and s.window_start is not null and s.window_end is not null "
+                "and s.execution_id in (select execution_id from production_executions where task_id=?) "
+                "and s.state in ('failed','dead_letter') "
+                "and not exists (select 1 from production_steps t where t.stage='raw' "
+                "                and t.window_start=s.window_start and t.window_end=s.window_end "
+                "                and t.state='completed') "
+                "order by s.window_start limit ?", (task_id, max(1, limit))).fetchall()
+        return [{"window_start": row[0], "window_end": row[1], "failed_at": row[2]} for row in rows]
+
     def get(self, run_id: str) -> dict:
         with self._connect() as conn:
             row = conn.execute("select payload from runs where run_id = ?", (run_id,)).fetchone()

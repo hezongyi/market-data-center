@@ -31,7 +31,7 @@ def _metadata_value(metadata, field: str):
 
 
 def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
-                      policy: MaintenancePolicy | None = None) -> dict:
+                      policy: MaintenancePolicy | None = None, reason: str | None = None) -> dict:
     definition = get_dataset_definition(job.dataset_id)
     capability = resolve_capability(job.provider, allow_unregistered=job.run_scope == "acceptance")
     if "*" not in capability.asset_classes and job.asset_class not in capability.asset_classes:
@@ -67,7 +67,10 @@ def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
     effective_policy = requested_policy.model_copy(update={
         "max_window_days": min(requested_policy.max_window_days, capability.max_window_days),
     })
-    reason = "gap_repair" if job.run_kind == "gap_repair" else "backfill" if job.run_kind == "backfill" else "ingest"
+    # The caller may name the intent more precisely than the run kind does (a
+    # production tail recheck is an ``ingest`` run kind but not a first fetch).
+    reason = reason or ("gap_repair" if job.run_kind == "gap_repair"
+                        else "backfill" if job.run_kind == "backfill" else "ingest")
     windows = _plan_maintenance(start=job.start, end=job.end, coverage=coverage,
                                 policy=effective_policy, reason=reason,
                                 timeframe=timeframe_delta(job.timeframe),
@@ -96,9 +99,9 @@ def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
 
 def ingest_window_payloads(*, job: IngestJob, coverage: CoverageResult | None = None,
                            policy: MaintenancePolicy | None = None,
-                           request_id: str | None = None) -> list[dict]:
+                           request_id: str | None = None, reason: str | None = None) -> list[dict]:
     """Expand one maintenance request into independently retryable run payloads."""
-    plan = build_ingest_plan(job=job, coverage=coverage, policy=policy)
+    plan = build_ingest_plan(job=job, coverage=coverage, policy=policy, reason=reason)
     windows = plan["windows"]
     if not windows:
         # Preserve queue semantics for the legacy zero-width validation

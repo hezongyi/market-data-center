@@ -10,7 +10,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from data_center.control_plane import InstrumentMetadata
 from data_center.ingest.worker import LocalWorker
 from data_center.platform_registry import REGISTRY
@@ -69,11 +68,14 @@ def test_manual_run_now_is_planned_and_executed_by_a_real_worker(tmp_path):
     assert decision["steps"] >= 1 and decision["runs"] >= 1
 
     # The run is attributed to its plan, execution and step, not just to a job.
+    # A plan splits its first round into the observed tail and the older backlog
+    # (spec 5.5), so the round may hold more than one raw window.
     steps = ledger.list_production_steps(execution["execution_id"])
-    assert [step["stage"] for step in steps] == ["raw"]
+    assert {step["stage"] for step in steps} == {"raw"} and len(steps) >= 1
     runs = [run for run in ledger.list() if run.get("execution_id") == execution["execution_id"]]
     assert len(runs) == decision["runs"]
-    assert all(run["plan_id"] == "p1" and run["step_id"] == steps[0]["step_id"] for run in runs)
+    assert all(run["plan_id"] == "p1" and run["step_id"] in {step["step_id"] for step in steps}
+               for run in runs)
     assert ledger.get_production_execution(execution["execution_id"])["state"] == "running"
 
     # A real worker claims the jobs and publishes through the normal path.
@@ -98,17 +100,24 @@ def test_a_failed_run_makes_the_round_failed_and_keeps_the_receipt(tmp_path):
     execution = service.change("p1", "run_now", now=NOW)
     scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     scheduler.tick(now=NOW)
-    run = next(item for item in ledger.list() if item.get("execution_id") == execution["execution_id"])
     claim = ledger.claim_next_job()
-    ledger.fail_job(claim["job_id"], run["run_id"], "provider exploded",
+    failed = ledger.get(claim["run_id"])
+    ledger.fail_job(claim["job_id"], claim["run_id"], "provider exploded",
                     error_type="ProviderError", retryable=False)
+    # The round may hold more than one raw window; the others have to reach a
+    # terminal state before the round itself can be read back as failed.
+    while (rest := ledger.claim_next_job()) is not None:
+        ledger.finish_job(rest["job_id"], rest["run_id"],
+                          {"status": "pass", "run_id": rest["run_id"]})
 
     scheduler.tick(now=NOW + timedelta(minutes=1))
     closed = ledger.get_production_execution(execution["execution_id"])
     assert closed["state"] == "failed" and closed["outcome"] == "failed"
     # The run keeps its own terminal receipt; closure never rewrites it.
-    assert ledger.get(run["run_id"])["status"] == "failed"
-    assert ledger.list_production_steps(execution["execution_id"])[0]["state"] == "failed"
+    assert ledger.get(failed["run_id"])["status"] == "failed"
+    failed_step = next(step for step in ledger.list_production_steps(execution["execution_id"])
+                       if step["step_id"] == failed["step_id"])
+    assert failed_step["state"] == "failed"
 
 
 def test_pause_lets_the_in_flight_round_finish_then_stops(tmp_path):
@@ -538,28 +547,38 @@ def test_a_republished_raw_window_sends_its_derived_output_back_for_recompute(tm
     assert ledger.get_production_execution(execution["execution_id"])["outcome"] == "pass"
     assert service.recompute_pending("p1") == []
 
-    # A repair round republishes the same raw window: rewinding the frontier is
-    # how a manual gap repair over an older range looks to the planner.
+    # A repair round republishes the same raw window: rewinding the recorded
+    # frontier is how a manual gap repair over an older range is requested, and
+    # it must still be honored even though coverage has no complaint about it.
     ledger.record_progress("p1", {"frontier": raw["window_start"]})
     repair = service.change("p1", "run_now", now=NOW + timedelta(minutes=3))
     scheduler.tick(now=NOW + timedelta(minutes=3))
-    repair_raw = ledger.list_production_steps(repair["execution_id"])[0]
-    claim = ledger.claim_next_job()
-    assert claim["run_id"] in [run["run_id"] for run in ledger.list()
-                               if run.get("execution_id") == repair["execution_id"]]
-    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(repair_raw["window_start"]),
-                run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
-    ledger.finish_job(claim["job_id"], claim["run_id"],
-                      {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
+    # The round plans the observed tail and the rewound range, so every raw
+    # window of the round has to finish before the plan's closure reads it back.
+    # Each claimed window is published for the window its own step asked for.
+    claimed_runs = []
+    while (claim := ledger.claim_next_job()) is not None:
+        claimed = ledger.get(claim["run_id"])
+        claimed_runs.append(claim["run_id"])
+        repair_raw = next(step for step in ledger.list_production_steps(repair["execution_id"])
+                          if step["step_id"] == claimed["step_id"])
+        publish_raw(tmp_path / "lake", start=datetime.fromisoformat(repair_raw["window_start"]),
+                    run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
+        ledger.finish_job(claim["job_id"], claim["run_id"],
+                          {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
+    assert claimed_runs and all(
+        run_id in [run["run_id"] for run in ledger.list()
+                   if run.get("execution_id") == repair["execution_id"]]
+        for run_id in claimed_runs)
 
     # The closure phase records the repaired window as owed...
     service._advance_dependency_closure(limit=5, step_budget=4)
     owed = service.recompute_pending("p1")
     assert [item["reason"] for item in owed] == ["raw_republished_after_derivation"]
-    # It starts where the original window did and extends to the repaired end,
-    # so it covers the derived range that is now stale.
+    # It starts and ends where the repaired window did, so the derived range
+    # that is now stale is covered end to end.
     assert owed[0]["window_start"] == raw["window_start"]
-    assert owed[0]["window_end"] > raw["window_end"]
+    assert owed[0]["window_end"] >= raw["window_end"]
 
     # ...and the publication phase re-derives it and clears the debt, so the
     # repaired range is produced exactly once instead of every tick.

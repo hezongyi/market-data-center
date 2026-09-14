@@ -470,7 +470,23 @@ export function ProductionPage({ services, onMessage, onChanged }: {
         <article className={`metric${selected.progress.backlog ? " metric-warn" : ""}`}><span>{t("Backlog")}</span>
           <strong>{selected.progress.backlog ? t("yes") : t("no")}</strong>
           <small>{t("last outcome")}: {selected.progress.last_outcome ?? t("none")}</small></article>
+        <article className="metric"><span>{t("Provider showed")}</span>
+          <strong>{selected.progress.observed_boundary ? <TimeDisplay value={selected.progress.observed_boundary} /> : t("nothing yet")}</strong>
+          <small>{t("complete to")} {selected.progress.complete_boundary
+            ? <TimeDisplay value={selected.progress.complete_boundary} /> : "—"}</small></article>
+        <article className={`metric${selected.progress.gaps.length ? " metric-warn" : ""}`}><span>{t("Unresolved gaps")}</span>
+          <strong>{selected.progress.gaps.length}</strong>
+          <small>{selected.progress.gaps.length
+            ? `${selected.progress.gaps[0].window_start ? new Date(selected.progress.gaps[0].window_start).toISOString().slice(0, 16).replace("T", " ") : ""} · ${selected.progress.gaps[0].state}`
+            : t("none recorded")}</small></article>
       </div>
+      {selected.progress.gaps.length > 0 && <ul className="warnings">
+        {selected.progress.gaps.slice(0, 5).map(gap => <li key={`${gap.window_start}-${gap.window_end}`}>
+          {gap.window_start && <TimeDisplay value={gap.window_start} />} – {gap.window_end && <TimeDisplay value={gap.window_end} />}
+          {" "}<StatusBadge tone={gap.state === "planned" ? "warn" : "bad"}>{gap.state}</StatusBadge>
+          {gap.attempts > 0 && <span className="muted"> · {t("attempts")} {gap.attempts}</span>}
+        </li>)}
+      </ul>}
       <p className="muted">{t(selected.progress.note)}</p>
     </section>}
     {selected && <section className="panel">

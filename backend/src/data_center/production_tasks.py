@@ -13,18 +13,21 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
+from .control_plane import timeframe_delta
 from .domain.models import DeriveJob, IngestJob
-from .platform import ingest_window_payloads
+from .platform import coverage_from_catalog, ingest_window_payloads
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
 from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
 from .scheduler import MIN_INTERVAL_SECONDS, next_run_at, validate_schedule
 from .transform import TIMEFRAMES
+from .window_planner import exclude_planned_windows, missing_ranges, recent_gap_windows
 
 RAW_DATASET = "provider_bars"
 DERIVED_DATASET = "market_bars"
@@ -34,6 +37,12 @@ PREVIEW_RUNS = 5
 DEFAULT_PAGE_SIZE = 50
 DEFAULT_EXECUTION_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 200
+#: A coverage scan reaches slightly further back than the policy tail so a gap
+#: that just left the tail is still decided by coverage, not by a stale cache.
+COVERAGE_SCAN_MARGIN_DAYS = 1
+#: Bounded gap debt: enough to keep a permanent provider omission visible
+#: without letting a pathological history grow one plan's payload forever.
+GAP_LIMIT = 50
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
 CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",
@@ -477,6 +486,17 @@ class ProductionTasks:
             "last_finished_at": progress.get("last_finished_at"),
             "last_execution_id": progress.get("last_execution_id"),
             "recompute_pending": len(progress.get("recompute") or []),
+            # What the provider has actually shown, next to what the plan has
+            # planned: the two answer different questions and the console must
+            # not confuse a planned boundary with live freshness.
+            "observed_boundary": progress.get("observed_boundary"),
+            "complete_boundary": progress.get("complete_boundary"),
+            "gaps": [
+                {"window_start": item.get("window_start"), "window_end": item.get("window_end"),
+                 "state": item.get("state"), "attempts": int(item.get("attempts") or 0),
+                 "reason": item.get("reason")}
+                for item in (progress.get("gaps") or [])
+            ],
             "recorded": bool(progress),
             "note": "Recorded planning boundaries, not live provider freshness.",
         }
@@ -1176,23 +1196,94 @@ class ProductionTasks:
         return rows
 
     # -- dispatch and closure -------------------------------------------
+    def _raw_coverage(self, *, task: dict, definition: dict, now: datetime):
+        """Evaluate published raw coverage over the plan's short scan window.
+
+        Coverage is what decides tail rechecks and interior gaps; the catalog
+        read is bounded to the scan window on purpose, and a catalog that cannot
+        be read is reported as "no coverage" instead of being treated as empty
+        data (which would plan the whole tail again).
+        """
+        if self.canonical_root is None:
+            return None
+        scan = coverage_scan_window(definition=definition, now=now)
+        if scan is None:
+            return None
+        capability = REGISTRY.capability(definition["provider"])
+        job = _raw_job(task=task, definition=definition, execution={"execution_id": "coverage"},
+                       start=scan[0], end=scan[1], run_kind="ingest", capability=capability)
+        try:
+            return coverage_from_catalog(root=self.canonical_root, job=job)
+        except (PublicationError, OSError, ValueError):
+            return None
+
+    def _gap_cooldown_windows(self, *, task: dict, definition: dict,
+                              now: datetime) -> list[dict]:
+        """Gap windows whose terminal failure is still inside the retry cooldown.
+
+        The rule is the maintenance runner's, applied to this plan's own
+        terminal runs, so a permanently omitted bar is retried on the governed
+        cadence instead of every tick (spec 5.5, AC12).
+        """
+        policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+        if policy.gap_retry_cooldown_minutes <= 0:
+            return []
+        since = now - timedelta(minutes=policy.gap_retry_cooldown_minutes)
+        runs = self.ledger.recent_plan_runs(task["task_id"], since=since)
+        keys = recent_gap_windows(runs=runs, provider=definition["provider"],
+                                  symbol=definition["symbol"], run_scope="production",
+                                  now=now,
+                                  cooldown_minutes=policy.gap_retry_cooldown_minutes)
+        return [{"start": start, "end": end} for start, end in sorted(keys)]
+
+    @staticmethod
+    def _merge_gaps(previous: list[dict], current: list[dict], *, now: datetime) -> list[dict]:
+        """Carry each gap's history forward and bound the plan's gap debt."""
+        seen = {(item["window_start"], item["window_end"]): item for item in previous}
+        merged: list[dict] = []
+        for item in current:
+            key = (item["window_start"], item["window_end"])
+            carried = seen.get(key) or {}
+            attempts = int(carried.get("attempts") or 0) + (1 if item["state"] == "planned" else 0)
+            merged.append({**item, "reason": "gap_repair", "attempts": attempts,
+                           "first_seen_at": carried.get("first_seen_at") or now.isoformat()})
+        merged.sort(key=lambda item: item["window_start"])
+        return merged[:GAP_LIMIT]
+
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
                  step_budget: int = 8) -> dict:
         """Plan one accepted execution and persist its steps, runs and jobs together."""
         now = now or datetime.now(timezone.utc)
         definition = task.get("payload") or {}
         progress = self.ledger.production_progress(task["task_id"]) or {}
+        # Windows whose run ended terminally are owed regardless of how far back
+        # they are: the short coverage scan cannot see them, so the ledger does.
+        # Step state is read back from the runs first, or a round that just
+        # failed would still look pending and its gap would be forgotten.
+        self.ledger.refresh_task_steps(task["task_id"])
+        carried = self.ledger.outstanding_gap_windows(task["task_id"], limit=GAP_LIMIT)
+        coverage = self._raw_coverage(task=task, definition=definition, now=now)
         plan = plan_execution(task, definition, execution, now=now, step_budget=step_budget,
-                              progress=progress)
+                              progress=progress, coverage=coverage,
+                              cooldown_windows=self._gap_cooldown_windows(
+                                  task=task, definition=definition, now=now),
+                              carried_gaps=carried)
         accepted = self.ledger.accept_execution_plan(
             execution_id=execution["execution_id"], steps=plan["steps"],
             audit={"action": "production.execution.accept", "actor": "system:scheduler",
                    "request_id": None})
         self.ledger.record_progress(task["task_id"], {
-            "frontier": plan["planned_end"], "effective_end": plan["effective_end"],
+            "frontier": plan["frontier"], "effective_end": plan["effective_end"],
             "backlog": plan["backlog"], "last_execution_id": execution["execution_id"],
             "last_planned_at": now.isoformat(), "policy_id": plan.get("policy_id"),
             "planned_windows": len(plan["steps"]),
+            "observed_boundary": plan.get("observed_boundary"),
+            "complete_boundary": plan.get("complete_boundary"),
+            # The high-water mark is what makes a later rewind visible.
+            "last_frontier": max([_as_utc(value, "frontier")
+                                  for value in (progress.get("last_frontier"), plan["frontier"])
+                                  if value is not None]).isoformat(),
+            "gaps": self._merge_gaps(progress.get("gaps") or [], plan["gaps"], now=now),
         })
         return {**accepted, "plan": {key: value for key, value in plan.items() if key != "steps"},
                 "planned_steps": len(plan["steps"])}
@@ -1356,50 +1447,188 @@ def scheduled_end(now: datetime, *, lag_minutes: int) -> datetime:
     return bounded.replace(second=0, microsecond=0)
 
 
-def plan_execution(task: dict, definition: dict, execution: dict, *, now: datetime,
-                   step_budget: int = 8, progress: dict | None = None) -> dict:
-    """Plan the raw windows one execution may expand, bounded by policy and budget.
+def coverage_scan_window(*, definition: dict, now: datetime) -> tuple[datetime, datetime] | None:
+    """The range a plan's coverage scan covers, or ``None`` for fixed windows.
 
-    The plan deliberately expands at most ``max_window_days`` of data and at most
-    ``step_budget`` windows per execution: a multi-year backlog stays a persisted
-    backlog instead of becoming one unbounded transaction, and the next
-    execution continues from the recorded frontier (spec 6.1, 7.2).
+    The scan is deliberately short: gap debt older than the scan is carried in
+    the persisted progress instead of being re-derived from the catalog on every
+    tick (spec 5.5, AC12).
     """
     window_policy = definition.get("window_policy") or {}
+    if window_policy.get("mode", "continuous") == "fixed":
+        return None
+    policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+    end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
+    history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
+    scan_start = max(history_start, end - timedelta(days=policy.tail_days + COVERAGE_SCAN_MARGIN_DAYS))
+    return None if scan_start >= end else (scan_start, end)
+
+
+def _raw_job(*, task: dict, definition: dict, execution: dict, start: datetime, end: datetime,
+             run_kind: str, capability) -> IngestJob:
+    return IngestJob(
+        job_id=f"{task['task_id']}:{execution['execution_id'][:8]}:raw:{run_kind}",
+        dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
+        asset_class=definition.get("asset_class") or capability.asset_classes[0],
+        timeframe=definition["raw_timeframe"], start=start, end=end,
+        run_scope="production", run_kind=run_kind)
+
+
+def plan_execution(task: dict, definition: dict, execution: dict, *, now: datetime,
+                   step_budget: int = 8, progress: dict | None = None, coverage=None,
+                   cooldown_windows: Iterable[dict] = (), carried_gaps: Iterable[dict] = ()) -> dict:
+    """Plan the raw windows one execution may expand, bounded by policy and budget.
+
+    Windows are planned in the order the spec requires (5.5): the observed tail
+    first, then interior gaps whose governed retry cooldown has expired, then the
+    persistent catch-up backlog.  A multi-year backlog therefore stays a
+    persisted backlog instead of becoming one unbounded transaction, and the head
+    of that backlog can never starve freshness.  A permanently omitted bar is
+    retried on the cooldown rather than on every tick, and it is remembered in
+    the plan's progress so that advancing the observed maximum can never retire
+    it silently.
+    """
+    now = _as_utc(now, "now")
+    window_policy = definition.get("window_policy") or {}
     mode = window_policy.get("mode", "continuous")
-    if mode == "fixed":
-        start = _as_utc(window_policy["start"], "window_policy.start")
-        end = _as_utc(window_policy["end"], "window_policy.end")
-    else:
-        policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
-        end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
-        history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
-        frontier = (progress or {}).get("frontier")
-        start = max(history_start, _optional_utc(frontier)) if frontier else history_start
-    if end <= start:
-        return {"steps": [], "planned_start": start.isoformat(), "planned_end": start.isoformat(),
-                "effective_end": end.isoformat(), "backlog": False, "reason": "no_work"}
     policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
     capability = REGISTRY.capability(definition["provider"])
     bounded_days = min(policy.max_window_days, capability.max_window_days)
-    bounded_end = min(end, start + timedelta(days=bounded_days))
-    job = IngestJob(
-        job_id=f"{task['task_id']}:{execution['execution_id'][:8]}:raw",
-        dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
-        asset_class=definition.get("asset_class") or capability.asset_classes[0],
-        timeframe=definition["raw_timeframe"], start=start, end=bounded_end,
-        run_scope="production", run_kind="ingest")
-    payloads = ingest_window_payloads(job=job, policy=policy)
-    steps = []
-    for payload in payloads[:max(1, step_budget)]:
-        steps.append({"stage": "raw", "window_start": payload["start"], "window_end": payload["end"],
-                      "dedupe_key": f"raw:{payload['start']}:{payload['end']}",
-                      "payloads": [payload]})
-    planned_end = max([_as_utc(step["window_end"], "window_end") for step in steps], default=start)
-    return {"steps": steps, "planned_start": start.isoformat(), "planned_end": planned_end.isoformat(),
-            "effective_end": end.isoformat(), "backlog": planned_end < end,
-            "truncated_windows": max(0, len(payloads) - len(steps)),
-            "policy_id": policy.policy_id}
+    cadence = timeframe_delta(definition["raw_timeframe"])
+    budget = max(1, step_budget)
+    steps: list[dict] = []
+    planned_windows: list[dict] = []
+    truncated = 0
+
+    def expand(reason: str, run_kind: str,
+               ranges: list[tuple[datetime, datetime]]) -> tuple[list[dict], list[dict]]:
+        """Shard candidate ranges through the shared planner, honoring the budget."""
+        nonlocal truncated
+        payloads: list[dict] = []
+        for range_start, range_end in ranges:
+            if range_end <= range_start:
+                continue
+            job = _raw_job(task=task, definition=definition, execution=execution,
+                           start=range_start, end=range_end, run_kind=run_kind,
+                           capability=capability)
+            payloads.extend(ingest_window_payloads(job=job, policy=policy, reason=reason))
+        candidates = exclude_planned_windows(
+            candidates=[{"start": str(payload["start"]), "end": str(payload["end"]),
+                         "payload": payload} for payload in payloads],
+            planned=planned_windows)
+        planned_here: list[dict] = []
+        deferred_here: list[dict] = []
+        for candidate in candidates:
+            if len(steps) >= budget:
+                truncated += 1
+                deferred_here.append({"start": candidate["start"], "end": candidate["end"]})
+                continue
+            planned_windows.append({"start": candidate["start"], "end": candidate["end"]})
+            planned_here.append({"start": candidate["start"], "end": candidate["end"]})
+            steps.append({"stage": "raw", "window_start": candidate["start"],
+                          "window_end": candidate["end"],
+                          "dedupe_key": f"raw:{candidate['start']}:{candidate['end']}",
+                          "reason": reason, "payloads": [candidate["payload"]]})
+        return planned_here, deferred_here
+
+    gaps: list[dict] = []
+    gap_ranges: list[dict] = []
+    observed_boundary = complete_boundary = None
+    if mode == "fixed":
+        start = _as_utc(window_policy["start"], "window_policy.start")
+        end = _as_utc(window_policy["end"], "window_policy.end")
+        frontier_end = start
+        if end > start:
+            planned, _ = expand("backfill", "ingest", [(start, end)])
+            frontier_end = max([_as_utc(item["end"], "window_end") for item in planned], default=start)
+    else:
+        history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
+        end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
+        frontier = _optional_utc((progress or {}).get("frontier"))
+        # A frontier below the plan's own high-water mark was moved back on
+        # purpose (a repair over an older range is requested that way), so that
+        # range is fetched again instead of being second-guessed by coverage.
+        high_water = _optional_utc((progress or {}).get("last_frontier"))
+        rewound = frontier is not None and high_water is not None and frontier < high_water
+        data_start = max(history_start, frontier) if frontier else history_start
+        scan = coverage_scan_window(definition=definition, now=now)
+        scan_start = scan[0] if scan is not None else None
+        if coverage is not None:
+            observed_boundary = coverage.max_ts.isoformat() if coverage.max_ts else None
+            if coverage.latest_complete_boundary is not None:
+                complete_boundary = (coverage.latest_complete_boundary + cadence).isoformat()
+        ranges = (missing_ranges(coverage=coverage, start=scan_start, end=end)
+                  if coverage is not None and scan_start is not None else [])
+        trailing = [item for item in ranges if item["trailing"]]
+        interior = [item for item in ranges if not item["trailing"]]
+        # 1. The observed tail: provider lag and late-arriving bars come first, so
+        #    an unresolved interior gap can never hold back new data.
+        if trailing:
+            expand("tail", "ingest", [(item["start"], item["end"]) for item in trailing])
+        # 2. Interior gaps and the debt of windows whose run ended terminally.
+        #    The same rules decide both: a gap inside its governed retry cooldown
+        #    is reported, not re-planned, and only the part outside the cooldown
+        #    is fetched again.
+        cooldown = [{"start": window["start"], "end": window["end"]}
+                    for window in cooldown_windows]
+        candidates = [
+            {"start": item["start"].isoformat(), "end": item["end"].isoformat(),
+             "source": "coverage"}
+            for item in interior
+        ] + [
+            {"start": _as_utc(item["window_start"], "window_start").isoformat(),
+             "end": _as_utc(item["window_end"], "window_end").isoformat(),
+             "source": "failed_run"}
+            for item in carried_gaps
+        ]
+        for candidate in candidates:
+            parts = exclude_planned_windows(candidates=[candidate], planned=cooldown)
+            if not parts:
+                gaps.append({"window_start": candidate["start"], "window_end": candidate["end"],
+                             "state": "cooldown", "source": candidate["source"]})
+                continue
+            gap_ranges.extend(parts)
+        planned_gaps, deferred_gaps = expand(
+            "gap_repair", "gap_repair",
+            [(_as_utc(item["start"], "window_start"), _as_utc(item["end"], "window_end"))
+             for item in gap_ranges])
+        gaps.extend({"window_start": item["start"], "window_end": item["end"],
+                     "state": "planned", "source": "gap_repair"} for item in planned_gaps)
+        gaps.extend({"window_start": item["start"], "window_end": item["end"],
+                     "state": "deferred", "source": "gap_repair"} for item in deferred_gaps)
+        # 3. The persistent catch-up backlog, planned from the recorded frontier.
+        #    It stops where coverage takes over: the scheduler does not re-plan a
+        #    recent range that the provider has already delivered.  A rewind is
+        #    the exception, because that is an explicit request to fetch again.
+        backfill_limit = scan_start if (scan_start is not None and coverage is not None
+                                        and not rewound) else end
+        backfill_end = min(end, data_start + timedelta(days=bounded_days), backfill_limit)
+        expand("backfill", "backfill", [(data_start, backfill_end)])
+        # The frontier only advances over a range this round actually planned, so
+        # a budget-truncated backlog is never recorded as covered.  Every group
+        # counts, not just the backlog: a tail window fetched from the recorded
+        # frontier is exactly as covered as a backfilled one.
+        frontier_end = data_start
+        for item in sorted(planned_windows, key=lambda window: window["start"]):
+            if _as_utc(item["start"], "window_start") > frontier_end:
+                break
+            frontier_end = max(frontier_end, _as_utc(item["end"], "window_end"))
+        if coverage is not None and scan_start is not None and frontier_end >= scan_start:
+            # Caught up: coverage, not the cursor, says how far data is complete.
+            if interior:
+                frontier_end = max(frontier_end,
+                                   min(end, min(item["start"] for item in interior)))
+            elif complete_boundary is not None:
+                frontier_end = max(frontier_end,
+                                   min(end, _as_utc(complete_boundary, "complete_boundary")))
+    planned_end = max([_as_utc(step["window_end"], "window_end") for step in steps],
+                      default=frontier_end)
+    return {"steps": steps, "planned_start": frontier_end.isoformat(),
+            "planned_end": planned_end.isoformat(), "frontier": frontier_end.isoformat(),
+            "effective_end": end.isoformat(), "backlog": frontier_end < end,
+            "rewound": rewound, "truncated_windows": truncated, "gaps": gaps,
+            "observed_boundary": observed_boundary, "complete_boundary": complete_boundary,
+            "reason": "no_work" if not steps else "planned", "policy_id": policy.policy_id}
 
 
 def as_dict(service_result: dict) -> dict:

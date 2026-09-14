@@ -526,10 +526,15 @@ export type ProductionStep = {
   window_end: string | null; state: string; block_reason: string | null; run_id: string | null;
   created_at: string; recipe_id?: string | null; timeframe?: string | null;
 };
+export type ProductionPlanGap = {
+  window_start: string | null; window_end: string | null; state: string; attempts: number;
+  reason: string | null;
+};
 export type ProductionPlanProgress = {
   raw_frontier: string | null; provider_bounded_end: string | null; backlog: boolean;
   derived_cursor: string | null; last_outcome: string | null; last_finished_at: string | null;
   last_execution_id: string | null; recompute_pending: number; recorded: boolean; note: string;
+  observed_boundary: string | null; complete_boundary: string | null; gaps: ProductionPlanGap[];
 };
 export type ProductionPlan = {
   task_id: string; alias: string | null; name: string; desired_state: "enabled" | "paused" | "archived";
