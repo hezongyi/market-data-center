@@ -129,9 +129,9 @@ def enqueue_ingest_plan(*, ledger, job: IngestJob, coverage: CoverageResult | No
                         policy: MaintenancePolicy | None = None,
                         request_id: str | None = None) -> list[str]:
     """Queue every planned window as its own run, manifest, and receipt."""
-    return [ledger.enqueue_job(payload) for payload in ingest_window_payloads(
+    return ledger.enqueue_batch(ingest_window_payloads(
         job=job, coverage=coverage, policy=policy, request_id=request_id,
-    )]
+    ))
 
 
 def plan_maintenance(*, dataset_id: str, selector: Mapping[str, str], start: datetime, end: datetime,
