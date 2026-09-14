@@ -62,24 +62,25 @@ def _next_bucket(value: datetime, timeframe: str) -> datetime:
     return value + TIMEFRAMES[timeframe]
 
 
-def _resolve_session_profile(recipe: TransformRecipe, *, provider: str, symbol: str,
-                             allow_unregistered: bool) -> SessionProfile:
+def resolve_session_profile(session_profile: str, *, provider: str, symbol: str,
+                            allow_unregistered: bool) -> SessionProfile:
     """Resolve a named session profile without coupling the executor to a provider."""
     # A missing profile is a configuration error.  Falling back to 24x7 can
     # silently manufacture bars across FX weekends, holidays, or exchange
     # closures and therefore cannot be safe for canonical publication.
-    if recipe.session_profile == "instrument":
+    if session_profile == "instrument":
         try:
             return REGISTRY.session(REGISTRY.instrument(provider, symbol).session_profile)
         except ValueError:
             if not allow_unregistered:
                 raise
             return REGISTRY.session("utc_24x7")
-    return REGISTRY.session(recipe.session_profile)
+    return REGISTRY.session(session_profile)
 
 
-def _current_rows(*, snapshot: CatalogSnapshot, selector: dict[str, str],
-                  start: datetime, end: datetime, source_timeframe: str) -> list[ProviderBar | MarketBar]:
+def current_rows(*, snapshot: CatalogSnapshot, selector: dict[str, str],
+                 start: datetime, end: datetime,
+                 source_timeframe: str) -> list[ProviderBar | MarketBar]:
     """Read only the selected source slice, then resolve current-state rows.
 
     Catalog resolution already narrows a snapshot to immutable parts.  The
@@ -184,10 +185,10 @@ class TransformExecutor:
             source_selector["recipe_id"] = recipe.input_recipe_id
         if recipe.input_recipe_version is not None:
             source_selector["recipe_version"] = recipe.input_recipe_version
-        source = _current_rows(snapshot=input_snapshot, selector=source_selector, start=start, end=end,
-                               source_timeframe=recipe.source_timeframe)
-        session = _resolve_session_profile(
-            recipe, provider=source[0].provider, symbol=source[0].symbol,
+        source = current_rows(snapshot=input_snapshot, selector=source_selector, start=start, end=end,
+                              source_timeframe=recipe.source_timeframe)
+        session = resolve_session_profile(
+            recipe.session_profile, provider=source[0].provider, symbol=source[0].symbol,
             allow_unregistered=run_scope == "acceptance",
         )
         source = [row for row in source if session.is_open(row.bar_ts)]
@@ -364,3 +365,8 @@ def recomputation_plan(*, recipe: TransformRecipe, selectors: list[dict[str, str
             "recipe_id": recipe.recipe_id, "recipe_version": recipe.version,
             "selectors": selectors, "affected_start": start.isoformat(), "affected_end": end.isoformat(),
             "automatic_execution": False}
+
+
+# The scheduler plans against the same reader and session rule the executor
+# uses, so a planned window can never disagree with what the run will accept.
+_current_rows = current_rows

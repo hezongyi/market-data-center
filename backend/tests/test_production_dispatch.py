@@ -232,7 +232,7 @@ def derived_definition(**overrides) -> dict:
 
 
 def publish_raw(root, *, start, minutes=60, run_id="raw-part",
-                provider="fixture", symbol="UI_TEST"):
+                provider="fixture", symbol="UI_TEST", skip_minute: int | None = None):
     """Publish a valid raw 1m part for the fixture instrument.
 
     The fixture connector emits one bar per day whatever the timeframe, so a 1m
@@ -250,7 +250,8 @@ def publish_raw(root, *, start, minutes=60, run_id="raw-part",
                         bar_ts=start + timedelta(minutes=index), open=100 + index, high=102 + index,
                         low=99 + index, close=101 + index, volume=1, currency="USD",
                         price_type="raw", ingest_ts=start + timedelta(hours=1),
-                        source_hash=f"raw-{index}") for index in range(minutes)]
+                        source_hash=f"raw-{index}") for index in range(minutes)
+            if skip_minute is None or index != skip_minute]
     paths = write_provider_bars(root, rows, part_id=run_id)
     write_manifest(root, build_manifest(
         root, run_id=run_id, dataset_id="provider_bars", schema_version="provider_bars.v1",
@@ -259,14 +260,101 @@ def publish_raw(root, *, start, minutes=60, run_id="raw-part",
     return paths
 
 
-def complete_raw_run(ledger, root, *, start, minutes=60, provider="fixture", symbol="UI_TEST") -> None:
+def test_a_hole_blocks_only_the_bucket_that_covers_it(tmp_path):
+    """AC12: one missing bar blocks its own bucket, not the whole window.
+
+    The complete buckets of the same window are derived and published, the
+    bucket covering the hole stays visible as deferred, and repairing the hole
+    re-derives exactly that bucket instead of the whole window.
+    """
+    from data_center.platform_registry import REGISTRY
+    from data_center.storage.query import query_market_bars
+
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    worker = LocalWorker(tmp_path / "lake", ledger)
+    recipe = REGISTRY.recipe("utc-24x7-1m-to-5m-ohlcv", "1")
+
+    # The raw window is published with a hole inside its 11:30-11:35 bucket.
+    scheduler.tick(now=NOW)
+    raw = ledger.list_production_steps(execution["execution_id"])[0]
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+                     provider="binance", symbol="BTCUSDT", skip_minute=32)
+
+    second = scheduler.tick(now=NOW + timedelta(minutes=1))
+    derived = sorted((step for step in ledger.list_production_steps(execution["execution_id"])
+                      if step["stage"] == "derive:5m"),
+                     key=lambda step: step["window_start"])
+    assert [(step["window_start"], step["window_end"]) for step in derived] == [
+        ("2026-09-14T11:00:00+00:00", "2026-09-14T11:30:00+00:00"),
+        ("2026-09-14T11:35:00+00:00", "2026-09-14T11:55:00+00:00")]
+    # The blocked bucket is reported on the plan, not silently dropped.
+    blocked = "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:30:00+00:00:2026-09-14T11:35:00+00:00"
+    assert service.read("p1")["progress"]["deferred_derived"] == [blocked]
+    assert blocked in second["reconcile"]["derived_deferred"]
+
+    # The complete buckets are derived and published by the real worker.
+    assert drain(worker) == 2
+    assert len(query_market_bars(tmp_path / "lake", provider="binance", symbol="BTCUSDT",
+                                 timeframe="5m", price_basis="raw", recipe_id=recipe.recipe_id,
+                                 recipe_version=recipe.version)) == 10
+
+    # A second round repairs the hole with its own gap-repair window (and fetches
+    # the tail that has become due); every window of the round is published.
+    third = scheduler.tick(now=NOW + timedelta(minutes=2))
+    assert ledger.get_production_execution(execution["execution_id"])["outcome"] == "pass"
+    repair_round = service.change("p1", "run_now", now=NOW + timedelta(minutes=2))
+    scheduler.tick(now=NOW + timedelta(minutes=2))
+    gap_windows = sorted((step["window_start"], step["window_end"])
+                         for step in ledger.list_production_steps(repair_round["execution_id"])
+                         if step["stage"] == "raw")
+    assert ("2026-09-14T11:32:00+00:00", "2026-09-14T11:33:00+00:00") in gap_windows
+    while (claim := ledger.claim_next_job()) is not None:
+        claimed = ledger.get(claim["run_id"])
+        step = next(item for item in ledger.list_production_steps(repair_round["execution_id"])
+                    if item["step_id"] == claimed["step_id"])
+        assert claimed["execution_plan"]["windows"][0]["reason"] in {"gap_repair", "tail"}
+        publish_raw(tmp_path / "lake", start=datetime.fromisoformat(step["window_start"]),
+                    minutes=1, run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
+        ledger.finish_job(claim["job_id"], claim["run_id"],
+                          {"status": "pass", "run_id": claim["run_id"], "row_count": 1})
+
+    # The closure plans exactly the buckets that were missing: the blocked one and
+    # the one the repaired bar made complete, never the buckets already derived.
+    scheduler.tick(now=NOW + timedelta(minutes=3))
+    repaired = sorted((step["window_start"], step["window_end"])
+                       for step in ledger.list_production_steps(repair_round["execution_id"])
+                       if step["stage"] == "derive:5m")
+    assert repaired == [("2026-09-14T11:30:00+00:00", "2026-09-14T11:35:00+00:00"),
+                        ("2026-09-14T11:55:00+00:00", "2026-09-14T12:00:00+00:00")]
+    assert drain(worker) == 2
+
+    # The repaired bucket is published, the others were not derived twice, and the
+    # plan no longer reports that bucket as waiting.
+    rows = query_market_bars(tmp_path / "lake", provider="binance", symbol="BTCUSDT",
+                             timeframe="5m", price_basis="raw", recipe_id=recipe.recipe_id,
+                             recipe_version=recipe.version)
+    assert [row["bar_ts"].isoformat() for row in rows] == [
+        "2026-09-14T11:00:00+00:00", "2026-09-14T11:05:00+00:00", "2026-09-14T11:10:00+00:00",
+        "2026-09-14T11:15:00+00:00", "2026-09-14T11:20:00+00:00", "2026-09-14T11:25:00+00:00",
+        "2026-09-14T11:30:00+00:00", "2026-09-14T11:35:00+00:00", "2026-09-14T11:40:00+00:00",
+        "2026-09-14T11:45:00+00:00", "2026-09-14T11:50:00+00:00", "2026-09-14T11:55:00+00:00"]
+    assert blocked not in service.read("p1")["progress"]["deferred_derived"]
+    del third
+
+
+def complete_raw_run(ledger, root, *, start, minutes=60, provider="fixture", symbol="UI_TEST",
+                     skip_minute: int | None = None) -> None:
     """Claim the planned raw job, publish its part and record a passing receipt."""
     claim = ledger.claim_next_job()
     assert claim is not None, "the round must have queued a raw job"
     publish_raw(root, start=start, minutes=minutes, run_id=claim["run_id"],
-                provider=provider, symbol=symbol)
+                provider=provider, symbol=symbol, skip_minute=skip_minute)
     ledger.finish_job(claim["job_id"], claim["run_id"],
-                      {"status": "pass", "run_id": claim["run_id"], "row_count": minutes})
+                      {"status": "pass", "run_id": claim["run_id"],
+                       "row_count": minutes - (1 if skip_minute is not None else 0)})
 
 
 def derived_plan(tmp_path, ledger, service, now):
@@ -296,8 +384,10 @@ def test_a_plan_produces_its_derived_output_after_the_raw_publication(tmp_path):
 
     # The next tick sees the published raw window and plans the derive step.
     second = scheduler.tick(now=NOW + timedelta(minutes=1))
+    # The identity is the bucket-aligned run that will actually be derived, so
+    # the same bucket can never be derived twice under two raw-window names.
     assert second["reconcile"]["derived_planned"] == [
-        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:00:00+00:00:2026-09-14T11:59:00+00:00"]
+        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:00:00+00:00:2026-09-14T11:55:00+00:00"]
     derived_steps = [step for step in ledger.list_production_steps(execution["execution_id"])
                      if step["stage"] == "derive:5m"]
     assert len(derived_steps) == 1 and derived_steps[0]["recipe_id"] == "utc-24x7-1m-to-5m-ohlcv"
@@ -382,10 +472,9 @@ def test_reconciliation_derives_what_a_crashed_round_never_planned(tmp_path):
     # lease instead of waiting for the previous one to expire.
     restarted = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
     result = restarted.tick(now=NOW + timedelta(minutes=5))
-    # The identity names the raw window the work came from; the step itself is
-    # clipped to whole 5m buckets.
+    # The identity names the whole 5m buckets the work will produce.
     assert result["reconcile"]["derived_planned"] == [
-        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:00:00+00:00:2026-09-14T11:59:00+00:00"]
+        "derive:utc-24x7-1m-to-5m-ohlcv:2026-09-14T11:00:00+00:00:2026-09-14T11:55:00+00:00"]
     reconciled = ledger.list_production_executions("p1")
     derived = [step for step in ledger.list_production_steps(reconciled[0]["execution_id"])
                if step["stage"] == "derive:5m"]

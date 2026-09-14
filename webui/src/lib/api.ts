@@ -535,6 +535,7 @@ export type ProductionPlanProgress = {
   derived_cursor: string | null; last_outcome: string | null; last_finished_at: string | null;
   last_execution_id: string | null; recompute_pending: number; recorded: boolean; note: string;
   observed_boundary: string | null; complete_boundary: string | null; gaps: ProductionPlanGap[];
+  deferred_derived: string[];
 };
 export type ProductionPlan = {
   task_id: string; alias: string | null; name: string; desired_state: "enabled" | "paused" | "archived";

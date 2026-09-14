@@ -1112,6 +1112,22 @@ class RunLedger:
                 " order by created_at desc limit ?", tuple(params)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def completed_derived_windows(self, task_id: str) -> set[tuple[str, str]]:
+        """Derived windows of a plan that are already published.
+
+        Forward planning uses this to stay idempotent across rounds: a window
+        whose derived output exists is not planned again unless a repair put it
+        in the recompute set.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select distinct s.window_start, s.window_end from production_steps s "
+                "join production_executions e on e.execution_id = s.execution_id "
+                "where e.task_id=? and s.stage like 'derive:%' and s.state='completed' "
+                "and s.window_start is not null and s.window_end is not null",
+                (task_id,)).fetchall()
+        return {(row[0], row[1]) for row in rows}
+
     def outstanding_gap_windows(self, task_id: str, *, limit: int = 50) -> builtins.list[dict]:
         """Raw windows this plan still owes because their run ended terminally.
 

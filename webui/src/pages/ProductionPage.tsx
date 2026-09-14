@@ -474,6 +474,11 @@ export function ProductionPage({ services, onMessage, onChanged }: {
           <strong>{selected.progress.observed_boundary ? <TimeDisplay value={selected.progress.observed_boundary} /> : t("nothing yet")}</strong>
           <small>{t("complete to")} {selected.progress.complete_boundary
             ? <TimeDisplay value={selected.progress.complete_boundary} /> : "—"}</small></article>
+        <article className={`metric${selected.progress.deferred_derived.length ? " metric-warn" : ""}`}><span>{t("Waiting on input")}</span>
+          <strong>{selected.progress.deferred_derived.length}</strong>
+          <small>{selected.progress.deferred_derived.length
+            ? selected.progress.deferred_derived[0].split(":").slice(-2).join(" – ")
+            : t("every planned bucket has its input")}</small></article>
         <article className={`metric${selected.progress.gaps.length ? " metric-warn" : ""}`}><span>{t("Unresolved gaps")}</span>
           <strong>{selected.progress.gaps.length}</strong>
           <small>{selected.progress.gaps.length

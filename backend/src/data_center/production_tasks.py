@@ -26,7 +26,7 @@ from .platform import coverage_from_catalog, ingest_window_payloads
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
 from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
 from .scheduler import MIN_INTERVAL_SECONDS, next_run_at, validate_schedule
-from .transform import TIMEFRAMES
+from .transform import TIMEFRAMES, current_rows, resolve_session_profile
 from .window_planner import exclude_planned_windows, missing_ranges, recent_gap_windows
 
 RAW_DATASET = "provider_bars"
@@ -43,6 +43,9 @@ COVERAGE_SCAN_MARGIN_DAYS = 1
 #: Bounded gap debt: enough to keep a permanent provider omission visible
 #: without letting a pathological history grow one plan's payload forever.
 GAP_LIMIT = 50
+#: One window expands into at most this many bucket runs; a window with more
+#: holes than that defers the remainder instead of flooding the round.
+DERIVE_RUNS_PER_WINDOW = 12
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
 CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",
@@ -94,7 +97,9 @@ def _recipe_document(recipe) -> dict:
             "session_profile": recipe.session_profile, "calendar_profile": recipe.calendar_profile,
             "aggregation": recipe.aggregation, "partial_bucket_policy": recipe.partial_bucket_policy,
             "missing_input_policy": recipe.missing_input_policy,
-            "publication_policy": recipe.publication_policy}
+            "publication_policy": recipe.publication_policy,
+            "input_recipe_id": recipe.input_recipe_id,
+            "input_recipe_version": recipe.input_recipe_version}
 
 
 def _output_recipe(target_timeframe: str, *, provider: str, price_basis: str):
@@ -497,6 +502,7 @@ class ProductionTasks:
                  "reason": item.get("reason")}
                 for item in (progress.get("gaps") or [])
             ],
+            "deferred_derived": [item.get("step") for item in (progress.get("deferred_derived") or [])],
             "recorded": bool(progress),
             "note": "Recorded planning boundaries, not live provider freshness.",
         }
@@ -800,7 +806,7 @@ class ProductionTasks:
             # ever have a single non-terminal execution.
             active = self.ledger.active_execution_for_task(task["task_id"])
             execution_id = active["execution_id"] if active else str(uuid4())
-            steps, deferred = self._plan_derived_windows(
+            steps, deferred, _not_ready = self._plan_derived_windows(
                 task=task, definition=definition, execution_id=execution_id,
                 windows=[(item["window_start"], item["window_end"])], step_budget=1)
             if not steps and not deferred:
@@ -876,10 +882,10 @@ class ProductionTasks:
             # may only ever have a single non-terminal execution.
             active = self.ledger.active_execution_for_task(task["task_id"])
             execution_id = active["execution_id"] if active else str(uuid4())
-            steps, deferred_here = self._plan_derived_windows(
+            steps, deferred_here, _not_ready = self._plan_derived_windows(
                 task=task, definition=definition, execution_id=execution_id,
                 windows=[(window_start.isoformat(), window_end.isoformat())],
-                step_budget=step_budget)
+                step_budget=step_budget, skip_completed=True)
             deferred.extend(deferred_here)
             if steps:
                 try:
@@ -897,11 +903,21 @@ class ProductionTasks:
             # The cursor advances over windows that are covered by a persisted
             # step, whether this pass planned it or an earlier one did; a
             # deferred window is never skipped.
-            covered = [step for step in self.ledger.refresh_execution_steps(execution_id)
-                       if step["stage"].startswith("derive:") and step["window_end"]
-                       and _as_utc(step["window_end"], "window_end") <= window_end]
-            reached = max([_as_utc(step["window_end"], "window_end") for step in covered],
-                          default=window_start)
+            covered = sorted(((_as_utc(step["window_start"], "window_start"),
+                               _as_utc(step["window_end"], "window_end"))
+                              for step in self.ledger.refresh_execution_steps(execution_id)
+                              if step["stage"].startswith("derive:") and step["window_start"]
+                              and step["window_end"]
+                              and _as_utc(step["window_end"], "window_end") <= window_end),
+                             key=lambda item: item[0])
+            # Advance only over contiguous coverage: a bucket whose input was
+            # incomplete is not planned, so the cursor has to stay behind it or
+            # the missing derived output would never be planned again.
+            reached = window_start
+            for start_at, end_at in covered:
+                if start_at > reached:
+                    break
+                reached = max(reached, end_at)
             if reached > window_start:
                 self.ledger.record_progress(task["task_id"], {
                     "derived_cursor": reached.isoformat(),
@@ -910,12 +926,26 @@ class ProductionTasks:
         return {"planned": planned, "deferred": deferred}
 
     def _plan_derived_windows(self, *, task: dict, definition: dict, execution_id: str,
-                              windows: list[tuple[str, str]], step_budget: int) -> tuple[list[dict], list[str]]:
-        """Plan the derive steps for explicit windows, in recipe dependency order."""
+                              windows: list[tuple[str, str]], step_budget: int,
+                              skip_completed: bool = False) -> tuple[list[dict], list[str], list[str]]:
+        """Plan derive steps for explicit windows, in recipe dependency order.
+
+        Each window is split into contiguous runs of whole target buckets whose
+        input is complete in the accepted snapshot.  A bucket with incomplete
+        input is not planned at all and is reported as deferred with its reason:
+        it therefore cannot hold back the buckets that are complete, and it is
+        planned again as soon as the missing input is repaired (spec 5.5, AC12).
+        """
         targets = definition.get("bar_timeframes") or []
+        budget = max(1, step_budget)
         planned: list[dict] = []
         deferred: list[str] = []
-        existing = self.ledger.list_production_steps(execution_id)
+        not_ready: list[str] = []
+        existing = {item.get("dedupe_key") for item in self.ledger.list_production_steps(execution_id)}
+        # Forward planning is idempotent across rounds; the recompute path is the
+        # one that deliberately derives a window again.
+        published = (self.ledger.completed_derived_windows(task["task_id"]) if skip_completed
+                     else set())
         for window_start, window_end in windows:
             chain_documents = []
             for target in targets:
@@ -930,55 +960,141 @@ class ProductionTasks:
                     if item not in chain_documents:
                         chain_documents.append(item)
             for recipe_document in chain_documents:
-                identity = (f"derive:{recipe_document['recipe_id']}:"
-                            f"{_as_utc(window_start, 'window_start').isoformat()}:"
-                            f"{_as_utc(window_end, 'window_end').isoformat()}")
-                if any(item["dedupe_key"] == identity for item in planned) or \
-                        any(item.get("dedupe_key") == identity for item in existing):
+                window_identity = (f"derive:{recipe_document['recipe_id']}:"
+                                   f"{_as_utc(window_start, 'window_start').isoformat()}:"
+                                   f"{_as_utc(window_end, 'window_end').isoformat()}")
+                prepared = self._derive_runs(definition=definition, recipe_document=recipe_document,
+                                             window_start=window_start, window_end=window_end)
+                if prepared is None:
+                    deferred.append(window_identity)
                     continue
-                if len(planned) >= max(1, step_budget):
-                    break
-                step = self._derive_step(task=task, definition=definition,
-                                         execution_id=execution_id,
-                                         recipe_document=recipe_document,
-                                         window_start=window_start, window_end=window_end,
-                                         identity=identity, deferred=deferred)
-                if step is not None:
-                    planned.append(step)
-        return planned, deferred
+                runs, blocked = prepared
+                for run_start, run_end in blocked:
+                    identity = f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}"
+                    deferred.append(identity)
+                    not_ready.append(identity)
+                for run_start, run_end in runs:
+                    # A run that now covers ground an earlier round already
+                    # published is split around it, so a repair derives the
+                    # missing buckets and neither less nor more.
+                    pieces = exclude_planned_windows(
+                        candidates=[{"start": run_start, "end": run_end}],
+                        planned=[{"start": start, "end": end} for start, end in sorted(published)])
+                    for piece in pieces:
+                        if len(planned) >= budget:
+                            break
+                        identity = (f"derive:{recipe_document['recipe_id']}:"
+                                    f"{piece['start']}:{piece['end']}")
+                        if identity in existing or any(item["dedupe_key"] == identity
+                                                       for item in planned):
+                            continue
+                        step = self._derive_step(task=task, definition=definition,
+                                                 execution_id=execution_id,
+                                                 recipe_document=recipe_document,
+                                                 run_start=piece["start"], run_end=piece["end"],
+                                                 identity=identity)
+                        if step is not None:
+                            planned.append(step)
+        return planned, deferred, not_ready
 
-    def _derive_step(self, *, task: dict, definition: dict, execution_id: str, recipe_document: dict,
-                     window_start: str, window_end: str, identity: str,
-                     deferred: list[str]) -> dict | None:
-        """Build one derive step with its fixed input, or defer it."""
+    def _derive_runs(self, *, definition: dict, recipe_document: dict,
+                     window_start: str, window_end: str) -> tuple[list[tuple[str, str]],
+                                                                  list[tuple[str, str]]] | None:
+        """Split one window into ready bucket runs and the buckets that are not ready.
+
+        The readiness rule is the executor's own: a bucket is derivable only when
+        every session-open source stamp of that bucket is present in the input the
+        step was accepted against.  ``None`` means the input cannot be resolved at
+        all right now, which is a deferral rather than a decision about a bucket.
+        """
         try:
             snapshot = Catalog(self.canonical_root).resolve(
                 recipe_document["input_dataset"],
                 {"provider": definition["provider"], "symbol": definition["symbol"],
                  "timeframe": recipe_document["source_timeframe"]})
         except (PublicationError, ValueError):
-            deferred.append(identity)
             return None
         if not snapshot.parts:
-            deferred.append(identity)
             return None
-        bounds = _bucket_window(window_start, window_end, recipe_document["target_timeframe"])
-        if bounds is None:
-            deferred.append(identity)
+        source_timeframe = recipe_document["source_timeframe"]
+        target_timeframe = recipe_document["target_timeframe"]
+        source_width = TIMEFRAMES.get(source_timeframe)
+        target_width = TIMEFRAMES.get(target_timeframe)
+        bounds = _bucket_window(window_start, window_end, target_timeframe)
+        if source_width is None or target_width is None or bounds is None:
             return None
-        aligned_start, aligned_end = bounds
+        aligned_start = _as_utc(bounds[0], "window_start")
+        aligned_end = _as_utc(bounds[1], "window_end")
+        selector = {"provider": definition["provider"], "symbol": definition["symbol"],
+                    "timeframe": source_timeframe}
+        if recipe_document.get("input_recipe_id"):
+            selector["recipe_id"] = recipe_document["input_recipe_id"]
+        if recipe_document.get("input_recipe_version"):
+            selector["recipe_version"] = recipe_document["input_recipe_version"]
+        try:
+            rows = current_rows(snapshot=snapshot, selector=selector, start=aligned_start,
+                                end=aligned_end, source_timeframe=source_timeframe)
+        except (OSError, PublicationError, ValueError):
+            return None
+        if not rows:
+            return None
+        session = resolve_session_profile(
+            recipe_document.get("session_profile") or "instrument",
+            provider=definition["provider"], symbol=definition["symbol"], allow_unregistered=True)
+        observed: dict[datetime, set[datetime]] = {}
+        for row in rows:
+            if session.is_open(row.bar_ts):
+                observed.setdefault(_bucket_start(row.bar_ts, target_width), set()).add(row.bar_ts)
+        runs: list[tuple[str, str]] = []
+        blocked: list[tuple[str, str]] = []
+        cursor = aligned_start
+        while cursor < aligned_end:
+            bucket_end = cursor + target_width
+            expected = set()
+            stamp = cursor
+            while stamp < bucket_end:
+                if session.is_open(stamp):
+                    expected.add(stamp)
+                stamp += source_width
+            ready = bool(expected) and expected <= observed.get(cursor, set())
+            target = runs if ready else blocked
+            if target and target[-1][1] == cursor.isoformat():
+                target[-1] = (target[-1][0], bucket_end.isoformat())
+            else:
+                target.append((cursor.isoformat(), bucket_end.isoformat()))
+            cursor = bucket_end
+        if len(runs) + len(blocked) > DERIVE_RUNS_PER_WINDOW:
+            # A pathological window is not expanded without bound: the remainder
+            # is deferred and reconsidered on the next tick with the same rules.
+            keep = runs[:DERIVE_RUNS_PER_WINDOW]
+            blocked = blocked + runs[DERIVE_RUNS_PER_WINDOW:]
+            runs = keep
+        return runs, blocked
+
+    def _derive_step(self, *, task: dict, definition: dict, execution_id: str, recipe_document: dict,
+                     run_start: str, run_end: str, identity: str) -> dict | None:
+        """Build one derive step with its fixed input for one ready bucket run."""
+        try:
+            snapshot = Catalog(self.canonical_root).resolve(
+                recipe_document["input_dataset"],
+                {"provider": definition["provider"], "symbol": definition["symbol"],
+                 "timeframe": recipe_document["source_timeframe"]})
+        except (PublicationError, ValueError):
+            return None
+        if not snapshot.parts:
+            return None
         input_id = self.ledger.store_production_input(
             snapshot_reference(self.canonical_root, snapshot))
         job = DeriveJob(
             job_id=f"{task['task_id']}:{execution_id[:8]}:{recipe_document['target_timeframe']}:"
-                   f"{aligned_start[:10]}",
+                   f"{run_start[:16].replace(':', '')}",
             provider=definition["provider"], symbol=definition["symbol"],
             recipe_id=recipe_document["recipe_id"], recipe_version=recipe_document["recipe_version"],
-            start=aligned_start, end=aligned_end, run_scope="production")
+            start=run_start, end=run_end, run_scope="production")
         payload = {**job.model_dump(mode="json"),
                    "input_snapshot_id": snapshot.snapshot_id, "input_id": input_id}
         return {"stage": f"derive:{recipe_document['target_timeframe']}",
-                "window_start": aligned_start, "window_end": aligned_end,
+                "window_start": run_start, "window_end": run_end,
                 "dedupe_key": identity, "recipe_id": recipe_document["recipe_id"],
                 "timeframe": recipe_document["target_timeframe"], "payloads": [payload]}
 
@@ -997,11 +1113,11 @@ class ProductionTasks:
             return {"steps": [], "deferred": [], "reason": "no_derived_outputs"}
         current = self.ledger.refresh_execution_steps(execution["execution_id"])
         published = [step for step in current if step["stage"] == "raw" and step["state"] == "completed"]
-        steps, deferred = self._plan_derived_windows(
+        steps, deferred, not_ready = self._plan_derived_windows(
             task=task, definition=definition, execution_id=execution["execution_id"],
             windows=[(step["window_start"], step["window_end"]) for step in published],
-            step_budget=step_budget)
-        return {"steps": steps, "deferred": deferred}
+            step_budget=step_budget, skip_completed=True)
+        return {"steps": steps, "deferred": deferred, "not_ready": not_ready}
 
     def retry(self, *, execution_id: str, actor: str | None = None, request_id: str | None = None,
               idempotency_key: str | None = None, step_budget: int = 8,
@@ -1393,6 +1509,11 @@ class ProductionTasks:
                                                   steps=plan["steps"])
             planned.extend(step["dedupe_key"] for step in plan["steps"])
             deferred.extend(plan["deferred"])
+            # Buckets whose input is not complete yet stay visible on the plan
+            # instead of disappearing into a log line (spec 5.5, AC12).
+            self.ledger.record_progress(task["task_id"], {
+                "deferred_derived": [{"step": item, "reason": "input_not_ready"}
+                                     for item in sorted(set(plan["not_ready"]))[:GAP_LIMIT]]})
         return {"planned": planned, "deferred": deferred}
 
     def recompute_pending(self, task_id: str) -> builtins.list[dict]:
@@ -1439,6 +1560,13 @@ def _bucket_window(start: str, end: str, timeframe: str) -> tuple[str, str] | No
     if aligned_end <= aligned_start:
         return None
     return aligned_start.isoformat(), aligned_end.isoformat()
+
+
+def _bucket_start(stamp: datetime, width: timedelta) -> datetime:
+    """The start of the target bucket a source timestamp belongs to."""
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    seconds = width.total_seconds()
+    return epoch + timedelta(seconds=((stamp - epoch).total_seconds() // seconds) * seconds)
 
 
 def scheduled_end(now: datetime, *, lag_minutes: int) -> datetime:
