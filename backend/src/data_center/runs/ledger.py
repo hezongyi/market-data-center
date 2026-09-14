@@ -24,6 +24,10 @@ class RunLedger:
         with sqlite3.connect(path, timeout=5.0) as conn:
             conn.execute("pragma busy_timeout=5000")
             conn.execute("pragma journal_mode=WAL")
+            # Serialize bootstrap/migration work across API, worker and
+            # scheduler processes.  Without an immediate transaction two
+            # first-openers can both observe a missing column and race ALTER.
+            conn.execute("begin immediate")
             conn.execute("create table if not exists schema_migrations (version integer primary key, applied_at text not null)")
             conn.execute("create table if not exists runs (run_id text primary key, payload text not null)")
             conn.execute("create table if not exists jobs (job_id text primary key, run_id text not null, status text not null, payload text not null, attempts integer not null default 0, available_at real)")
