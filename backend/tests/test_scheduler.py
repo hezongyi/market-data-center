@@ -245,3 +245,57 @@ def test_global_pause_stops_dispatch_without_resuming_on_a_heartbeat(tmp_path):
     ledger.set_global_dispatch(True, actor="system:test")
     resumed = scheduler.tick(now=datetime(2026, 9, 14, 12, 2, tzinfo=timezone.utc))
     assert resumed["decisions"][0]["action"] == "execution_claimed"
+
+
+def test_a_hundred_mixed_plans_keep_dispatch_bounded(tmp_path):
+    """AC14: 100 mixed paused/due plans with bounded scan, paging and prefetch.
+
+    The acceptance criterion is a shape, not a speed contest: the due scan is an
+    indexed, budgeted read, the page is keyset-bounded, and one tick pre-fetches a
+    bounded number of steps whatever the registry holds.
+    """
+    import time
+
+    from data_center.production_tasks import ProductionTasks
+
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger)
+    # The registry holds one key per instrument, so a hundred *plans* are seeded
+    # through storage: this test is about the shape of the scan, not ownership.
+    for index in range(100):
+        task_id = f"plan-{index:03d}"
+        paused = index % 2 == 0
+        ledger.create_production_task(
+            task_id=task_id, name=task_id, desired_state="paused" if paused else "enabled",
+            provider="fixture", symbol=f"S{index:03d}",
+            ownership_keys=[f"provider_bars:fixture:S{index:03d}:1m:raw"],
+            next_run_at=("2026-09-14T11:59:00+00:00" if index % 4 == 1 else
+                         "2027-01-01T00:00:00+00:00" if not paused else None),
+            payload={"provider": "fixture", "symbol": f"S{index:03d}", "raw_timeframe": "1m",
+                     "price_basis": "raw", "bar_timeframes": [],
+                     "window_policy": {"mode": "continuous",
+                                       "history_start": "2026-09-01T00:00:00+00:00"},
+                     "schedule": {"schedule": "fixed_rate", "interval_seconds": 900,
+                                  "anchor": "2026-09-14T12:00:00+00:00"}})
+
+    budget = 10
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service,
+                          budget=budget, clock=lambda: now.timestamp())
+    started = time.perf_counter()
+    result = scheduler.tick(now=now)
+    elapsed = time.perf_counter() - started
+
+    # Bounded work, and the whole tick stays under the acceptance budget.
+    assert result["evaluated"] <= budget, result["evaluated"]
+    assert elapsed < 5.0, f"tick took {elapsed:.3f}s for 100 plans"
+    claimed = [item for item in result["decisions"] if item.get("action") == "execution_claimed"]
+    assert claimed, "the due plans must still be dispatched under the budget"
+
+    # Paging stays keyset-bounded and never materialises the whole registry.
+    page = ledger.list_production_tasks_page(page_size=10)
+    assert len(page["items"]) == 10 and page["has_more"] is True
+    keys = {(item["updated_at"], item["task_id"]) for item in page["items"]}
+    following = ledger.list_production_tasks_page(page_size=10, before=min(keys))
+    assert following["items"] and not ({item["task_id"] for item in following["items"]}
+                                       & {item["task_id"] for item in page["items"]})
