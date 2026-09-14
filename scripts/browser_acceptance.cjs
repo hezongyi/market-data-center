@@ -638,6 +638,21 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Next page", exact: true }).isDisabled();
     await page.getByText(/Page 1 · \d+ run\(s\)/, { exact: false }).waitFor();
 
+    // The production plan workspace reports the plan registry and the persisted
+    // dispatch switch; it must say "no plans" rather than invent one, and the
+    // scheduler strip must exist before an operator can pause dispatch.
+    await page.getByRole("button", { name: "production", exact: true }).click();
+    await page.getByText("Unified dispatch", { exact: true }).waitFor();
+    await page.getByText("Registered plans", { exact: true }).waitFor();
+    const planRows = await page.locator("table tbody tr").count();
+    const planEmpty = await page.getByText("No production plans yet", { exact: false }).count();
+    assert.ok(planRows > 0 || planEmpty > 0,
+      "the plan registry must list plans or state that there are none");
+    const schedulerView = await call("GET", "/operations/scheduler");
+    assert.equal(typeof schedulerView.dispatch_enabled, "boolean");
+    assert.ok(await page.getByText("Dispatch", { exact: true }).count() > 0);
+    await page.getByRole("button", { name: "overview", exact: true }).click();
+
     const widths = await page.evaluate(() => ({
       body: document.body.scrollWidth, html: document.documentElement.scrollWidth, inner: innerWidth,
       overflow: [...document.querySelectorAll("*")].filter(element => element.scrollWidth > element.clientWidth + 1).slice(0, 10).map(element => ({ tag: element.tagName, className: element.className, scroll: element.scrollWidth, client: element.clientWidth })),
@@ -685,7 +700,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "maintenance_task_template", "overview_freshness_and_attention", "catalog_kind_and_lineage",
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
-      "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions"],
+      "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
+      "production_plans_workspace"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

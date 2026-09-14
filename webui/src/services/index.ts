@@ -105,6 +105,22 @@ export function createServices(apiKey: string) {
       metrics: async () => (await client.metrics()).data,
       ingest: async (job: Parameters<typeof client.ingest>[0]) => (await client.ingest(job)).data,
     },
+    // The plan registry and the scheduler are one workspace: a plan is only
+    // meaningful next to whether the scheduler may dispatch it.
+    production: {
+      plans: async (query: Parameters<typeof client.productionPlans>[0] = {}) => (await client.productionPlans(query)).data,
+      plan: async (taskId: string) => (await client.productionPlan(taskId)).data,
+      preview: async (definition: Record<string, unknown>) => (await client.productionPreview(definition)).data,
+      act: async (taskId: string, command: string, idempotencyKey: string,
+                  options: Parameters<typeof client.productionPlanAction>[3] = {}) =>
+        (await client.productionPlanAction(taskId, command, idempotencyKey, options)).data,
+      executions: async (taskId: string, limit = 10) => (await client.productionExecutions(taskId, limit)).data,
+      steps: async (executionId: string, limit = 100) => (await client.productionExecutionSteps(executionId, limit)).data,
+      retry: async (executionId: string, idempotencyKey: string) =>
+        (await client.retryProductionExecution(executionId, idempotencyKey)).data,
+      scheduler: async () => (await client.scheduler()).data,
+      dispatch: async (command: "pause_dispatch" | "resume_dispatch") => (await client.schedulerAction(command)).data,
+    },
   };
 }
 
