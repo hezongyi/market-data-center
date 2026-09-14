@@ -534,6 +534,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   "outcome": "created", "message": name})
         return api_envelope(task)
 
+    @app.post(f"{config.api_prefix}/production/plans")
+    def production_plan_preview(payload: dict) -> dict:
+        """Side-effect-free preview endpoint; scheduler activation is separate."""
+        return api_envelope({"schedule": payload.get("schedule", "manual"),
+                             "desired_state": payload.get("desired_state", "paused"),
+                             "ownership_keys": payload.get("ownership_keys", []),
+                             "dispatch_enabled": False})
+
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
     def production_task_detail(task_id: str, include_deleted: bool = True) -> dict:
         tasks = [item for item in ledger.list_production_tasks(include_deleted=include_deleted)
@@ -560,6 +568,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   "request_id": current_request_id(), "task_id": task_id,
                                   "outcome": "updated", "message": str(payload)})
         return api_envelope(task)
+
+    @app.post(f"{config.api_prefix}/production/tasks/{{task_id}}/actions")
+    def production_task_action(task_id: str, payload: dict, request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        command = str(payload.get("command") or "")
+        key = request.headers.get("Idempotency-Key")
+        def apply_action():
+            if command == "delete":
+                return ledger.delete_production_task(task_id)
+            if command == "pause":
+                return ledger.set_production_task_state(task_id, "paused")
+            if command == "resume":
+                return ledger.set_production_task_state(task_id, "enabled")
+            if command == "archive":
+                return ledger.set_production_task_state(task_id, "archived")
+            raise ValueError("unsupported production task command")
+        try:
+            result = ledger.production_idempotent(key, task_id=task_id, command=command, action=apply_action)
+        except KeyError as exc:
+            ledger.record_write_audit({"action": f"production.task.{command or 'action'}", "actor": operator_identity(request, config),
+                                      "request_id": current_request_id(), "task_id": task_id,
+                                      "outcome": "rejected", "code": "not_found", "message": command})
+            raise HTTPException(status_code=404, detail="production task not found") from exc
+        except ValueError as exc:
+            ledger.record_write_audit({"action": f"production.task.{command or 'action'}", "actor": operator_identity(request, config),
+                                      "request_id": current_request_id(), "task_id": task_id,
+                                      "outcome": "rejected", "code": "invalid", "message": str(exc)})
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        ledger.record_write_audit({"action": f"production.task.{command}", "actor": operator_identity(request, config),
+                                  "request_id": current_request_id(), "task_id": task_id,
+                                  "outcome": "updated", "message": command})
+        return api_envelope(result)
 
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
     def maintenance_task_status(task_id: str, payload: dict, request: Request,

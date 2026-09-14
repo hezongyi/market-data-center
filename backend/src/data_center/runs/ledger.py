@@ -37,6 +37,7 @@ class RunLedger:
             conn.execute("create table if not exists production_task_versions (task_id text not null, definition_version integer not null, payload text not null, config_digest text, created_at text not null, primary key(task_id, definition_version))")
             conn.execute("create table if not exists plan_ownership (ownership_key text primary key, task_id text not null, state text not null, updated_at text not null)")
             conn.execute("create unique index if not exists plan_ownership_active on plan_ownership(ownership_key) where state in ('enabled','paused')")
+            conn.execute("create table if not exists production_idempotency (idempotency_key text primary key, task_id text, command text not null, response text not null, created_at text not null)")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -149,6 +150,20 @@ class RunLedger:
             conn.execute("delete from plan_ownership where task_id=?", (task_id,))
         return {"task_id": task_id, "deleted_at": stamp, "definition_version": row[1],
                 "payload_digest": hashlib.sha256(row[2].encode()).hexdigest()}
+
+    def production_idempotent(self, key: str | None, *, task_id: str | None, command: str, action):
+        """Run a task action once; replaying a key returns its original response."""
+        if not key:
+            return action()
+        with self._connect() as conn:
+            row = conn.execute("select response from production_idempotency where idempotency_key=?", (key,)).fetchone()
+        if row:
+            return json.loads(row[0])
+        result = action()
+        with self._connect() as conn:
+            conn.execute("insert or ignore into production_idempotency(idempotency_key,task_id,command,response,created_at) values (?,?,?,?,?)",
+                         (key, task_id, command, json.dumps(result), self._now()))
+        return result
 
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:

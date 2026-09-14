@@ -75,6 +75,9 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/production/tasks"): RoutePolicy(
         True, True, {"name": "surface", "ownership_keys": ["surface"], "definition": {}, "desired_state": "paused"},
         audit_action="production.task.create", expect_status=201),
+    ("POST", "/api/v1/production/plans"): RoutePolicy(False, False, {"schedule": "manual"}, expect_status=200),
+    ("POST", "/api/v1/production/tasks/{task_id}/actions"): RoutePolicy(
+        True, True, {"command": "pause"}, audit_action="production.task.pause", expect_status=404),
     ("PATCH", "/api/v1/production/tasks/{task_id}"): RoutePolicy(
         True, False, {"desired_state": "paused"}, expect_status=404),
 }
