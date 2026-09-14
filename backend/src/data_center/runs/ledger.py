@@ -114,6 +114,23 @@ class RunLedger:
         return {"task_id": task_id, "alias": row[1], "name": row[0], "desired_state": state,
                 "definition_version": row[2], "payload": json.loads(row[3]), "created_at": row[4], "updated_at": stamp}
 
+    def update_production_task(self, task_id: str, payload: dict, *, expected_version: int) -> dict:
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select name,alias,desired_state,definition_version,created_at,deleted_at from production_tasks where task_id=?", (task_id,)).fetchone()
+            if row is None or row[5] is not None:
+                raise KeyError(task_id)
+            if row[3] != expected_version:
+                raise ValueError("definition version conflict")
+            version = row[3] + 1
+            conn.execute("update production_tasks set payload=?,definition_version=?,updated_at=? where task_id=?",
+                         (json.dumps(payload), version, stamp, task_id))
+            conn.execute("insert into production_task_versions(task_id,definition_version,payload,created_at) values (?,?,?,?)",
+                         (task_id, version, json.dumps(payload), stamp))
+        return {"task_id": task_id, "alias": row[1], "name": row[0], "desired_state": row[2],
+                "definition_version": version, "payload": payload, "created_at": row[4], "updated_at": stamp}
+
     def delete_production_task(self, task_id: str) -> dict:
         """Tombstone a task definition while retaining history and ownership auditability."""
         stamp = self._now()

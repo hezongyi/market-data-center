@@ -67,3 +67,16 @@ def test_production_task_pause_archive_delete_retains_tombstone(tmp_path):
     assert tombstone["task_id"] == "p1"
     assert ledger.list_production_tasks() == []
     assert ledger.list_production_tasks(include_deleted=True)[0]["deleted_at"]
+
+
+def test_production_task_update_uses_optimistic_version(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.create_production_task(task_id="p1", name="A", payload={"x": 1}, ownership_keys=["k"])
+    updated = ledger.update_production_task("p1", {"x": 2}, expected_version=1)
+    assert updated["definition_version"] == 2
+    try:
+        ledger.update_production_task("p1", {"x": 3}, expected_version=1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("stale definition version must be rejected")
