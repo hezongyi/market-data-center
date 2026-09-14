@@ -25,13 +25,15 @@ from data_center.ingest.service import run_fixture_ingest
 from data_center.platform_registry import REGISTRY, config_digest, resolve_capability
 from data_center.storage.query import query_provider_bars
 
+from .instants import parse_instant
+
 
 def _metadata_value(metadata, field: str):
     return getattr(metadata, field) if hasattr(metadata, field) else metadata.get(field)
 
 
 def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
-                      policy: MaintenancePolicy | None = None) -> dict:
+                      policy: MaintenancePolicy | None = None, reason: str | None = None) -> dict:
     definition = get_dataset_definition(job.dataset_id)
     capability = resolve_capability(job.provider, allow_unregistered=job.run_scope == "acceptance")
     if "*" not in capability.asset_classes and job.asset_class not in capability.asset_classes:
@@ -67,7 +69,10 @@ def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
     effective_policy = requested_policy.model_copy(update={
         "max_window_days": min(requested_policy.max_window_days, capability.max_window_days),
     })
-    reason = "gap_repair" if job.run_kind == "gap_repair" else "backfill" if job.run_kind == "backfill" else "ingest"
+    # The caller may name the intent more precisely than the run kind does (a
+    # production tail recheck is an ``ingest`` run kind but not a first fetch).
+    reason = reason or ("gap_repair" if job.run_kind == "gap_repair"
+                        else "backfill" if job.run_kind == "backfill" else "ingest")
     windows = _plan_maintenance(start=job.start, end=job.end, coverage=coverage,
                                 policy=effective_policy, reason=reason,
                                 timeframe=timeframe_delta(job.timeframe),
@@ -96,9 +101,9 @@ def build_ingest_plan(*, job: IngestJob, coverage: CoverageResult | None = None,
 
 def ingest_window_payloads(*, job: IngestJob, coverage: CoverageResult | None = None,
                            policy: MaintenancePolicy | None = None,
-                           request_id: str | None = None) -> list[dict]:
+                           request_id: str | None = None, reason: str | None = None) -> list[dict]:
     """Expand one maintenance request into independently retryable run payloads."""
-    plan = build_ingest_plan(job=job, coverage=coverage, policy=policy)
+    plan = build_ingest_plan(job=job, coverage=coverage, policy=policy, reason=reason)
     windows = plan["windows"]
     if not windows:
         # Preserve queue semantics for the legacy zero-width validation
@@ -112,8 +117,8 @@ def ingest_window_payloads(*, job: IngestJob, coverage: CoverageResult | None = 
     for window in windows:
         bounded_job = job.model_copy(update={
             "job_id": job.job_id if len(windows) == 1 else f"{job.job_id}:w{window['ordinal']:04d}",
-            "start": datetime.fromisoformat(window["start"]),
-            "end": datetime.fromisoformat(window["end"]),
+            "start": parse_instant(window["start"]),
+            "end": parse_instant(window["end"]),
         })
         execution_plan = {**plan, "windows": [window], "maintenance_plan_id": plan_id}
         payload = bounded_job.model_dump(mode="json")
@@ -129,9 +134,9 @@ def enqueue_ingest_plan(*, ledger, job: IngestJob, coverage: CoverageResult | No
                         policy: MaintenancePolicy | None = None,
                         request_id: str | None = None) -> list[str]:
     """Queue every planned window as its own run, manifest, and receipt."""
-    return [ledger.enqueue_job(payload) for payload in ingest_window_payloads(
+    return ledger.enqueue_batch(ingest_window_payloads(
         job=job, coverage=coverage, policy=policy, request_id=request_id,
-    )]
+    ))
 
 
 def plan_maintenance(*, dataset_id: str, selector: Mapping[str, str], start: datetime, end: datetime,

@@ -16,6 +16,8 @@ from data_center.quality.checks import check_provider_bars
 from data_center.quality.errors import QualityError
 from data_center.storage.parquet import write_provider_bars
 
+from ..instants import parse_instant
+
 
 def _execution_windows(job: IngestJob, execution_plan: dict | None) -> list[IngestWindow]:
     """Validate and materialize the immutable windows handed to the worker.
@@ -37,7 +39,7 @@ def _execution_windows(job: IngestJob, execution_plan: dict | None) -> list[Inge
     if not isinstance(raw_windows, list) or not raw_windows:
         raise ValueError("execution plan must contain at least one window")
     windows = [IngestWindow(
-        start=datetime.fromisoformat(item["start"]), end=datetime.fromisoformat(item["end"]),
+        start=parse_instant(item["start"]), end=parse_instant(item["end"]),
         reason=item["reason"], ordinal=int(item["ordinal"]),
     ) for item in raw_windows]
     parent_start = job.start.astimezone(timezone.utc)
