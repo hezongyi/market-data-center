@@ -16,7 +16,9 @@ query 计数。
 `capacity` 子对象包含 total/used/free bytes、free ratio、warning/critical thresholds 和 `ok|warning|critical`；稳定字段还包括 `last_successful_backup_at`、`last_successful_recovery_drill_at` 与 `temporary_backup_count`。
 metrics 只返回聚合状态，不返回 provider 原始响应、URL 或密钥。
 
-`GET /api/v1/health/ready` 同时返回 `read_status`、`write_status` 和 `capacity_status`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
+**容量测量来源（issue #86）**：每个容量读数都带 `measurement_source`，取 `live`（真实磁盘读数）或 `fixed_acceptance`（验收环境用 `DATACENTER_CAPACITY_FIXED_FREE_RATIO` 钉住的确定性值）。它出现在 `/metrics` 的 `capacity`、`/health/ready` 的 `capacity_measurement_source`、`/operations/capacity-history` 的 `live` 与顶层字段，以及 `capacity_check` receipt 的 `details.capacity` 中；`fixed_measurement` 布尔保留给既有 consumer，等价于 `measurement_source == "fixed_acceptance"`。`/operations/capacity-history` 的**记录样本**（monitor 写入的转移事件）带 `recorded_only: true`，`live` 条目带 `recorded_only: false`，因此单个样本脱离上下文也不会被当作实时读数。
+
+`GET /api/v1/health/ready` 同时返回 `read_status`、`write_status`、`capacity_status` 和 `capacity_measurement_source`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
 
 Web UI 只调用 API，不直接读取 Parquet 或 SQLite。工作区：Overview、Data catalog、Maintenance、
 Runs、Quality、Explorer 和 Operations。
