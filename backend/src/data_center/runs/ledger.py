@@ -359,10 +359,10 @@ class RunLedger:
 
         with self._connect() as conn:
             conn.execute("begin immediate")
-            candidates = conn.execute("select job_id, run_id, payload, attempts from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid", (self.clock(),)).fetchall()
+            candidates = conn.execute("select job_id, run_id, payload, attempts, owner_plan_id from jobs where status = 'queued' and (available_at is null or available_at <= ?) order by rowid", (self.clock(),)).fetchall()
             paused = {item[0] for item in conn.execute("select task_id from maintenance_tasks where status='paused'").fetchall()}
             row = next((candidate for candidate in candidates
-                        if not any(json.loads(candidate[2]).get("job_id", "").startswith(task_id) for task_id in paused)), None)
+                        if not any(candidate[4] == task_id or (candidate[4] is None and json.loads(candidate[2]).get("job_id", "").startswith(task_id)) for task_id in paused)), None)
             if row is None:
                 return None
             conn.execute("update jobs set status = 'running' where job_id = ?", (row[0],))

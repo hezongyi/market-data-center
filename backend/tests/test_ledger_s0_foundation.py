@@ -29,3 +29,10 @@ def test_migration_is_idempotent(tmp_path):
     with sqlite3.connect(path) as conn:
         assert conn.execute("pragma user_version").fetchone()[0] == 1
         assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == 1
+
+
+def test_claim_uses_persisted_plan_ownership_for_pause(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.upsert_maintenance_task("plan-a", {"name": "A"}, status="paused")
+    ledger.enqueue_job({"job_id": "unrelated-id", "dataset_id": "provider_bars", "owner_plan_id": "plan-a"})
+    assert ledger.claim_next_job() is None
