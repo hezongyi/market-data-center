@@ -17,6 +17,7 @@ from data_center.control_plane import (
     plan_maintenance,
 )
 from data_center.domain.models import DeriveJob, IngestJob, ProviderBar
+from data_center.instants import parse_instant
 from data_center.maintenance_runner import approved_targets
 from data_center.platform import build_ingest_plan, coverage_for_rows, execute_ingest
 from data_center.storage.parquet import write_provider_bars
@@ -90,7 +91,7 @@ def test_planner_builds_bounded_immutable_execution_plan():
     plan = build_ingest_plan(job=job, policy=MaintenancePolicy(max_window_days=40, shard_days=40))
     assert plan["run_kind"] == "backfill" and plan["run_scope"] == "maintenance"
     assert len(plan["windows"]) == 2
-    assert all((datetime.fromisoformat(window["end"]) - datetime.fromisoformat(window["start"])).days <= 31
+    assert all((parse_instant(window["end"]) - parse_instant(window["start"])).days <= 31
                for window in plan["windows"])
     assert set(plan["config_digests"]) == {
         "dataset_digest", "capability_digest", "instrument_digest", "session_profile_digest",
@@ -250,7 +251,7 @@ def test_execute_ingest_records_plan_lineage_and_run_classification(tmp_path):
     from data_center.control_plane import IngestWindow
 
     receipt = execute_ingest(
-        window=IngestWindow(datetime.fromisoformat(window["start"]), datetime.fromisoformat(window["end"]),
+        window=IngestWindow(parse_instant(window["start"]), parse_instant(window["end"]),
                             window["reason"], window["ordinal"]),
         job=job, root=tmp_path, connector=Connector(), execution_plan=plan,
     )

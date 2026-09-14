@@ -1,5 +1,7 @@
 [Unit]
-Description=Market Data Center real provider acceptance
+Description=Market Data Center retention audit
+# Deliberately independent of provider acceptance: a failing provider must not
+# stop the audit, and the audit must not depend on a provider being reachable.
 After=market-data-center-api.service market-data-center-worker.service
 
 [Service]
@@ -8,5 +10,6 @@ WorkingDirectory=%h/market-data-center/releases/current
 EnvironmentFile=%h/.config/market-data-center/env
 Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
 Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
-ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.acceptance
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.operations retention-audit
+# The audit only reads and reports; it never deletes canonical data.
 TimeoutStartSec=30min
