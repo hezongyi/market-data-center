@@ -1,12 +1,12 @@
 # Market Data Center 当前状态
 
-更新时间：2026-09-13。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
+更新时间：2026-09-14。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
 
 ## 生产运行
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 当前 deployment | `49ddbc55361d-bd11ad0e`（`software_version=0.4.1`，`source_commit=49ddbc5`，`tag=v0.4.1`） | `operations/deployment_activate/2026-09-13T111443…json`（`tag` 由 `operations/deployment_stage/2026-09-13T111406…json` 记录） |
+| 当前 deployment | `3e2362ab0b31-6005b252`（`software_version=0.5.0`，`source_commit=3e2362a`，`tag=v0.5.0`） | `operations/deployment_activate/2026-09-13T234558…json`（`tag` 由 `operations/deployment_stage/2026-09-13T234519…json` 记录） |
 | API/worker | systemd active；readiness=ready | `/api/v1/health/ready` |
 | 容量/队列 | `capacity_status=ok`、queue=0 | `/api/v1/metrics` |
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
@@ -17,12 +17,12 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.4.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | release contract test |
-| 最新发布标签 | `v0.4.1` → `49ddbc55361d6cd04c25a27b42d1dcb17c2d918b`（annotated；按仓库约定发布后不再移动，GitHub 的 immutable-release 平台开关未启用） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.4.0) + `release-receipt.json` |
-| 生产 deployment source commit | `49ddbc55361d6cd04c25a27b42d1dcb17c2d918b`（= `v0.4.1`），是 protected `main` 的祖先 | active deployment manifest |
+| 源码版本 | `0.5.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | `v0.5.0` release contract test |
+| 最新发布标签 | `v0.5.0` → `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（annotated；按仓库约定发布后不再移动） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.5.0) + `release-receipt.json` |
+| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`），是 protected `main` 的当前提交 | active deployment manifest |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
-生产 deployment 现与 `v0.4.1` 发布基线一致（v0.4.1 为 v0.4.0 的补丁：Operations receipts 动作名与面板渲染）。v0.4.0 的 stage/activate、回滚演练（回到 `f6f69366d01d-021478b1` 并再次前滚）与 post-release rehearsal receipt 均保留在 data-center evidence root；三次指针切换的 canonical 与 ledger 哈希均未变化。2026-09-13 的 activation 演练保留了完整回执：`v0.3.1` 的 stage/activate、注入候选 readiness 失败后的自动恢复（`recovered_deployment_id=b5d1bc95681b-610c867f`，canonical 与 ledger 哈希未变）、回滚到 `4016a992669d-b0be2ea0` 后再次前滚、`v0.3.1` 的 60 分钟 monitor soak（33 次运行、无重叠、身份稳定），以及 `v0.3.2` 的 stage/activate。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+生产 deployment 现与 `v0.5.0` 发布基线一致（WebUI v0.5 可用性、访问控制和版本收口）。上一版本 `v0.4.1` 的 stage/activate、回滚路径和 receipt 均保留，可作为回滚目标；本次 `v0.5.0` activation 的 canonical 与 ledger 哈希均未变化。更早版本的 stage/activate、注入候选 readiness 失败后的自动恢复、回滚和 monitor soak receipt 也继续保留在 data-center evidence root。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
 
 monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（systemd 默认 `AccuracySec=1min` 的合并效应），即告警分辨率实际减半；这是配置事实，不是故障。
 
@@ -36,18 +36,20 @@ monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（s
 | economic PIT/current consumers | 现有 flag/legacy 路径 | 未完成全量切换 | 必须先完成 PIT parity |
 | ASK/MID | 未采集 | 第一阶段非目标 | 需独立 identity/API/spec |
 
-## WebUI 数据维护工作台（v0.4，deployed）
+## WebUI 数据维护工作台（v0.5，deployed）
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 分支 | `main`（PR #75 工作台、PR #76 写接口收口、PR #77 v0.4.0 发布） | git worktree |
+| 分支 | `main`（PR #89 WebUI v0.5、PR #90 v0.5.0 发布准备） | git worktree |
 | 维护任务 | `POST /maintenance/plans` 无副作用预览 + `POST /maintenance/tasks` 统一 queued envelope；`/derive/runs`、`/economic/ingest`、`/quality/checks` 复用同一 contract | `backend/tests/test_maintenance_contract.py` |
 | 只读校验运行 | `quality`/`parity` run 只记录 findings，不发布 canonical part、不产生 manifest | `test_quality_run_executes_as_a_verification_and_records_findings` |
 | Runs 读模型 | kind/scope/时间筛选 + opaque cursor 分页；`/runs/{id}/detail` 投影 stage、window、retry chain、degraded 原因，不改写 terminal receipt | `test_run_list_filters_and_cursor_pagination`、`test_run_detail_projects_stage_windows_and_retry_chain` |
 | findings 治理 | 稳定 `finding_id`、occurrence 计数、`open/acknowledged/resolved` 处理状态与运行结果分离 | `test_findings_support_structured_filters_and_state_transitions` |
 | 写保护 | capacity critical 与 warning 下 >31 天 backfill 返回 507 并进入写审计；鉴权失败 401 | `test_capacity_critical_protects_writes_and_is_audited` |
 | 浏览器验收 | 1440px 与 390px 覆盖 provider ingest、derive、parity、quality（degraded）、economic ingest（本地 provider fixture）、被拒写入与容量保护写入 | `acceptance-receipts/browser/receipt.json` |
-| 部署状态 | 已发布并激活 `v0.4.1`（`49ddbc55361d-bd11ad0e`）；`/operations/receipts` 现在按真实记录的动作返回（含 `deployment_stage/activate/rollback`，无 `release`/`deployment` 幽灵名），v0.4.0 的只读走查与回滚演练 receipt 仍保留 | `operations/post_release_walkthrough/2026-09-13T111712…json`、`operations/production_readiness_walkthrough/2026-09-13T103608…json`、`operations/post_release_rehearsal/2026-09-13T102344…json` |
+| 部署状态 | 已发布并激活 `v0.5.0`（`3e2362ab0b31-6005b252`）；`/operations/receipts` 按真实记录的动作返回，v0.4.1 的回滚路径和历史 receipt 仍保留 | `operations/deployment_stage/2026-09-13T234519…json`、`operations/deployment_activate/2026-09-13T234558…json`、生产只读走查命令与 API/UI 输出 |
+
+2026-09-13T23:56Z 完成 v0.5.0 生产只读走查。GET `/api/v1/health`、`/health/live`、`/health/ready`、`/metrics`、`/capabilities`、`/datasets`、`/runs`（含首条 run 的 detail/manifest）、`/quality/findings`、`/maintenance/tasks`、`/operations/queue`、`/operations/capacity-history`、`/operations/worker`、`/operations/receipts` 和 `/openapi.json` 均按预期返回；未调用任何 POST/PATCH/DELETE 写接口。走查时 readiness 为 `ready`，capacity 为 `ok`，queue 为 0，API/worker 为 active，所有身份字段均为 `v0.5.0` / `3e2362a` / `3e2362ab0b31-6005b252`。1440px 浏览器只读验收覆盖总览、数据目录、维护任务、运行记录、质量、数据浏览和运维页面；核心导航为中文，默认 UTC+8，切换 dual 后同时显示 UTC+8 与 UTC，容量文案可见，页面均有内容。深层动态文案的完整中文化仍按独立 spec 延后。
 
 ## 状态语义
 
