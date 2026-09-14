@@ -43,7 +43,12 @@ AC04 放在 S3 而不是 S2：影子模式不派发、不产生 execution，因�
 5. 为 `runs` 增加可索引列并在同一事务内与 payload 一起写；提供按计划/执行/步骤分页的 SQL 侧读模型，**不改动**现有 `/runs` 契约。
 6. 注入时钟覆盖计划时间、心跳与退避；测试不得依赖真实等待。
 7. 把新增调度表加入 deployment 逻辑哈希的表清单，把 scheduler 服务加入 `service_names`，把调度 receipt 的 action 登记到运维 receipt 视图的 action 列表。
-8. 评估 deployment 逻辑哈希的成本：该函数目前读取并排序清单内每张表的每一行，而 execution/step 表会持续增长。S0 必须给出结论：要么为新增表定义保留策略，要么把它们排除在哈希之外并说明理由，不能默认把无界增长的表塞进激活路径。
+8. deployment 逻辑哈希按已确认方案实现（见 issue #107）：
+   - **所有新增调度表都纳入**哈希清单（`production_plans`、计划版本、所有权、进度、输入引用、execution、step、`step_runs`、`scheduler_state`、`scheduler_leases`）；不建立排除清单，避免"激活未触碰数据"的证据出现盲区。
+   - 把实现改为**按 `rowid` 顺序流式**遍历，去掉现有的全列 `ORDER BY` 与临时排序；在 stage/activate receipt 的 details 中记录**每表行数与耗时**，使激活成本可观测。
+   - **不引入删除式保留策略**：与 spec 不变量 12 及"永不删除 ledger/receipt/canonical"的规则冲突。
+   - 验收：在 1,000+ runs/jobs 与至少 100 条 execution 的合成库上，单次哈希耗时相对现状不劣化，且 receipt 中能看到逐表行数与耗时（对应 AC22）。
+   - 退路（仅在实测证明成本仍不可接受时启用）：小状态表逐行精确 + 追加型历史表用 `(count, max(rowid), 尾部摘要)`；该哈希只在同一次 stage/activate 内前后比较，换算法不影响任何已保存的值，但必须在 receipt 中记录所用算法。
 9. 备份/恢复回归必须覆盖新增表与输入引用；确认恢复流程不覆盖既有目标的行为不变。
 
 ## 4. S1 计划注册表检查点
