@@ -12,10 +12,11 @@ own I/O and pass plain run/window/coverage data in.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from data_center.control_plane import CoverageResult, MaintenancePolicy
 from data_center.control_plane import plan_maintenance as plan_windows
+from data_center.instants import aware_utc
 
 from .instants import parse_instant
 
@@ -24,9 +25,12 @@ PROVIDER_COVERAGE_FINDING = "coverage_not_ready"
 
 
 def utc(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("planning timestamps must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    """Require an aware timestamp and return it in UTC.
+
+    Delegates to the platform's single parser so the runner, the planner and the
+    API cannot disagree about what an instant is.
+    """
+    return aware_utc(value, field="planning timestamp")
 
 
 def window_key(window: dict) -> tuple[str, str]:

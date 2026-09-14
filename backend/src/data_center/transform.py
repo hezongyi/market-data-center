@@ -367,6 +367,3 @@ def recomputation_plan(*, recipe: TransformRecipe, selectors: list[dict[str, str
             "automatic_execution": False}
 
 
-# The scheduler plans against the same reader and session rule the executor
-# uses, so a planned window can never disagree with what the run will accept.
-_current_rows = current_rows

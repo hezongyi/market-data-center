@@ -61,6 +61,21 @@ curl -fsS http://127.0.0.1:18380/api/v1/metrics
 systemctl --user show -p WorkingDirectory -p ExecStart market-data-center-api.service market-data-center-worker.service
 ```
 
+## Retention audit is its own release
+
+`retention-audit` used to run as an `ExecStartPost` of the provider-acceptance unit, so a red acceptance run silently stopped
+retention auditing as well. It is now a unit of its own with its own timer and its own `retention_audit` receipt action, and the
+provider-acceptance unit no longer carries that side effect.
+
+Spec §9.3 decision 4 requires that decoupling to reach production as an **independent small release**, not as part of the
+scheduler takeover: stage and activate it on its own, verify the timer fires and writes `retention_audit` receipts, and only then
+continue with the scheduler work. The scheduler change does not depend on it, and vice versa.
+
+```bash
+systemctl --user list-timers market-data-center-retention-audit.timer
+ls "$HOME/market_lake/evidence/data-center/operations/retention_audit" | tail -3
+```
+
 ## Scheduler service
 
 The production task scheduler runs as its own unit and owns nothing but the tick loop; which plans exist and
@@ -73,8 +88,14 @@ systemctl --user status market-data-center-scheduler.service
 curl -fsS http://127.0.0.1:18380/api/v1/operations/scheduler   # heartbeat, capacity gate, provider backoff
 curl -fsS -X POST http://127.0.0.1:18380/api/v1/operations/scheduler/actions \
   -H "X-API-Key: $DATACENTER_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"command": "pause_dispatch"}'                            # global switch, honoured by every instance
+  -d '{"command": "resume_dispatch"}'                           # the audited global switch
 ```
+
+Two switches have to be on before a tick dispatches anything: this global switch (an audited operator action, persisted in
+`scheduler_state.global_dispatch_enabled`) and the instance's own mode. The instance mode comes from the process — the unit
+starts `data_center.scheduler_main` **without** `--dispatch`, and `DATACENTER_SCHEDULER_DISPATCH_ENABLED` must stay unset in the
+machine env, so a deployed scheduler observes before it acts. `--dispatch` exists for local drills and a canary window; when it
+is used, the startup log says `dispatch_source: flag_or_env` so the receipt trail shows where the mode came from.
 
 Before any takeover, run the service drill against isolated roots — start from an immutable release, prove the
 identity fallback, kill and restart the process, and upgrade an existing ledger in place. It is automated as
@@ -100,6 +121,8 @@ What the drill asserts, and what to reproduce by hand when a release misbehaves:
 
 Receipts for every drill stay under the evidence root (`operations/scheduler_tick`, and
 `operations/deployment_runtime_failure` for refused starts). Never repair a scheduler by editing the checkout,
+the ledger, or a unit file. A start that cannot prove its release identity exits 3 *before* the ledger is opened, so a
+refused release leaves the ledger untouched.
 the ledger, or a unit file.
 
 ## Legacy timer takeover (prepared, operator-executed)

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from data_center.instants import parse_instant
 from data_center.runs.ledger import SCHEMA_VERSION, RunLedger
 
 
@@ -150,3 +151,27 @@ def test_one_instant_parser_accepts_what_every_supported_python_accepts():
     # A malformed instant is a validation error, not a silent guess.
     with pytest.raises(ValueError):
         parse_instant("not-an-instant")
+
+
+def test_writing_a_run_keeps_its_indexed_finish_time(tmp_path):
+    """A payload write must not erase the indexed columns a read model governs on.
+
+    ``put``'s upsert referenced ``excluded.finished_at`` while the insert list had
+    no such column, so SQLite wrote NULL on every write — and the provider cooldown
+    reads exactly that column.
+    """
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.put("r1", {"run_id": "r1", "job_id": "j1", "dataset_id": "provider_bars",
+                      "provider": "fixture", "symbol": "UI_TEST", "run_scope": "production",
+                      "run_kind": "gap_repair", "plan_id": "p1", "status": "failed",
+                      "created_at": "2026-09-14T11:00:00+00:00",
+                      "finished_at": "2026-09-14T11:05:00+00:00", "retryable": True,
+                      "error_type": "ProviderError"})
+    with ledger._connect() as conn:
+        row = conn.execute("select finished_at, error_type from runs where run_id='r1'").fetchone()
+    assert row == ("2026-09-14T11:05:00+00:00", "ProviderError")
+
+    # ...and the governed cooldown window sees the run by its finish time.
+    window = ledger.recent_plan_runs("p1", since=parse_instant("2026-09-14T11:04:00+00:00"))
+    assert [run["run_id"] for run in window] == ["r1"]
+    assert ledger.recent_plan_runs("p1", since=parse_instant("2026-09-14T11:06:00+00:00")) == []

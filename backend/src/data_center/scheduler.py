@@ -39,7 +39,20 @@ def _require_aware(value: datetime | None, field: str) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def _canonical_schedule(schedule: str | None) -> str:
+def _canonical_schedule(schedule) -> str:
+    """Accept ``{"schedule": kind}``, a bare kind, or ``None`` (manual).
+
+    A schedule that is neither is a validation error: treating it as ``None`` and
+    continuing would silently create a manual plan out of a typo, and calling
+    ``.get`` on a string crashed the preview route with a 500 instead of a
+    field error.
+    """
+    if isinstance(schedule, dict):
+        schedule = schedule.get("schedule")
+    elif schedule is not None and not isinstance(schedule, str):
+        # A validation complaint the API turns into a field error; TypeError is
+        # what a wrong *type* deserves.
+        raise TypeError("schedule must be a schedule object")
     canonical = SCHEDULE_ALIASES.get(schedule or "", schedule or "")
     if canonical not in SUPPORTED_SCHEDULES:
         raise ValueError(f"unsupported schedule: {schedule}")
@@ -154,14 +167,24 @@ def next_run_at(*, schedule: str, now: datetime, anchor: datetime | None = None,
     return anchor + timedelta(seconds=steps * interval_seconds)
 
 
-def validate_schedule(definition: dict, *, now: datetime) -> dict:
-    """Validate a plan definition at creation/edit time and normalise its fields.
+def validate_schedule(definition, *, now: datetime) -> dict:
+    """Validate a schedule block at creation/edit time and normalise its fields.
+
+    The argument is the schedule object (``{"schedule": kind, ...}``); a bare kind
+    is accepted too, because a client that sends ``"manual"`` deserves a field
+    error rather than an ``AttributeError`` from ``.get`` on a string.
 
     spec 5.1 rejects naive datetimes, past first starts and non-positive or
     too-short periods here; an already expired *existing* plan is a misfire and
     is handled by :func:`next_run_at` instead of being rejected.
     """
     now = _require_aware(now, "now")
+    if isinstance(definition, str):
+        definition = {"schedule": definition}
+    elif not isinstance(definition, dict):
+        # Wrong *type* rather than an unsupported value: the caller turns this
+        # into the same field error either way.
+        raise TypeError("schedule must be a schedule object")
     schedule = _canonical_schedule(definition.get("schedule"))
     normalized = {**definition, "schedule": schedule}
     first_start = _require_aware(

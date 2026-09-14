@@ -32,6 +32,8 @@ from data_center.takeover import (
 REPOSITORY = Path(__file__).resolve().parents[2]
 UNIT_ROOT = REPOSITORY / "deploy" / "systemd"
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+#: The machine-level allowlist the legacy 1m unit relied on (spec 4.2).
+LEGACY_SYMBOLS = ("EURUSD", "GBPUSD", "USDCAD", "USDJPY", "AUDJPY", "GBPJPY", "XAUUSD", "BTCUSD")
 
 
 def host_inventory_payload() -> dict:
@@ -45,9 +47,15 @@ def host_inventory_payload() -> dict:
         "entries": [{"unit": "marketlab-market-bars-maintenance.service",
                      "timer": "marketlab-market-bars-maintenance.timer",
                      "exec_start": "/opt/marketlab/.venv/bin/python -m data_center.derived_maintenance_runner "
-                                   "--provider dukascopy --recipes utc-24x7-1m-to-5m-ohlcv",
+                                   "--provider dukascopy --recipes utc-24x7-1m-to-5m-ohlcv@1",
                      "cadence_seconds": 900, "cadence_source": "OnUnitInactiveSec"}],
     }
+
+
+def _tmp_ledger_path() -> Path:
+    import tempfile
+
+    return Path(tempfile.mkdtemp()) / "ledger.sqlite"
 
 
 def service(tmp_path) -> ProductionTasks:
@@ -91,7 +99,7 @@ def test_host_inventory_reports_unknown_instead_of_guessing():
 def test_plan_definitions_never_widen_the_legacy_scope():
     """The mapping keeps the old cadence, tail window and output scope."""
     raw, derived = planned_entries(UNIT_ROOT, host_inventory_payload())
-    raw_definition = plan_definitions(raw)[0]
+    raw_definition = plan_definitions(raw, maintenance_symbols=LEGACY_SYMBOLS, now=NOW)[0]
     assert raw_definition["provider"] == "dukascopy" and raw_definition["price_basis"] == "bid"
     # The old raw entry produced raw only; the imported plan must not add outputs.
     assert raw_definition["bar_timeframes"] == []
@@ -99,21 +107,24 @@ def test_plan_definitions_never_widen_the_legacy_scope():
     start = parse_instant(raw_definition["window_policy"]["history_start"])
     assert 1 <= (NOW - start).days <= 3, "the plan starts where the legacy tail window started"
 
-    derived_definition = plan_definitions(derived)[0]
+    # The unit names its recipe as id@version, which is how the host spells it.
+    derived_definition = plan_definitions(derived, maintenance_symbols=LEGACY_SYMBOLS, now=NOW)[0]
     assert derived_definition["bar_timeframes"] == ["5m"]
-    # ...and it covers exactly the instruments the provider is approved for.
-    assert len(plan_definitions(raw)) == 8
+    # ...and it covers exactly the instruments the legacy allowlist named.
+    assert len(plan_definitions(raw, maintenance_symbols=LEGACY_SYMBOLS, now=NOW)) == 8
 
 
 def test_import_is_dry_by_default_and_paused_when_applied(tmp_path):
     entries = planned_entries(UNIT_ROOT)
     tasks = service(tmp_path)
-    dry = import_entries(tasks, entries=entries, actor="test", apply=False, now=NOW)
+    dry = import_entries(tasks, entries=entries, actor="test", apply=False,
+                         maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert dry["created"] == [] and len(dry["skipped"]) == 8
     assert all(row["reason"] == "dry_run" for row in dry["skipped"])
     assert tasks.ledger.list_production_tasks(include_deleted=True) == []
 
-    applied = import_entries(tasks, entries=entries, actor="test", apply=True, now=NOW)
+    applied = import_entries(tasks, entries=entries, actor="test", apply=True,
+                             maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert len(applied["created"]) == 8 and applied["skipped"] == []
     plans = tasks.ledger.list_production_tasks(include_deleted=True)
     # Importing is not enabling: every imported plan starts paused.
@@ -123,7 +134,8 @@ def test_import_is_dry_by_default_and_paused_when_applied(tmp_path):
                                                  "AUDJPY", "GBPJPY", "XAUUSD", "BTCUSD"}
 
     # Re-running is idempotent: the second import creates nothing new.
-    again = import_entries(tasks, entries=entries, actor="test", apply=True, now=NOW)
+    again = import_entries(tasks, entries=entries, actor="test", apply=True,
+                           maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert again["created"] == [] and len(again["skipped"]) == 8
     assert all(row["reason"] == "already_imported" for row in again["skipped"])
     assert len(tasks.ledger.list_production_tasks(include_deleted=True)) == 8
@@ -134,13 +146,16 @@ def test_verify_lists_every_reason_a_takeover_is_not_finished(tmp_path):
     tasks = service(tmp_path)
     inventory = host_inventory_payload()
 
-    before = verify_takeover(tasks, entries=entries, inventory=inventory)
+    before = verify_takeover(tasks, entries=entries, inventory=inventory,
+                             maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert any("was never imported" in problem for problem in before["problems"])
     assert any("still installed" in problem for problem in before["problems"])
 
-    import_entries(tasks, entries=entries, actor="test", apply=True, now=NOW)
+    import_entries(tasks, entries=entries, actor="test", apply=True,
+                   maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     # The legacy units are still running, so the handover is still not verified.
-    still_installed = verify_takeover(tasks, entries=entries, inventory=inventory)
+    still_installed = verify_takeover(tasks, entries=entries, inventory=inventory,
+                                      maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert still_installed["problems"] == [
         ("legacy units are still installed: market-data-center-1m-maintenance.service, "
          "marketlab-market-bars-maintenance.service"),
@@ -149,7 +164,8 @@ def test_verify_lists_every_reason_a_takeover_is_not_finished(tmp_path):
 
     # Once the host no longer has them, the post-conditions hold.
     clean_inventory = {**inventory, "units": []}
-    verified = verify_takeover(tasks, entries=entries, inventory=clean_inventory)
+    verified = verify_takeover(tasks, entries=entries, inventory=clean_inventory,
+                               maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert verified["problems"] == []
     # Two legacy entries, one plan per instrument: raw and derived are one scope.
     assert len(verified["plans"]) == 8
@@ -159,15 +175,17 @@ def test_verify_lists_every_reason_a_takeover_is_not_finished(tmp_path):
 def test_verify_reports_two_writers_for_one_output(tmp_path):
     entries = planned_entries(UNIT_ROOT)
     tasks = service(tmp_path)
-    import_entries(tasks, entries=entries, actor="test", apply=True, now=NOW)
+    import_entries(tasks, entries=entries, actor="test", apply=True,
+                   maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     # A plan that was enabled while the legacy units are still running is exactly
     # the double-scheduling state this check exists to catch.
-    definition = plan_definitions(entries[0])[0]
+    definition = plan_definitions(entries[0], maintenance_symbols=LEGACY_SYMBOLS, now=NOW)[0]
     with pytest.raises(ProductionConflict) as conflict:
         tasks.create(definition=definition, name="duplicate", task_id="duplicate",
                      desired_state="enabled", now=NOW)
     assert conflict.value.code == "ownership_conflict"
-    report = verify_takeover(tasks, entries=entries, inventory={"status": "known", "units": []})
+    report = verify_takeover(tasks, entries=entries, inventory={"status": "known", "units": []},
+                             maintenance_symbols=LEGACY_SYMBOLS, now=NOW)
     assert report["problems"] == []
     assert all(row["desired_state"] == "paused" for row in report["plans"])
 
@@ -179,6 +197,8 @@ def test_cli_plan_and_import_never_write_without_apply(tmp_path, monkeypatch, ca
     monkeypatch.setenv("DATACENTER_LEDGER_PATH", str(ledger_path))
     monkeypatch.setenv("DATACENTER_CANONICAL_ROOT", str(tmp_path / "lake"))
     monkeypatch.setenv("DATACENTER_EVIDENCE_ROOT", str(tmp_path / "evidence"))
+    # The legacy 1m unit passes no --symbols: its scope came from the machine env.
+    monkeypatch.setenv("DATACENTER_MAINTENANCE_SYMBOLS", ",".join(LEGACY_SYMBOLS))
 
     assert main(["plan", "--unit-root", str(UNIT_ROOT), "--inventory", str(inventory_path)]) == 0
     plan = json.loads(capsys.readouterr().out)

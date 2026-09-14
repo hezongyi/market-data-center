@@ -675,9 +675,6 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     }
     await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
     const created = await call("GET", "/production/tasks");
-    if (process.env.DATACENTER_ACCEPT_DEBUG) {
-      process.stderr.write("DEBUG created=" + JSON.stringify(created.map(plan => ({ name: plan.name, state: plan.desired_state, health: plan.health }))) + "\n");
-    }
     assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
       "the saved plan must be readable through the plan registry");
 

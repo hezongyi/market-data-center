@@ -398,3 +398,41 @@ def test_execution_history_paginates_with_a_cursor_bound_to_the_plan(client, con
     # The history keeps the trigger source and the configuration version.
     assert {item["trigger_source"] for item in first.json()["data"]} == {"manual"}
     assert all(item["definition_version"] == 1 for item in first.json()["data"])
+
+
+def test_malformed_plan_bodies_answer_with_the_error_envelope(client):
+    """A preview is unauthenticated, so a broken body must not become a 500.
+
+    The route inventory registers this route with a specific body; the handler has
+    to answer every other shape with the same envelope rather than crashing on it.
+    """
+    for body in ({"definition": {"schedule": "manual"}},
+                 {"definition": {"provider": "dukascopy", "symbol": "EURUSD",
+                                 "schedule": {"schedule": "fixed_rate", "interval_seconds": 1}}},
+                 {"definition": {"provider": "", "symbol": "", "schedule": {"schedule": "nonsense"}}},
+                 {"definition": {"provider": "dukascopy", "symbol": "EURUSD",
+                                 "schedule": "manual"}}):
+        response = client.post("/api/v1/production/plans", json=body)
+        assert response.status_code == 200, (body, response.text)
+        payload = response.json()
+        assert payload["data"]["submittable"] is False, body
+        assert payload["data"]["validation"]["errors"], body
+        assert payload["data"]["schedule"]["kind"]
+        assert payload["meta"]["request_id"] and payload["meta"]["schema_version"] == "v1"
+
+
+def test_a_refused_plan_write_is_audited(client, config):
+    """Refusals raised before the transaction are still write-audit records."""
+    create_plan(client, "p1")
+    # A command that does not exist never reaches the transaction...
+    unsupported = client.post("/api/v1/production/tasks/p1/actions", headers=auth(),
+                              json={"command": "nonsense"})
+    assert unsupported.status_code == 422
+    # ...and an edit without a definition is refused before it too.
+    incomplete = client.patch("/api/v1/production/tasks/p1", headers=auth(), json={"name": None})
+    assert incomplete.status_code in {409, 422}
+
+    audits = RunLedger(config.ledger_path).write_audit_entries(limit=50)
+    rejected = {(item["action"], item["outcome"]) for item in audits}
+    assert ("production.task.nonsense", "rejected") in rejected, audits
+    assert ("production.task.update", "rejected") in rejected, audits

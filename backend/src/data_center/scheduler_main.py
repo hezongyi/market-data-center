@@ -81,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     interval = args.interval_seconds or settings.scheduler_interval_seconds
     dispatch = args.dispatch or settings.scheduler_dispatch_enabled
-    scheduler = build_scheduler(settings, dispatch=dispatch, instance_id=args.instance_id)
+    # Identity first: constructing the ledger takes a write lock and applies
+    # migrations, so a release that cannot prove what it is must never get that far.
     identity = {"deployment_id": "development", "software_version": "unknown", "source_commit": "unknown"}
     if settings.deployment_manifest:
         from data_center.deployment import validated_runtime_identity
@@ -97,8 +98,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"event": "scheduler_identity_failed",
                               "error_category": type(exc).__name__}), flush=True)
             return 3
+    scheduler = build_scheduler(settings, dispatch=dispatch, instance_id=args.instance_id)
     print(json.dumps({"event": "scheduler_started", "dispatch_enabled": dispatch,
                       "interval_seconds": interval,
+                      # The audited operator switch is the operations action; this
+                      # flag is the drill/canary escape hatch and says so out loud.
+                      "dispatch_source": ("flag_or_env" if dispatch else "shadow"),
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
           flush=True)
     signal.signal(signal.SIGTERM, _request_stop)

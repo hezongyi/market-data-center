@@ -254,7 +254,7 @@ def normalize_definition(definition: dict, *, now: datetime) -> dict:
 
     try:
         schedule = validate_schedule(definition.get("schedule") or {"schedule": "manual"}, now=now)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         errors.append({"field": "schedule", "message": str(exc)})
         schedule = definition.get("schedule") if isinstance(definition.get("schedule"), dict) else {}
 
@@ -428,10 +428,14 @@ class ProductionTasks:
         try:
             normalized = normalize_definition(definition, now=now)
         except DefinitionError as exc:
+            # A preview of an invalid definition still has to answer in the same
+            # shape, whatever the client sent for ``schedule``.
+            raw_schedule = definition.get("schedule") if isinstance(definition, dict) else None
+            kind = (raw_schedule.get("schedule") if isinstance(raw_schedule, dict)
+                    else raw_schedule if isinstance(raw_schedule, str) else "manual")
             return {"definition": definition, "validation": {"errors": exc.errors},
                     "submittable": False, "ownership_keys": [], "dependencies": [],
-                    "schedule": {"kind": (definition or {}).get("schedule", {}).get("schedule", "manual"),
-                                 "next_runs": [], "rule": None},
+                    "schedule": {"kind": kind, "next_runs": [], "rule": None},
                     "policy": None, "conflicts": [], "dispatch_enabled": False}
         keys = ownership_keys(normalized)
         held = {item["ownership_key"]: item["task_id"] for item in self.ledger.ownership_holders(keys)}
@@ -738,6 +742,20 @@ class ProductionTasks:
                            idempotency_key=idempotency_key, actor=actor,
                            audit_action="production.task.create", request_id=request_id)
 
+    def _refuse(self, *, task_id: str, command: str, actor: str | None, request_id: str | None,
+                exc: Exception) -> None:
+        """Audit a refusal raised before the transaction, then re-raise it.
+
+        Only refusals that reach ``_apply`` were audited; a command name that does
+        not exist, or an edit with no version, left no audit row at all, although
+        "who tried what and was told no" is the question the audit answers.
+        """
+        self.ledger.record_write_audit({
+            "action": f"production.task.{command}", "actor": actor, "request_id": request_id,
+            "task_id": task_id, "outcome": "rejected",
+            "code": getattr(exc, "code", type(exc).__name__), "message": str(exc) or command})
+        raise exc
+
     def change(self, task_id: str, command: str, *, definition: dict | None = None,
                expected_version: int | None = None, actor: str | None = None,
                request_id: str | None = None, idempotency_key: str | None = None,
@@ -745,7 +763,10 @@ class ProductionTasks:
                now: datetime | None = None) -> dict:
         """Apply one management command, with idempotency and optimistic versioning."""
         if command not in CHANGE_COMMANDS:
-            raise ProductionConflict("unsupported_command", f"unsupported production task command: {command}")
+            self._refuse(task_id=task_id, command=command, actor=actor, request_id=request_id,
+                         exc=ProductionConflict(
+                             "unsupported_command",
+                             f"unsupported production task command: {command}"))
         now = now or datetime.now(timezone.utc)
         request = {"task_id": task_id, "command": command, "definition": definition,
                    "expected_version": expected_version, "name": name, "alias": alias}
@@ -774,7 +795,10 @@ class ProductionTasks:
                 # Display information is not part of the produced data, so it is
                 # updated in place instead of forming a definition version.
                 if name is None and alias is None:
-                    raise DefinitionError([{"field": "definition", "message": "definition is required"}])
+                    self._refuse(task_id=task_id, command=command, actor=actor,
+                                 request_id=request_id,
+                                 exc=DefinitionError([{"field": "definition",
+                                                       "message": "definition is required"}]))
                 return self._apply(task_id, command,
                                    lambda conn: self.ledger.rename_production_task(
                                        task_id, name=name, alias=alias,
@@ -782,8 +806,9 @@ class ProductionTasks:
                                    request=request, idempotency_key=idempotency_key, actor=actor,
                                    audit_action=audit_action, request_id=request_id)
             if expected_version is None:
-                raise ProductionConflict("expected_version_required",
-                                         "editing a definition requires expected_version")
+                self._refuse(task_id=task_id, command=command, actor=actor, request_id=request_id,
+                             exc=ProductionConflict("expected_version_required",
+                                                    "editing a definition requires expected_version"))
             current = self._resolve(task_id)
             merged = {**(current.get("payload") or {}), **definition}
             normalized = normalize_definition(merged, now=now)
@@ -1300,9 +1325,9 @@ class ProductionTasks:
                      steps: builtins.list[dict], step_budget: int) -> builtins.list[dict]:
         """Re-plan exactly the unfinished windows, one step per original step."""
         planned: list[dict] = []
-        deferred: list[str] = []
+        budget = max(1, step_budget)
         for step in steps:
-            if len(planned) >= max(1, step_budget):
+            if len(planned) >= budget:
                 break
             window_start, window_end = step.get("window_start"), step.get("window_end")
             if not window_start or not window_end:
@@ -1310,27 +1335,37 @@ class ProductionTasks:
             if step["stage"] == "raw":
                 built = self._raw_step(task=task, definition=definition, execution_id=execution_id,
                                        window_start=window_start, window_end=window_end)
-            else:
-                timeframe = step.get("timeframe") or step["stage"].split(":", 1)[-1]
-                try:
-                    chain = _recipe_chain(timeframe, raw_timeframe=definition.get("raw_timeframe")
-                                          or DEFAULT_RAW_TIMEFRAME,
-                                          provider=definition["provider"],
-                                          price_basis=definition.get("price_basis") or "bid")
-                except DefinitionError:
-                    chain = None
-                recipe_document = next((item for item in chain or []
-                                        if item["target_timeframe"] == timeframe), None)
-                if recipe_document is None:
-                    continue
-                identity = (f"derive:{recipe_document['recipe_id']}:"
-                            f"{_as_utc(window_start, 'window_start').isoformat()}:"
-                            f"{_as_utc(window_end, 'window_end').isoformat()}")
+                if built is not None:
+                    planned.append(built)
+                continue
+            # A derived window is re-planned through the same bucket-run rules as
+            # the forward path: only the runs whose input is complete become steps,
+            # and an unfinished bucket stays owed instead of failing the round.
+            timeframe = step.get("timeframe") or step["stage"].split(":", 1)[-1]
+            try:
+                chain = _recipe_chain(timeframe, raw_timeframe=definition.get("raw_timeframe")
+                                      or DEFAULT_RAW_TIMEFRAME,
+                                      provider=definition["provider"],
+                                      price_basis=definition.get("price_basis") or "bid")
+            except DefinitionError:
+                chain = None
+            recipe_document = next((item for item in chain or []
+                                    if item["target_timeframe"] == timeframe), None)
+            if recipe_document is None:
+                continue
+            runs, _blocked = self._derive_runs(definition=definition,
+                                               recipe_document=recipe_document,
+                                               window_start=window_start, window_end=window_end) \
+                or ([], [])
+            for run_start, run_end in runs:
+                if len(planned) >= budget:
+                    break
+                identity = (f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}")
                 built = self._derive_step(task=task, definition=definition, execution_id=execution_id,
-                                          recipe_document=recipe_document, window_start=window_start,
-                                          window_end=window_end, identity=identity, deferred=deferred)
-            if built is not None:
-                planned.append(built)
+                                          recipe_document=recipe_document, run_start=run_start,
+                                          run_end=run_end, identity=identity)
+                if built is not None:
+                    planned.append(built)
         return planned
 
     def _raw_step(self, *, task: dict, definition: dict, execution_id: str,

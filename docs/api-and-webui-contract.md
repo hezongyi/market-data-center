@@ -21,7 +21,7 @@ metrics 只返回聚合状态，不返回 provider 原始响应、URL 或密钥�
 `GET /api/v1/health/ready` 同时返回 `read_status`、`write_status`、`capacity_status` 和 `capacity_measurement_source`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
 
 Web UI 只调用 API，不直接读取 Parquet 或 SQLite。工作区：Overview、Data catalog、Maintenance、
-Runs、Quality、Explorer 和 Operations。
+Runs、Quality、Explorer、Operations 和 Production plans。
 
 经济数据：`POST /api/v1/economic/ingest` 触发受鉴权的 FRED ingest，并写入
 `economic_observations.v2`；`GET /api/v1/economic/observations` 只读取 published manifest snapshot，
@@ -35,7 +35,8 @@ Runs、Quality、Explorer 和 Operations。
 配置了 `DATACENTER_API_KEY` 时（非 loopback 绑定由 `Settings` 强制要求配置），所有会排队、
 写入或改变状态的接口都要求 `X-API-Key`，缺失或错误返回 401 且 `errors[0].code` 为
 `unauthorized`；loopback 上的无 key 开发部署沿用同一代码路径，即写接口在该配置下不做校验。
-唯一无论是否配置 key 都不鉴权的 mutating 接口是 `POST /api/v1/maintenance/plans`：它是无副作用
+唯一无论是否配置 key 都不鉴权的接口是 `POST /api/v1/maintenance/plans` 与
+`POST /api/v1/production/plans`：两者都是无副作用
 的校验预览，既不排队也不写审计——这是刻意的例外，不是遗漏。该策略由
 `backend/tests/test_api_surface_contract.py` 的路由清单测试强制：新增或删除任何 mutating
 路由都必须在该清单中登记并显式决定"是否鉴权、是否审计"，否则测试失败。

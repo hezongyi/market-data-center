@@ -1102,7 +1102,12 @@ class RunLedger:
             if original.get("status") in {"pass", "failed", "dead_letter"} and original != payload:
                 raise ValueError("terminal receipt is immutable")
             merged = {**original, **payload}
-            conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id,error_type) values (?, ?, ?, ?, ?, ?, ?, ?) "
+            # ``finished_at`` is part of the insert list, not only of the update
+            # clause: SQLite resolves ``excluded.finished_at`` to NULL when the
+            # column is absent from the insert, which silently erased the indexed
+            # finish time the governor cooldown reads.
+            conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id,error_type,finished_at) "
+                         "values (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                          "on conflict(run_id) do update set payload=excluded.payload,status=excluded.status,"
                          "plan_id=coalesce(excluded.plan_id,runs.plan_id),"
                          "execution_id=coalesce(excluded.execution_id,runs.execution_id),"
@@ -1110,7 +1115,7 @@ class RunLedger:
                          "error_type=excluded.error_type,finished_at=excluded.finished_at",
                          (run_id, json.dumps(merged), merged.get("status"), merged.get("created_at"),
                           merged.get("plan_id"), merged.get("execution_id"), merged.get("step_id"),
-                          merged.get("error_type")))
+                          merged.get("error_type"), merged.get("finished_at")))
 
     @staticmethod
     def _assert_immutable(original: dict, incoming: dict) -> None:

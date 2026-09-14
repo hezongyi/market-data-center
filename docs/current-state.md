@@ -33,6 +33,22 @@
 
 monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（systemd 默认 `AccuracySec=1min` 的合并效应），即告警分辨率实际减半；这是配置事实，不是故障。
 
+## 生产任务与统一调度（开发完成，**未进入生产**）
+
+本节记录开发状态，不是生产事实：调度器尚未安装、尚未激活，生产仍由旧入口服务。
+
+| 项目 | 当前事实 | 证据 |
+| --- | --- | --- |
+| 调度器单元 | **未安装**：主机 `systemctl --user list-unit-files` 中没有 `market-data-center-scheduler.*` | `systemctl --user list-unit-files --type=service --type=timer`（输出中仅有 api/worker/monitor/smoke/provider-acceptance/1m-maintenance 与 marketlab-market-bars-maintenance） |
+| 生产旧入口（现状） | raw：`market-data-center-1m-maintenance.{service,timer}`（`OnUnitInactiveSec=15min`，`data_center.maintenance_runner`）；derived：`marketlab-market-bars-maintenance.{service,timer}`（`data_center.derived_maintenance_runner`，仓库内**未声明**，仅主机安装） | 同上命令 + `deploy/systemd/market-data-center-1m-maintenance.{service,timer}` |
+| 交付状态 | 五层 stacked PR #110–#114（issue #109），栈顶 `1a63ac9`；本地统一门禁 `result=pass`（438 passed / 5 skipped，浏览器验收 65 checks 双视口） | 每层 PR 的 hosted `verify` 与本地 `acceptance-receipts/ci/all.json` |
+| ledger schema | 生产库**仍是旧版本**；开发分支把迁移链推进到 `SCHEMA_VERSION=5`（新增 `provider_backoff`），只有该 release 被激活时才会在生产库上执行，届时与 API/worker 一起重启 | `backend/src/data_center/runs/ledger.py`、`backend/tests/test_scheduler_service_drill.py`（上一版数据库就地升级演练） |
+| 接管准备 | 工具**只准备不执行**：`data_center.takeover` 可盘点仓库声明与主机实际安装的单元、把旧入口导入为 `paused` 计划（默认 dry-run）并输出对照/校验 receipt；本机盘点已识别出上表两个旧入口（其中 marketlab 一个为 host-only） | `backend/src/data_center/takeover.py`、`backend/tests/test_takeover_preparation.py`、`docs/operations-runbook.md` 的 "Legacy timer takeover" 一节 |
+| 未执行（需批准） | `retention-audit` 独立单元的安装、调度器单元的安装与影子期观察、旧入口停用、canary 启用、回滚演练 | 计划 S5.2 第 3–8 步；均需维护者批准与生产窗口 |
+| 发布边界 | `retention-audit` 解耦（独立单元 + `retention_audit` receipt action）必须作为**独立小发布**进入生产，不并入调度器接管批次 | `docs/operations-runbook.md` 的 "Retention audit is its own release" |
+
+接管顺序（批准后按 `docs/operations-runbook.md` 执行）：部署含调度器的 release → 影子模式观察并与旧 timer 的窗口对照 → 导入旧入口为 `paused` 计划 → 停用旧单元 → canary 启用 1–2 条计划 → 观察后扩大范围；任一步异常按反向顺序回滚，两个方向都留 receipt。
+
 ## Consumer / ownership 矩阵
 
 | Consumer/数据域 | 当前路径 | 状态 | 回滚/边界 |
