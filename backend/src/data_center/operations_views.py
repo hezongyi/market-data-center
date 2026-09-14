@@ -44,7 +44,12 @@ def worker_activity(ledger, *, heartbeat_limit_seconds: float = 60.0) -> dict:
 
 
 def capacity_history(alert_sink, live: dict, *, limit: int = 50) -> dict:
-    """Recorded capacity transitions plus the live measurement."""
+    """Recorded capacity transitions plus the live measurement.
+
+    Every sample says where it came from: the recorded transitions were written by the monitor at the
+    time they happened, and the live entry carries the measurement source of the policy that produced
+    it (`live` or `fixed_acceptance`), so a pinned acceptance value is never quoted as a disk reading.
+    """
     events = []
     if alert_sink is not None:
         for event in alert_sink.events():
@@ -54,9 +59,12 @@ def capacity_history(alert_sink, live: dict, *, limit: int = 50) -> dict:
                     "status": event.get("status"), "free_ratio": event.get("free_ratio"),
                     "warning_free_ratio": event.get("warning_free_ratio"),
                     "critical_free_ratio": event.get("critical_free_ratio"),
+                    "recorded_only": True,
                 })
     events.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    live = {**live, "recorded_only": False}
     return {"live": live, "events": events[:limit], "event_count": len(events),
+            "measurement_source": live.get("measurement_source"),
             "recorded_only": True,
             "note": "Only capacity transitions the monitor recorded are shown; no history is interpolated."}
 

@@ -446,7 +446,7 @@ Maintenance 页把每种任务画成一张卡片，卡片上写明它写哪个�
 | `Economic` | 宏观序列 | `Series ID`（`PAYEMS`）、`Query mode`（`Current` / `Point in time`）；选 PIT 后出现 `As-of timestamp`（默认 `2026-09-10T00:00:00Z`） |
 
 公共控件：`Start` / `End`（日期）、`Page size`（`1,000` / `500` / `100` / `25` / `2`，默认 1000）。
-提交按钮文字随模式变化：**`Load coverage`**（bars）/ **`Load market bars`**（market）/ **`Load observations`**（economic）—— 注意 bars 模式的按钮叫 "Load coverage"，它其实会同时拉数据与覆盖度。
+提交按钮文字随模式变化：**`Load bars and coverage`**（bars）/ **`Load market bars`**（market）/ **`Load observations`**（economic）。bars 模式一次提交会**同时**拉取数据（`/bars`）与覆盖度（`/provider-bars/coverage`），按钮文案因此同时提到两者；`Published coverage` 面板上的 `Load coverage` 是另一件事，只探测覆盖度、不取数据。
 
 > 默认值是测试用的（`fixture` / `BTCUSDT` / `UI_TEST`），真实查询请改成生产 provider 与标的（如 `dukascopy` / `EURUSD`）。
 

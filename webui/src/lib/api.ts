@@ -177,6 +177,9 @@ export type CapacityMetrics = {
   free_ratio: number;
   warning_free_ratio: number;
   critical_free_ratio: number;
+  // "live" is a disk reading; "fixed_acceptance" is a pinned, deterministic acceptance value that must
+  // never be quoted as a production fact (issue #86).
+  measurement_source?: "live" | "fixed_acceptance" | string;
 };
 
 export type SliWindow = { runs: number; passed: number; success_rate: number | null };
@@ -247,6 +250,8 @@ export type CoverageReport = BarsCoverage & {
   calendar_unit?: string;
   selector?: Record<string, string>;
   quality_status?: string;
+  // Present when the API did not compute the governance fields above; null when it did (issue #85).
+  coverage_detail_unavailable?: string | null;
 };
 
 export type MarketBarsCoverage = {
@@ -334,6 +339,14 @@ export type MaintenanceTaskRequest = {
   task_id?: string | null;
   schedule?: "manual";
 };
+
+/**
+ * A hand-off from another workspace into Maintenance. Each workspace carries only
+ * the facts it actually established: provider, symbol, window and the rest stay
+ * absent when the page never recorded them, and Maintenance keeps its own values
+ * for those fields instead of guessing on the operator's behalf.
+ */
+export type MaintenanceTaskDraft = Partial<MaintenanceTaskRequest> & { source?: string };
 
 export type MaintenanceTask = {
   task_id: string;
@@ -548,12 +561,14 @@ export type CapacityEvent = {
   free_ratio?: number | null;
   warning_free_ratio?: number;
   critical_free_ratio?: number;
+  recorded_only?: boolean;
 };
 
 export type CapacityHistory = {
-  live: CapacityMetrics & { fixed_measurement?: boolean };
+  live: CapacityMetrics & { fixed_measurement?: boolean; recorded_only?: boolean };
   events: CapacityEvent[];
   event_count: number;
+  measurement_source?: string;
   recorded_only: boolean;
   note: string;
 };

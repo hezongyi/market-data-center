@@ -7,7 +7,7 @@ import {
 import { CopyId, DataTable, DetailDrawer, FilterBar, LoadingSkeleton, PanelHeading, StatusBadge } from "../components/ui";
 import { deleteTemplate, loadTemplates, saveTemplate, type TaskTemplate } from "../lib/templates";
 import { useMaintenanceMutation, useQuery, useRunTracker, runScopeOptions, type WriteState } from "../hooks";
-import type { MaintenanceTaskRecord, MaintenanceTaskRequest, QueuedEnvelope, Run, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
+import type { MaintenanceTaskDraft, MaintenanceTaskRecord, MaintenanceTaskRequest, QueuedEnvelope, Run, RunDetail, RunKind, RunScope, TaskPreview } from "../lib/api";
 import type { Services } from "../services";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -41,9 +41,10 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   services: Services;
   onMessage: (message: string) => void;
   onChanged: () => void;
-  // A draft handed over from the explorer or catalog: it only fills the form,
-  // the operator still validates it against the live platform before queueing.
-  draft?: MaintenanceTaskRequest | null;
+  // A draft handed over from another workspace: it only fills the fields that
+  // workspace actually established, and the operator still validates it against
+  // the live platform before queueing.
+  draft?: MaintenanceTaskDraft | null;
 }) {
   const { t } = usePreferences();
   const [runKind, setRunKind] = useState<RunKind>("ingest");
@@ -149,20 +150,37 @@ export function MaintenancePage({ apiKey, services, onMessage, onChanged, draft 
   const draftKey = draft ? JSON.stringify(draft) : "";
   useEffect(() => {
     if (!draft) return;
-    setRunKind(draft.run_kind);
-    setRunScope(draft.run_scope);
-    setProvider(draft.provider);
-    if (draft.symbol) setSymbol(draft.symbol);
+    // Only the fields the originating workspace really established are applied; the rest keep the
+    // workspace defaults and are named in the notice so the operator knows what to fill in.
+    const carried: string[] = [];
+    if (draft.dataset_id) carried.push("dataset");
+    if (draft.run_kind) { setRunKind(draft.run_kind); carried.push("run kind"); }
+    if (draft.run_scope) { setRunScope(draft.run_scope); carried.push("run scope"); }
+    if (draft.provider) { setProvider(draft.provider); carried.push("provider"); }
+    if (draft.symbol) { setSymbol(draft.symbol); carried.push("symbol"); }
     if (draft.asset_class) setAssetClass(draft.asset_class);
     if (draft.timeframe) setTimeframe(draft.timeframe);
     if (draft.series_id) setSeriesId(draft.series_id);
     if (draft.recipe_id) setRecipeId(draft.recipe_id);
     if (draft.recipe_version) setRecipeVersion(draft.recipe_version);
     if (draft.price_basis) setPriceBasis(draft.price_basis);
-    setStart(draft.start.slice(0, 10));
-    setEnd(draft.end.slice(0, 10));
+    const windowCarried = Boolean(draft.start && draft.end);
+    if (draft.start && draft.end) { setStart(draft.start.slice(0, 10)); setEnd(draft.end.slice(0, 10)); }
+    // The form derives the dataset from the run kind, so a hand-off that names a dataset the chosen
+    // kind does not write would otherwise be dropped in silence.
+    const carriedDefinition = draft.run_kind ? runKinds.find(item => item.value === draft.run_kind) : undefined;
+    const mismatch = draft.dataset_id && carriedDefinition?.dataset && draft.dataset_id !== carriedDefinition.dataset
+      ? `The carried run kind writes ${carriedDefinition.dataset}, not ${draft.dataset_id}; the form follows the run kind.`
+      : null;
     mutation.reset();
-    onMessage("Prefilled from the explorer; validate before queueing.");
+    const origin = draft.source ?? "the workspace";
+    onMessage([
+      `Prefilled ${carried.length ? carried.join(", ") : "no fields"} from ${origin}.`,
+      mismatch,
+      windowCarried
+        ? "Validate before queueing."
+        : "The window was not carried: set start and end, or preview to see which fields are still missing.",
+    ].filter(Boolean).join(" "));
     // The draft identity is the only trigger: re-running on every render would
     // discard operator edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps

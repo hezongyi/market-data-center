@@ -15,4 +15,10 @@ dev = ["pytest>=8", "httpx>=0.27", "httpx2>=2", "ruff>=0.11", "tomli>=2; python_
 filterwarnings = [
   "error",
   "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated, use anyio\\.from_thread\\.BlockingPortal instead\\.:DeprecationWarning:starlette\\.testclient",
+  # FastAPI builds FieldInfo(alias=<parameter name>) for every endpoint parameter and hands it to a
+  # pydantic TypeAdapter; pydantic 2.13 reports the alias as ineffective in that internal usage.
+  # Parameter binding itself is unaffected: OpenAPI keeps the real names and invalid values still fail
+  # validation, which backend/tests/test_app_warning_contract.py asserts. Only this class is ignored so
+  # every other warning keeps failing the gate. See issue #95.
+  "ignore:The 'alias' attribute with value.*:pydantic.warnings.UnsupportedFieldAttributeWarning",
 ]

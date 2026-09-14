@@ -16,7 +16,9 @@ query 计数。
 `capacity` 子对象包含 total/used/free bytes、free ratio、warning/critical thresholds 和 `ok|warning|critical`；稳定字段还包括 `last_successful_backup_at`、`last_successful_recovery_drill_at` 与 `temporary_backup_count`。
 metrics 只返回聚合状态，不返回 provider 原始响应、URL 或密钥。
 
-`GET /api/v1/health/ready` 同时返回 `read_status`、`write_status` 和 `capacity_status`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
+**容量测量来源（issue #86）**：每个容量读数都带 `measurement_source`，取 `live`（真实磁盘读数）或 `fixed_acceptance`（验收环境用 `DATACENTER_CAPACITY_FIXED_FREE_RATIO` 钉住的确定性值）。它出现在 `/metrics` 的 `capacity`、`/health/ready` 的 `capacity_measurement_source`、`/operations/capacity-history` 的 `live` 与顶层字段，以及 `capacity_check` receipt 的 `details.capacity` 中；`fixed_measurement` 布尔保留给既有 consumer，等价于 `measurement_source == "fixed_acceptance"`。`/operations/capacity-history` 的**记录样本**（monitor 写入的转移事件）带 `recorded_only: true`，`live` 条目带 `recorded_only: false`，因此单个样本脱离上下文也不会被当作实时读数。
+
+`GET /api/v1/health/ready` 同时返回 `read_status`、`write_status`、`capacity_status` 和 `capacity_measurement_source`。容量 critical 只保护写路径，不把可读取的服务误报为完全不可用。
 
 Web UI 只调用 API，不直接读取 Parquet 或 SQLite。工作区：Overview、Data catalog、Maintenance、
 Runs、Quality、Explorer 和 Operations。
@@ -84,6 +86,15 @@ dataset、维护策略与 `write_status`，供表单校验和禁用不可用选�
 `GET /api/v1/market-bars/coverage` 在派生行情物理覆盖之外返回 recipe 语义
 （source/target timeframe、partial bucket policy、price basis、materialization）与
 `input_snapshot_ids`；传入 `start`/`end` 时再返回 readiness、ready intervals 与 gap count。
+
+**`GET /api/v1/provider-bars/coverage` 的详细覆盖范围（issue #85）**：治理字段
+（`readiness_status`、`ready_intervals`、`gap_count`、`missing_timestamp_count`、
+`latest_complete_boundary`、`quality_status`）目前**只在** `provider=dukascopy`、`timeframe=1m`
+且同时给出 `start` 与 `end` 时计算。其它任何 selector 形状都返回摘要字段，并通过
+`coverage_detail_unavailable` 给出机器可读的原因（无法计算时为 `null`）：缺少窗口、该 selector
+没有已发布行、或"详细覆盖目前只对该形状计算"。Web UI 直接展示该原因，因此
+"平台没有评估"与"评估过且不健康"在界面上不再都显示为 `Not published`。把详细覆盖推广到其它
+provider/timeframe 组合属于独立的 spec，不在本条契约内。
 
 运维只读视图：`GET /api/v1/operations/queue`（队列深度与 `runs_by_status`）、
 `/operations/worker`（heartbeat 状态、in-flight jobs）、`/operations/capacity-history`（live 采样 +

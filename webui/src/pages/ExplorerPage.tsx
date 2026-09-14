@@ -35,6 +35,8 @@ type CoverageView = {
   scope: string | null;
   readiness: string | null;
   summaryOnly: boolean;
+  // Why the API did not compute the governance fields (issue #85); null when it did.
+  detailUnavailable: string | null;
   gapCount: number | null;
   readyIntervals: Array<{ start: string; end: string; semantics: string }>;
   rowCount: number | null;
@@ -277,14 +279,14 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
     if (!draft) {
       setTaskNotice(plan.window
         ? `No bounded window is on screen, so ${plan.kind || "a maintenance"} task cannot be prefilled for ${plan.selector}. Set Query start date and Query end date, or load coverage that publishes an observed window.`
-        : `No selector is on screen yet. Load coverage or run a query before planning a maintenance task.`);
+        : `No selector is on screen yet. Load bars and coverage or run a query before planning a maintenance task.`);
       return;
     }
     if (onMaintenance) { onMaintenance(draft); return; }
     setTaskNotice(`Maintenance is not wired into this view. Open the Maintenance workspace and plan ${plan.kind} for ${plan.selector} over ${plan.window}.`);
   };
 
-  const submitLabel = mode === "bars" ? "Load coverage" : mode === "market" ? "Load market bars" : "Load observations";
+  const submitLabel = mode === "bars" ? "Load bars and coverage" : mode === "market" ? "Load market bars" : "Load observations";
 
   return <div className="explorer-page">
     <section className="panel" aria-label="Query">
@@ -392,18 +394,22 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
     {result && view && <section className="panel" aria-label={t("Coverage")}>
       <PanelHeading eyebrow="Coverage" title={t("Ready intervals and gaps")}
         action={<StatusBadge tone={view.summaryOnly ? "warn" : view.readiness === "ready" ? "good" : view.readiness ? "bad" : "neutral"}>
-          {view.summaryOnly ? "Readiness unknown (summary only)" : view.readiness ?? "Readiness not published"}
+          {view.summaryOnly ? "Readiness unknown (summary only)"
+            : view.readiness ?? (view.detailUnavailable ? "Readiness not computed" : "Readiness not published")}
         </StatusBadge>} />
 
       {result.mode === "economic" && <p className="filter-note"><AlertTriangle size={12} /> The economic coverage endpoint publishes physical coverage only: no readiness status, ready intervals or gap count exist for this selector.</p>}
 
       <dl className="detail-list">
-        <div><dt>{t("Coverage scope")}</dt><dd>{view.scope ?? <Unavailable label="Scope not published" />}</dd></div>
+        <div><dt>{t("Coverage scope")}</dt><dd>{view.scope
+          ?? <Unavailable label={view.detailUnavailable ? "Scope not computed" : "Scope not published"} />}</dd></div>
         <div><dt>{t("Readiness status")}</dt><dd>{view.summaryOnly
           ? `unknown · summary-only response`
-          : view.readiness ?? <Unavailable label="Readiness not published" />}</dd></div>
+          : view.readiness
+            ?? <Unavailable label={view.detailUnavailable ? "Readiness not computed" : "Readiness not published"} />}</dd></div>
         <div><dt>{t("Gap count")}</dt><dd>{view.gapCount == null
-          ? <Unavailable label="Not evaluated by this response" /> : view.gapCount}</dd></div>
+          ? <Unavailable label={view.detailUnavailable ? "Not computed by this response" : "Not evaluated by this response"} />
+          : view.gapCount}</dd></div>
         <div><dt>{t("Ready intervals")}</dt><dd>{view.readyIntervals.length}</dd></div>
         <div><dt>{t("Rows in selector")}</dt><dd>{view.rowCount == null ? "—" : view.rowCount.toLocaleString()}</dd></div>
         <div><dt>{view.kind === "economic" ? "Observation window" : "Observed window (UTC)"}</dt><dd className="mono">
@@ -428,7 +434,10 @@ export function ExplorerPage({ apiKey, initialMode = "bars", services, onMainten
         </li>)}
       </ul>}
 
-      {view.summaryOnly && <p className="filter-note"><AlertTriangle size={12} /> Summary-only coverage: the API returned coverage_scope=summary with readiness unknown, so this console claims no per-interval readiness for the selector.</p>}
+      {(view.summaryOnly || view.detailUnavailable) && <p className="filter-note" role="status"><AlertTriangle size={12} />{" "}
+        {view.detailUnavailable
+          ? `Detailed coverage was not computed: ${view.detailUnavailable}.`
+          : "Summary-only coverage: the API returned coverage_scope=summary with readiness unknown, so this console claims no per-interval readiness for the selector."}</p>}
 
       <div className="coverage-actions">
         <button className="primary-button" onClick={requestTask}><Hammer size={14} /> Create task from coverage</button>
@@ -462,6 +471,7 @@ function coverageView(result: ExplorerResult): CoverageView | null {
       scope: report.coverage_scope ?? null,
       readiness: report.readiness_status ?? null,
       summaryOnly: report.coverage_scope === "summary" || report.readiness_status === "unknown",
+      detailUnavailable: report.coverage_detail_unavailable ?? null,
       gapCount: report.gap_count === undefined ? null : report.gap_count,
       readyIntervals: report.ready_intervals ?? [],
       rowCount: report.row_count ?? null,
@@ -480,6 +490,7 @@ function coverageView(result: ExplorerResult): CoverageView | null {
       scope: report.coverage_scope ?? null,
       readiness: report.readiness_status ?? null,
       summaryOnly: report.coverage_scope === "summary" || report.readiness_status === "unknown",
+      detailUnavailable: null,
       gapCount: report.gap_count === undefined ? null : report.gap_count,
       readyIntervals: report.ready_intervals ?? [],
       rowCount: report.row_count ?? null,
@@ -501,6 +512,7 @@ function coverageView(result: ExplorerResult): CoverageView | null {
       scope: null,
       readiness: null,
       summaryOnly: false,
+      detailUnavailable: null,
       gapCount: null,
       readyIntervals: [],
       rowCount: report.row_count ?? null,

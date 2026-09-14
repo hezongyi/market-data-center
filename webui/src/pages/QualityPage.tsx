@@ -22,7 +22,7 @@ import {
 } from "../components/ui";
 import { messageOf, permissionOf, useMaintenanceMutation, useQuery, type PermissionState } from "../hooks";
 import type {
-  Finding, FindingState, MaintenanceTaskRequest, QueuedEnvelope, RunDetail, RunKind, TaskPreview, ValidationIssue,
+  Finding, FindingState, MaintenanceTaskDraft, MaintenanceTaskRequest, QueuedEnvelope, RunDetail, RunKind, TaskPreview, ValidationIssue,
 } from "../lib/api";
 import type { Filters, Paged, Services } from "../services";
 import "./QualityPage.css";
@@ -35,7 +35,7 @@ type QualityPageProps = {
   services: Services;
   onMessage: (message: string) => void;
   onChanged: () => void;
-  onMaintenance?: () => void;
+  onMaintenance?: (draft?: MaintenanceTaskDraft) => void;
 };
 
 // -- formatting ------------------------------------------------------------
@@ -194,10 +194,34 @@ const repairWindow = (coverage: CoverageView | null, run: RunDetail | null): Rep
   return null;
 };
 
+type RepairFacts = {
+  datasetId: string | null;
+  runKind: RunKind | null;
+  provider: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  window: RepairWindow | null;
+};
+
 type RepairAssessment =
-  | { status: "pending" }
-  | { status: "available"; runKind: RunKind; task: MaintenanceTaskRequest; windowNote: string; notes: string[] }
-  | { status: "blocked"; summary: string; missing: string[] };
+  | { status: "pending"; facts: RepairFacts }
+  | { status: "available"; runKind: RunKind; task: MaintenanceTaskRequest; windowNote: string; notes: string[]; facts: RepairFacts }
+  | { status: "blocked"; summary: string; missing: string[]; facts: RepairFacts };
+
+/**
+ * Hand the maintenance workspace what the drawer actually established. Fields the finding never
+ * recorded stay absent so Maintenance keeps its own values and says what is still missing; nothing
+ * is inferred to make the draft look complete.
+ */
+const repairDraft = (facts: RepairFacts): MaintenanceTaskDraft => ({
+  ...(facts.datasetId ? { dataset_id: facts.datasetId } : {}),
+  ...(facts.runKind ? { run_kind: facts.runKind } : {}),
+  ...(facts.provider ? { provider: facts.provider } : {}),
+  ...(facts.symbol ? { symbol: facts.symbol } : {}),
+  ...(facts.timeframe ? { timeframe: facts.timeframe } : {}),
+  ...(facts.window ? { start: facts.window.start, end: facts.window.end } : {}),
+  source: "Quality",
+});
 
 const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportingRunPending: boolean): RepairAssessment => {
   const code = finding.code;
@@ -221,15 +245,18 @@ const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportin
       status: "blocked",
       summary: `No bounded repair task is defined for code ${code}${datasetId ? ` on ${datasetId}` : ""}.`,
       missing: [`a repairable code (${REPAIRABLE_CODES.join(", ")})`],
+      facts: { datasetId, runKind: null, provider, symbol, timeframe, window: null },
     };
   }
 
   if (derivedParity && !reportingRun) {
-    if (reportingRunPending) return { status: "pending" };
+    const facts: RepairFacts = { datasetId, runKind: "parity", provider, symbol, timeframe, window: null };
+    if (reportingRunPending) return { status: "pending", facts };
     return {
       status: "blocked",
       summary: "The reporting run detail is required before a truthful parity re-check can be bounded.",
       missing: ["the reporting run detail (provider, symbol, recipe, price basis and window are recorded on the run)"],
+      facts,
     };
   }
 
@@ -240,13 +267,14 @@ const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportin
 
   if (providerCoverage) {
     const window = repairWindow(coverage, reportingRun);
+    const facts: RepairFacts = { datasetId, runKind: "gap_repair", provider, symbol, timeframe, window };
     if (!window) {
       missing.push("a recorded gap interval (first missing timestamp plus the next ready interval) or the reporting run time range");
     }
     if (missing.length || !window || !provider || !symbol || !timeframe) {
       // The reporting run may still be in flight and carry the missing window.
-      if (reportingRunPending) return { status: "pending" };
-      return { status: "blocked", summary: "The finding does not record enough facts to bound a gap repair.", missing };
+      if (reportingRunPending) return { status: "pending", facts };
+      return { status: "blocked", summary: "The finding does not record enough facts to bound a gap repair.", missing, facts };
     }
     return {
       status: "available", runKind: "gap_repair",
@@ -256,6 +284,7 @@ const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportin
       },
       windowNote: window.note,
       notes: ["gap repair re-fetches only the recorded missing interval and publishes a new canonical part."],
+      facts,
     };
   }
 
@@ -265,12 +294,14 @@ const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportin
   if (!recipeId) missing.push("recipe_id");
   if (!recipeVersion) missing.push("recipe_version");
   const window = repairWindow(coverage, reportingRun);
+  const parityFacts: RepairFacts = { datasetId, runKind: "parity", provider, symbol, timeframe, window };
   if (!window) missing.push("the reporting run time range or a recorded coverage gap");
   if (missing.length || !window || !provider || !symbol || !timeframe) {
     return {
       status: "blocked",
       summary: "The finding and its reporting run do not record enough facts to bound a truthful parity re-check.",
       missing,
+      facts: parityFacts,
     };
   }
   return {
@@ -286,6 +317,7 @@ const assessRepair = (finding: Finding, reportingRun: RunDetail | null, reportin
       ...(priceBasis ? [] : ["The reporting run does not record a price basis; the preview resolves it or reports the field as required."]),
       "parity is a read-only verification: it re-checks the derived layer against the raw layer and publishes nothing.",
     ],
+    facts: parityFacts,
   };
 };
 
@@ -502,7 +534,7 @@ function FindingDrawer({ finding, services, onClose, onMessage, onChanged, onRel
   onMessage: (message: string) => void;
   onChanged: () => void;
   onReload: () => void;
-  onMaintenance?: () => void;
+  onMaintenance?: (draft?: MaintenanceTaskDraft) => void;
   onPatch: (patch: Partial<Finding>) => void;
 }) {
   const { t } = usePreferences();
@@ -696,7 +728,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
   reportingRunError: string | null;
   onMessage: (message: string) => void;
   onChanged: () => void;
-  onMaintenance?: () => void;
+  onMaintenance?: (draft?: MaintenanceTaskDraft) => void;
   onApplyState: (state: FindingState, body: { dataset_id?: string; resolved_by_run_id?: string }) => Promise<boolean>;
 }) {
   const { t } = usePreferences();
@@ -714,7 +746,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
   );
 
   const handOff = () => {
-    if (onMaintenance) onMaintenance();
+    if (onMaintenance) onMaintenance(repairDraft(assessment.facts));
     else onMessage("Open the Maintenance workspace to plan a bounded task for this finding.");
   };
 
@@ -758,6 +790,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
       </p>
       <div className="form-actions">
         <button className="primary-button" aria-label={t("Create repair task")} disabled><Hammer size={14} /> Create repair task</button>
+        <button className="secondary-button" onClick={handOff}>Open maintenance workspace</button>
       </div>
     </>}
 
@@ -777,6 +810,7 @@ function RepairSection({ finding, services, reportingRun, reportingRunPending, r
       <div className="form-actions">
         <button className="primary-button" aria-label={t("Create repair task")} disabled={mutation.state === "validating"}
           onClick={() => void startPreview()}><Hammer size={14} /> Create repair task</button>
+        <button className="secondary-button" onClick={handOff}>Open maintenance workspace</button>
         <button className="secondary-button" onClick={() => { mutation.reset(); onMessage(""); }}>{t("Clear")}</button>
         {mutation.state === "validating" && <span className="filter-note" role="status"><RefreshCw size={12} className="spin" /> Validating the task…</span>}
       </div>
