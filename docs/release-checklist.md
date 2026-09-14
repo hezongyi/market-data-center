@@ -88,6 +88,20 @@ The real-provider acceptance observation required by step 8 is recorded in `docs
 
 **Production activation is deliberately excluded from this release.** The tag exists on protected `main`, but no `deployment_stage` or `deployment_activate` was run for it and production continues to serve `v0.5.0` (`3e2362ab0b31-6005b252`). Activation requires a separate approval and its own receipts; until then the rollback target of record stays `v0.5.0`, and `v0.5.1` is the forward target once activation is approved.
 
+## v0.6.0 protected-main evidence
+
+Release preparation PR (this change) merged as protected-main commit `<filled after merge>`; the post-merge
+`Checks` `verify` run is recorded here once it completes. Local unified CI (`bash scripts/ci.sh all`) passed on the
+release-preparation head with `software_version=0.6.0`: 442 passed / 5 skipped, Ruff, dependency lock, compatibility,
+production-env, secret scan, operations acceptance, snapshot benchmark, Web build, browser acceptance (66 checks at
+1440×1000 and 390×844) and service acceptance. Committed constraints are unchanged from `v0.5.1`, so the existing
+dependency refresh evidence still applies.
+
+The five delivery layers were merged as protected-main commits `5a64cc1` (#110), `a306fa7` (#111), `affeb9a` (#112),
+`e380b5d` (#113) and `7f2b612` (#114), each with a green hosted `verify` (Python 3.10/3.11/3.12 + Node 22 browser,
+10/10 checks). The ledger schema moves to 5 in this release; migration, drill and rollback statements are in
+`docs/releases/v0.6.0.md`.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
