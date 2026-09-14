@@ -85,6 +85,15 @@ dataset、维护策略与 `write_status`，供表单校验和禁用不可用选�
 （source/target timeframe、partial bucket policy、price basis、materialization）与
 `input_snapshot_ids`；传入 `start`/`end` 时再返回 readiness、ready intervals 与 gap count。
 
+**`GET /api/v1/provider-bars/coverage` 的详细覆盖范围（issue #85）**：治理字段
+（`readiness_status`、`ready_intervals`、`gap_count`、`missing_timestamp_count`、
+`latest_complete_boundary`、`quality_status`）目前**只在** `provider=dukascopy`、`timeframe=1m`
+且同时给出 `start` 与 `end` 时计算。其它任何 selector 形状都返回摘要字段，并通过
+`coverage_detail_unavailable` 给出机器可读的原因（无法计算时为 `null`）：缺少窗口、该 selector
+没有已发布行、或"详细覆盖目前只对该形状计算"。Web UI 直接展示该原因，因此
+"平台没有评估"与"评估过且不健康"在界面上不再都显示为 `Not published`。把详细覆盖推广到其它
+provider/timeframe 组合属于独立的 spec，不在本条契约内。
+
 运维只读视图：`GET /api/v1/operations/queue`（队列深度与 `runs_by_status`）、
 `/operations/worker`（heartbeat 状态、in-flight jobs）、`/operations/capacity-history`（live 采样 +
 monitor 实际记录的容量迁移事件）、`/operations/receipts`（按**实际记录的动作名**返回 backup、backup_verify、restore、

@@ -696,6 +696,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # additive response.  This makes the distinction between a globally
         # degraded history and its individually safe ready intervals visible
         # to consumers without changing the legacy summary fields.
+        # Detailed coverage is computed for one selector shape today. Every other shape says so in a
+        # machine-readable reason, so a console never has to render a bare "not published" that reads
+        # the same as "checked and healthy".
+        detail_unavailable = ("detailed coverage requires start and end, because readiness is only "
+                              "evaluated over the requested window")
         if provider == "dukascopy" and timeframe == "1m" and start is not None and end is not None:
             rows = query_provider_bars(
                 config.canonical_root, provider=provider, symbol=symbol, timeframe=timeframe,
@@ -715,6 +720,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     requested_end=datetime.fromisoformat(end),
                     timeframe=timedelta(minutes=1),
                 ).as_dict()
+                detail_unavailable = None
+            else:
+                detail_unavailable = ("no canonical rows are published for this selector, so readiness "
+                                      "cannot be evaluated")
         elif provider == "dukascopy" and timeframe == "1m":
             # A min/max summary must not infer gaps across periods that were
             # never requested/observed (for example sparse historical imports).
@@ -722,7 +731,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        "readiness_status": "unknown", "ready_interval_count": 0,
                        "ready_intervals": [], "gap_count": None,
                        "missing_timestamp_count": None}
-        return api_envelope(payload)
+        else:
+            detail_unavailable = (f"detailed coverage is computed for provider=dukascopy timeframe=1m with "
+                                  f"start and end; {provider} {timeframe} answers with the summary only")
+        return api_envelope({**payload, "coverage_detail_unavailable": detail_unavailable})
 
     @app.get(f"{config.api_prefix}/market-bars")
     def market_bars(symbol: str, provider: str, timeframe: str, price_basis: str,
