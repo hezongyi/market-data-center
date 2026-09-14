@@ -100,6 +100,35 @@ class RunLedger:
                  "definition_version": r[4], "payload": json.loads(r[5]), "created_at": r[6],
                  "updated_at": r[7], "deleted_at": r[8]} for r in rows]
 
+    def set_production_task_state(self, task_id: str, state: str) -> dict:
+        if state not in {"enabled", "paused", "archived"}:
+            raise ValueError("unsupported production task state")
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select name,alias,definition_version,payload,created_at,deleted_at from production_tasks where task_id=?", (task_id,)).fetchone()
+            if row is None or row[5] is not None:
+                raise KeyError(task_id)
+            conn.execute("update production_tasks set desired_state=?,updated_at=? where task_id=?", (state, stamp, task_id))
+            conn.execute("update plan_ownership set state=?,updated_at=? where task_id=?", (state, stamp, task_id))
+        return {"task_id": task_id, "alias": row[1], "name": row[0], "desired_state": state,
+                "definition_version": row[2], "payload": json.loads(row[3]), "created_at": row[4], "updated_at": stamp}
+
+    def delete_production_task(self, task_id: str) -> dict:
+        """Tombstone a task definition while retaining history and ownership auditability."""
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select desired_state,definition_version,payload from production_tasks where task_id=? and deleted_at is null", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            if row[0] not in {"paused", "archived"}:
+                raise ValueError("task must be paused or archived before deletion")
+            conn.execute("update production_tasks set deleted_at=?,updated_at=? where task_id=?", (stamp, stamp, task_id))
+            conn.execute("delete from plan_ownership where task_id=?", (task_id,))
+        return {"task_id": task_id, "deleted_at": stamp, "definition_version": row[1],
+                "payload_digest": hashlib.sha256(row[2].encode()).hexdigest()}
+
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:
             conn.execute("begin immediate")
