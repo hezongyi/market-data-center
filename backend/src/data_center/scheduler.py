@@ -6,6 +6,7 @@ top so shadow ticks can be tested deterministically before activation.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 
 def next_run_at(*, schedule: str, now: datetime, anchor: datetime | None = None,
@@ -51,6 +52,10 @@ class Scheduler:
     def tick(self, *, now: datetime | None = None, budget: int = 50) -> dict:
         now = now or datetime.now(timezone.utc)
         self.ledger.scheduler_heartbeat(instance_id=self.instance_id, dispatch_enabled=self.dispatch_enabled)
+        token = self.ledger.acquire_scheduler_lease("global", self.instance_id)
+        if token is None:
+            return {"instance_id": self.instance_id, "dispatch_enabled": self.dispatch_enabled,
+                    "evaluated": 0, "decisions": [], "reason": "lease_unavailable", "tick_at": now.isoformat()}
         decisions = []
         for task in self.ledger.list_production_tasks()[: max(0, budget)]:
             definition = task.get("payload") or {}
@@ -61,6 +66,12 @@ class Scheduler:
             decision["task_id"] = task["task_id"]
             if not self.dispatch_enabled and decision["action"] == "start_execution":
                 decision["action"] = "shadow_start_execution"
+            elif self.dispatch_enabled and decision["action"] == "start_execution":
+                execution = self.ledger.claim_due_execution(task_id=task["task_id"], owner_id=self.instance_id,
+                    scheduled_for=decision["scheduled_for"], definition_version=task["definition_version"],
+                    fencing_token=token)
+                decision["execution_id"] = execution["execution_id"] if execution else None
+                decision["action"] = "execution_claimed" if execution else "claim_rejected"
             decisions.append(decision)
         return {"instance_id": self.instance_id, "dispatch_enabled": self.dispatch_enabled,
                 "evaluated": len(decisions), "decisions": decisions, "tick_at": now.isoformat()}

@@ -41,6 +41,7 @@ class RunLedger:
             conn.execute("create table if not exists scheduler_state (id integer primary key check(id=1), dispatch_enabled integer not null, heartbeat_at text not null, instance_id text, last_tick_at text)")
             conn.execute("create table if not exists scheduler_leases (lease_key text primary key, owner_id text not null, fencing_token integer not null, expires_at real not null)")
             conn.execute("create table if not exists production_executions (execution_id text primary key, task_id text not null, definition_version integer not null, trigger_source text not null, scheduled_for text, state text not null, outcome text, created_at text not null, finished_at text, coalesced_count integer not null default 0)")
+            conn.execute("create unique index if not exists production_execution_slot on production_executions(task_id, scheduled_for) where scheduled_for is not null")
             conn.execute("create unique index if not exists production_one_active_execution on production_executions(task_id) where state in ('pending','running','pausing')")
             conn.execute("create table if not exists production_steps (step_id text primary key, execution_id text not null, stage text not null, window_start text, window_end text, state text not null, block_reason text, run_id text, created_at text not null)")
             conn.execute("create index if not exists production_steps_execution on production_steps(execution_id, created_at)")
@@ -204,6 +205,43 @@ class RunLedger:
                 raise ValueError("task already has an active execution") from exc
         return {"execution_id": execution_id, "task_id": task_id, "definition_version": definition_version,
                 "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending", "created_at": stamp}
+
+    def claim_due_execution(self, *, task_id: str, owner_id: str, scheduled_for: str,
+                            definition_version: int, fencing_token: int,
+                            trigger_source: str = "scheduled") -> dict | None:
+        """Atomically claim a scheduled slot after the scheduler lease check.
+
+        The unique slot index makes retries after a lost response return the
+        existing execution instead of creating a second logical execution.
+        """
+        stamp = self._now()
+        execution_id = str(uuid4())
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            lease = conn.execute("select owner_id,fencing_token,expires_at from scheduler_leases where lease_key=?",
+                                 ("global",)).fetchone()
+            if not lease or lease[0] != owner_id or lease[1] != fencing_token or lease[2] <= self.clock():
+                return None
+            existing = conn.execute("select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,created_at,finished_at,coalesced_count from production_executions where task_id=? and scheduled_for=?",
+                                    (task_id, scheduled_for)).fetchone()
+            if existing:
+                return self._execution_row(existing)
+            try:
+                conn.execute("insert into production_executions(execution_id,task_id,definition_version,trigger_source,scheduled_for,state,created_at) values (?,?,?,?,?,?,?)",
+                             (execution_id, task_id, definition_version, trigger_source, scheduled_for, "pending", stamp))
+            except sqlite3.IntegrityError:
+                existing = conn.execute("select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,created_at,finished_at,coalesced_count from production_executions where task_id=? and scheduled_for=?",
+                                        (task_id, scheduled_for)).fetchone()
+                return self._execution_row(existing) if existing else None
+        return {"execution_id": execution_id, "task_id": task_id, "definition_version": definition_version,
+                "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending", "created_at": stamp}
+
+    @staticmethod
+    def _execution_row(row) -> dict:
+        return {"execution_id": row[0], "task_id": row[1], "definition_version": row[2],
+                "trigger_source": row[3], "scheduled_for": row[4], "state": row[5],
+                "outcome": row[6], "created_at": row[7], "finished_at": row[8],
+                "coalesced_count": row[9]}
 
     def list_production_executions(self, task_id: str, *, limit: int = 100) -> list[dict]:
         with self._connect() as conn:

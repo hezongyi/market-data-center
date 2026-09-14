@@ -26,5 +26,17 @@ def test_scheduler_shadow_tick_and_lease_fencing(tmp_path):
     scheduler = Scheduler(ledger, instance_id="one")
     result = scheduler.tick(now=datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
     assert result["decisions"][0]["action"] == "shadow_start_execution"
-    assert ledger.acquire_scheduler_lease("global", "one") == 1
+    assert ledger.acquire_scheduler_lease("global", "one") == 2
     assert ledger.acquire_scheduler_lease("global", "two") is None
+
+
+def test_enabled_tick_claims_one_execution_per_slot(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    ledger.create_production_task(task_id="p", name="A", payload={"next_run_at": "2026-09-14T11:59:00+00:00"}, ownership_keys=["k"], desired_state="enabled")
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True)
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    first = scheduler.tick(now=now)
+    second = scheduler.tick(now=now)
+    assert first["decisions"][0]["action"] == "execution_claimed"
+    assert second["decisions"][0]["execution_id"] == first["decisions"][0]["execution_id"]
+    assert len(ledger.list_production_executions("p")) == 1
