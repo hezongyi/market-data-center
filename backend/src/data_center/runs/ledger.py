@@ -38,6 +38,8 @@ class RunLedger:
             conn.execute("create table if not exists plan_ownership (ownership_key text primary key, task_id text not null, state text not null, updated_at text not null)")
             conn.execute("create unique index if not exists plan_ownership_active on plan_ownership(ownership_key) where state in ('enabled','paused')")
             conn.execute("create table if not exists production_idempotency (idempotency_key text primary key, task_id text, command text not null, response text not null, created_at text not null)")
+            conn.execute("create table if not exists scheduler_state (id integer primary key check(id=1), dispatch_enabled integer not null, heartbeat_at text not null, instance_id text, last_tick_at text)")
+            conn.execute("create table if not exists scheduler_leases (lease_key text primary key, owner_id text not null, fencing_token integer not null, expires_at real not null)")
             conn.execute("create table if not exists dead_letter_state (run_id text primary key, state text not null, acknowledged_at text, resolved_by_run_id text, resolved_at text)")
             conn.execute("create table if not exists dead_letter_audit (id integer primary key, run_id text not null, action text not null, at text not null, related_run_id text, unique(run_id,action,related_run_id))")
             columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
@@ -164,6 +166,25 @@ class RunLedger:
             conn.execute("insert or ignore into production_idempotency(idempotency_key,task_id,command,response,created_at) values (?,?,?,?,?)",
                          (key, task_id, command, json.dumps(result), self._now()))
         return result
+
+    def acquire_scheduler_lease(self, lease_key: str, owner_id: str, *, ttl_seconds: float = 30.0) -> int | None:
+        now = self.clock()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute("select owner_id,fencing_token,expires_at from scheduler_leases where lease_key=?", (lease_key,)).fetchone()
+            if row and row[0] != owner_id and row[2] > now:
+                return None
+            token = (row[1] + 1) if row else 1
+            conn.execute("insert into scheduler_leases(lease_key,owner_id,fencing_token,expires_at) values (?,?,?,?) on conflict(lease_key) do update set owner_id=excluded.owner_id,fencing_token=excluded.fencing_token,expires_at=excluded.expires_at",
+                         (lease_key, owner_id, token, now + ttl_seconds))
+            return token
+
+    def scheduler_heartbeat(self, *, instance_id: str, dispatch_enabled: bool) -> str:
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute("insert into scheduler_state(id,dispatch_enabled,heartbeat_at,instance_id,last_tick_at) values (1,?,?,?,?) on conflict(id) do update set dispatch_enabled=excluded.dispatch_enabled,heartbeat_at=excluded.heartbeat_at,instance_id=excluded.instance_id,last_tick_at=excluded.last_tick_at",
+                         (int(dispatch_enabled), stamp, instance_id, stamp))
+        return stamp
 
     def put(self, run_id: str, payload: dict) -> None:
         with self._connect() as conn:
