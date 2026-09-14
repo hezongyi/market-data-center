@@ -51,6 +51,8 @@ class RunLedger:
             conn.execute("create index if not exists jobs_owner_plan on jobs(owner_plan_id) where owner_plan_id is not null")
             conn.execute("create index if not exists runs_plan_created on runs(plan_id, created_at)")
             conn.execute("create index if not exists runs_execution_step on runs(execution_id, step_id)")
+            conn.execute("insert or ignore into schema_migrations(version, applied_at) values (1, ?)",
+                         (self._now(),))
             conn.execute("pragma user_version=1")
 
     def _connect(self):

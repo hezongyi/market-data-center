@@ -28,4 +28,4 @@ def test_migration_is_idempotent(tmp_path):
     RunLedger(path)
     with sqlite3.connect(path) as conn:
         assert conn.execute("pragma user_version").fetchone()[0] == 1
-        assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == 0
+        assert conn.execute("select count(*) from schema_migrations").fetchone()[0] == 1
