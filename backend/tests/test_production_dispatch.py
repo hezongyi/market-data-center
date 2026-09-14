@@ -585,3 +585,70 @@ def test_a_recompute_that_cannot_be_derived_stays_owed_with_its_attempt_count(tm
     assert result["planned"] == []
     owed = service.recompute_pending("p1")
     assert len(owed) == 1 and owed[0]["attempts"] == 1
+
+
+def test_raw_published_outside_the_plan_owes_its_derived_windows(tmp_path):
+    """AC10/AC12: a manual repair by another entry point must be noticed.
+
+    The plan only ever sees the published catalog, so it remembers which raw
+    parts it has already accounted for and owes the derivation of any window a
+    repaired part invalidates.
+    """
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    worker = LocalWorker(tmp_path / "lake", ledger)
+
+    scheduler.tick(now=NOW)
+    raw = ledger.list_production_steps(execution["execution_id"])[0]
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    scheduler.tick(now=NOW + timedelta(minutes=1))
+    assert drain(worker) == 1
+    scheduler.tick(now=NOW + timedelta(minutes=2))
+    assert ledger.get_production_execution(execution["execution_id"])["outcome"] == "pass"
+    # The plan has now seen the raw layer once: that observation is a baseline.
+    assert service.recompute_pending("p1") == []
+
+    # Another governed entry point publishes a repaired part for the same window,
+    # recorded in the ledger as its own run.
+    repaired_run = ledger.enqueue_job({"job_id": "external-repair", "dataset_id": "provider_bars",
+                                       "provider": "binance", "symbol": "BTCUSDT", "timeframe": "1m",
+                                       "start": raw["window_start"], "end": raw["window_end"],
+                                       "run_kind": "gap_repair", "run_scope": "maintenance"})
+    claim = ledger.claim_next_job()
+    assert claim["run_id"] == repaired_run
+    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+                run_id=repaired_run, provider="binance", symbol="BTCUSDT")
+    ledger.finish_job(claim["job_id"], repaired_run,
+                      {"status": "pass", "run_id": repaired_run, "row_count": 60})
+
+    detected = service._record_external_publications(task=ledger.get_production_task("p1"),
+                                                     definition=derived_definition())
+    assert [item["run_id"] for item in detected] == [repaired_run]
+    owed = service.recompute_pending("p1")
+    assert [item["reason"] for item in owed] == ["raw_published_outside_the_plan"]
+    assert owed[0]["window_start"] == raw["window_start"]
+
+    # Reconciliation re-derives it and clears the debt.
+    service.reconcile_publications(limit=5, step_budget=4)
+    assert service.recompute_pending("p1") == []
+
+
+def test_the_first_observation_of_the_raw_layer_is_not_a_repair(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    raw = ledger.list_production_steps(execution["execution_id"])[0]
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    # A plan adopted over an existing raw layer must not recompute all of history.
+    assert service._record_external_publications(task=ledger.get_production_task("p1"),
+                                                 definition=derived_definition()) == []
+    assert service.recompute_pending("p1") == []
+    # A second pass over the same parts also owes nothing.
+    assert service._record_external_publications(task=ledger.get_production_task("p1"),
+                                                 definition=derived_definition()) == []

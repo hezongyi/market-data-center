@@ -669,6 +669,60 @@ class ProductionTasks:
     def _recompute_ranges(self, task_id: str) -> builtins.list[dict]:
         return list((self.ledger.production_progress(task_id) or {}).get("recompute") or [])
 
+    RAW_PARTS_MEMORY = 200
+    EXTERNAL_PARTS_PER_TICK = 5
+
+    def _record_external_publications(self, *, task: dict, definition: dict) -> builtins.list[dict]:
+        """Notice raw this plan did not publish, and owe the derivation it invalidates.
+
+        The plan remembers the raw parts it has already seen.  A part it has not
+        seen was published by another governed entry point (a manual repair, or
+        another task); if a completed derived step covered that window before the
+        part's run finished, the derived output is stale and belongs in the
+        recompute set (spec 6.2, 6.3).
+        """
+        if self.canonical_root is None:
+            return []
+        try:
+            snapshot = Catalog(self.canonical_root).resolve(
+                RAW_DATASET, {"provider": definition["provider"], "symbol": definition["symbol"],
+                              "timeframe": definition["raw_timeframe"]})
+        except (PublicationError, ValueError):
+            return []
+        progress = self.ledger.production_progress(task["task_id"]) or {}
+        seen = progress.get("raw_parts")
+        current = [f"{part.run_id}:{part.path.name}" for part in snapshot.parts]
+        if seen is None:
+            # First observation is a baseline, never a repair: a plan adopted
+            # over an existing raw layer must not recompute all of history.
+            self.ledger.record_progress(task["task_id"],
+                                        {"raw_parts": current[-self.RAW_PARTS_MEMORY:]})
+            return []
+        fresh = [entry for entry in current if entry not in set(seen)]
+        recorded = []
+        for entry in fresh[:self.EXTERNAL_PARTS_PER_TICK]:
+            run_id = entry.split(":", 1)[0]
+            try:
+                run = self.ledger.get(run_id)
+            except KeyError:
+                continue
+            start, end, finished_at = run.get("start"), run.get("end"), run.get("finished_at")
+            if not start or not end:
+                continue
+            if not self.ledger.stale_derived_steps(
+                    task["task_id"], window_start=str(start), window_end=str(end),
+                    after_created_at=str(finished_at or run.get("created_at") or "")):
+                continue
+            self.record_recompute(task["task_id"], window_start=str(start), window_end=str(end),
+                                  reason="raw_published_outside_the_plan")
+            recorded.append({"run_id": run_id, "start": str(start), "end": str(end)})
+        if fresh:
+            # Remember everything observed, even what was not examined this tick,
+            # so the backlog cannot be re-detected forever as "new".
+            self.ledger.record_progress(task["task_id"],
+                                        {"raw_parts": current[-self.RAW_PARTS_MEMORY:]})
+        return recorded
+
     def _consume_recompute(self, *, task: dict, definition: dict, ranges: builtins.list[dict],
                            step_budget: int) -> tuple[builtins.list[dict], builtins.list[str]]:
         """Plan the repaired ranges; return what stays owed and what was planned."""
@@ -732,6 +786,9 @@ class ProductionTasks:
             # The boundary is read from step rows, so they must reflect the run
             # outcomes first.
             self.ledger.refresh_task_steps(task["task_id"])
+            # Raw published by another governed entry point is detected before the
+            # debt is consumed, so a repair found now is planned in this same tick.
+            self._record_external_publications(task=task, definition=definition)
             progress = self.ledger.production_progress(task["task_id"]) or {}
             # Repaired windows are owed whatever the publication boundary says:
             # they sit behind the cursor, so nothing else would plan them again.
