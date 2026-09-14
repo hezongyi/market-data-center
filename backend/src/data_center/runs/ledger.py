@@ -789,6 +789,24 @@ class RunLedger:
                 "created_at": stamp, "schedule_revision": schedule_revision,
                 "retry_of_execution_id": retry_of_execution_id}
 
+    def stale_derived_steps(self, task_id: str, *, window_start: str, window_end: str,
+                            after_created_at: str) -> bool:
+        """Whether a completed derived step covering this window predates a re-publication.
+
+        That is the repair case: raw for a window was published again after its
+        derived output had already been produced, so the derived output no longer
+        reflects the repaired input and belongs in the recompute set (AC12).
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "select 1 from production_steps s "
+                "join production_executions e on e.execution_id = s.execution_id "
+                "where e.task_id=? and s.stage like 'derive:%' and s.state='completed' "
+                "and s.window_start is not null and s.window_end is not null "
+                "and s.window_start <= ? and s.window_end >= ? and s.created_at < ? limit 1",
+                (task_id, window_end, window_start, after_created_at)).fetchone()
+        return row is not None
+
     def refresh_task_steps(self, task_id: str, *, limit: int = 5) -> None:
         """Refresh the step states of a plan's most recent rounds, in bounded number."""
         with self._connect() as conn:

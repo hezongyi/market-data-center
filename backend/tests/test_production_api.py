@@ -7,6 +7,8 @@ and cursor pagination bound to its filters (AC01, AC07, AC16).
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,10 @@ from data_center.settings import Settings
 
 KEY = "production-api-key"
 NOW = "2026-09-14T12:00:00+00:00"
+# The API validates against the real clock, so a fixed anchor would silently
+# become "in the past" as the suite ages.  The anchor is therefore an hour ahead
+# of now, on a quarter-hour boundary.
+ANCHOR = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
 
 
 def definition(**overrides) -> dict:
@@ -24,7 +30,8 @@ def definition(**overrides) -> dict:
         "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m", "price_basis": "bid",
         "bar_timeframes": ["5m"],
         "window_policy": {"mode": "continuous", "history_start": "2026-01-01T00:00:00+00:00"},
-        "schedule": {"schedule": "fixed_rate", "interval_seconds": 900, "anchor": NOW},
+        "schedule": {"schedule": "fixed_rate", "interval_seconds": 900,
+                     "anchor": ANCHOR.isoformat()},
     }
     base.update(overrides)
     return base
@@ -62,7 +69,8 @@ def test_preview_needs_no_key_and_writes_nothing(client, config):
     assert preview["submittable"] is True
     assert preview["ownership_keys"] == ["provider_bars:dukascopy:EURUSD:1m:bid",
                                          "market_bars:dukascopy:EURUSD:5m:bid"]
-    assert preview["schedule"]["next_runs"][:2] == [NOW, "2026-09-14T12:15:00+00:00"]
+    assert preview["schedule"]["next_runs"][:2] == [
+        ANCHOR.isoformat(), (ANCHOR + timedelta(minutes=15)).isoformat()]
     assert preview["dependencies"][0]["recipe_id"] == "utc-24x7-1m-to-5m-ohlcv"
     ledger = RunLedger(config.ledger_path)
     assert ledger.list_production_tasks() == []
@@ -84,7 +92,7 @@ def test_create_persists_definition_ownership_and_one_audit_entry(client, config
     ledger = RunLedger(config.ledger_path)
     task = ledger.get_production_task("p1")
     assert task["provider"] == "dukascopy" and task["symbol"] == "EURUSD"
-    assert task["next_run_at"] == NOW
+    assert task["next_run_at"] == ANCHOR.isoformat()
     assert [item["ownership_key"] for item in ledger.ownership_of("p1")] == [
         "provider_bars:dukascopy:EURUSD:1m:bid", "market_bars:dukascopy:EURUSD:5m:bid"]
     entries = ledger.write_audit_entries()

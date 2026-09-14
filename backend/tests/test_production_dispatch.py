@@ -512,3 +512,76 @@ def test_retry_is_idempotent_under_a_repeated_key(tmp_path):
     replay = service.retry(execution_id=execution["execution_id"], idempotency_key="retry-1", now=NOW)
     assert replay == first
     assert len(ledger.list_production_executions("p1")) == 2
+
+
+def test_a_republished_raw_window_sends_its_derived_output_back_for_recompute(tmp_path):
+    """AC12: repairing raw must re-derive the outputs that already existed.
+
+    The first round derives 5m from a raw window.  That window is then published
+    again (a repair), and the derived output no longer reflects its input, so the
+    range must be re-derived even though the cursor has already passed it.
+    """
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    worker = LocalWorker(tmp_path / "lake", ledger)
+
+    # Round one: raw published, 5m derived and completed.
+    scheduler.tick(now=NOW)
+    raw = ledger.list_production_steps(execution["execution_id"])[0]
+    complete_raw_run(ledger, tmp_path / "lake", start=datetime.fromisoformat(raw["window_start"]),
+                     provider="binance", symbol="BTCUSDT")
+    scheduler.tick(now=NOW + timedelta(minutes=1))
+    assert drain(worker) == 1
+    scheduler.tick(now=NOW + timedelta(minutes=2))
+    assert ledger.get_production_execution(execution["execution_id"])["outcome"] == "pass"
+    assert service.recompute_pending("p1") == []
+
+    # A repair round republishes the same raw window: rewinding the frontier is
+    # how a manual gap repair over an older range looks to the planner.
+    ledger.record_progress("p1", {"frontier": raw["window_start"]})
+    repair = service.change("p1", "run_now", now=NOW + timedelta(minutes=3))
+    scheduler.tick(now=NOW + timedelta(minutes=3))
+    repair_raw = ledger.list_production_steps(repair["execution_id"])[0]
+    claim = ledger.claim_next_job()
+    assert claim["run_id"] in [run["run_id"] for run in ledger.list()
+                               if run.get("execution_id") == repair["execution_id"]]
+    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(repair_raw["window_start"]),
+                run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
+    ledger.finish_job(claim["job_id"], claim["run_id"],
+                      {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
+
+    # The closure phase records the repaired window as owed...
+    service._advance_dependency_closure(limit=5, step_budget=4)
+    owed = service.recompute_pending("p1")
+    assert [item["reason"] for item in owed] == ["raw_republished_after_derivation"]
+    # It starts where the original window did and extends to the repaired end,
+    # so it covers the derived range that is now stale.
+    assert owed[0]["window_start"] == raw["window_start"]
+    assert owed[0]["window_end"] > raw["window_end"]
+
+    # ...and the publication phase re-derives it and clears the debt, so the
+    # repaired range is produced exactly once instead of every tick.
+    service.reconcile_publications(limit=5, step_budget=4)
+    assert service.recompute_pending("p1") == []
+    recomputed_steps = [step for step in ledger.list_production_steps(repair["execution_id"])
+                        if step["stage"].startswith("derive:")]
+    covering = [step for step in recomputed_steps
+                if step["window_start"] <= raw["window_start"]
+                and step["window_end"] >= raw["window_start"]]
+    assert covering, f"the repaired range must be re-derived: {recomputed_steps}"
+
+
+def test_a_recompute_that_cannot_be_derived_stays_owed_with_its_attempt_count(tmp_path):
+    _ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    service.change("p1", "run_now", now=NOW)
+    service.record_recompute("p1", window_start="2026-09-14T11:00:00+00:00",
+                            window_end="2026-09-14T11:05:00+00:00", reason="raw_republished_after_derivation")
+    # Nothing is published for that selector yet, so the range stays owed and
+    # records that it was attempted rather than being dropped.
+    result = service.reconcile_publications(limit=5, step_budget=4)
+    assert result["planned"] == []
+    owed = service.recompute_pending("p1")
+    assert len(owed) == 1 and owed[0]["attempts"] == 1

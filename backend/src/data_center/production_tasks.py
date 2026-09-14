@@ -648,6 +648,65 @@ class ProductionTasks:
 
         raise ProductionConflict("unsupported_command", f"{command} is not available in this phase")
 
+    RECOMPUTE_LIMIT = 50
+
+    def record_recompute(self, task_id: str, *, window_start: str, window_end: str,
+                         reason: str) -> dict:
+        """Add a derived range to the persisted recompute set (AC12).
+
+        The set is data, not a process-local event: a repaired window stays owed
+        until a later reconciliation actually re-derives it, and the size is
+        bounded so a pathological repair loop cannot grow it without limit.
+        """
+        progress = self.ledger.production_progress(task_id) or {}
+        pending = [item for item in progress.get("recompute") or []
+                   if not (item["window_start"] == window_start and item["window_end"] == window_end)]
+        pending.append({"window_start": window_start, "window_end": window_end, "reason": reason,
+                        "added_at": datetime.now(timezone.utc).isoformat(), "attempts": 0})
+        # Newest repairs win when the set is at its bound.
+        return self.ledger.record_progress(task_id, {"recompute": pending[-self.RECOMPUTE_LIMIT:]})
+
+    def _recompute_ranges(self, task_id: str) -> builtins.list[dict]:
+        return list((self.ledger.production_progress(task_id) or {}).get("recompute") or [])
+
+    def _consume_recompute(self, *, task: dict, definition: dict, ranges: builtins.list[dict],
+                           step_budget: int) -> tuple[builtins.list[dict], builtins.list[str]]:
+        """Plan the repaired ranges; return what stays owed and what was planned."""
+        remaining: builtins.list[dict] = []
+        planned: builtins.list[str] = []
+        for item in ranges:
+            if len(planned) >= max(1, step_budget):
+                remaining.append(item)
+                continue
+            # Attach to the round in flight when there is one: a plan may only
+            # ever have a single non-terminal execution.
+            active = self.ledger.active_execution_for_task(task["task_id"])
+            execution_id = active["execution_id"] if active else str(uuid4())
+            steps, deferred = self._plan_derived_windows(
+                task=task, definition=definition, execution_id=execution_id,
+                windows=[(item["window_start"], item["window_end"])], step_budget=1)
+            if not steps and not deferred:
+                # The window is already planned for this round (the dependency
+                # closure reached it first), so nothing is owed any more.
+                continue
+            if not steps:
+                # Still owed: an input that is genuinely unavailable must stay
+                # visible with its attempt count instead of disappearing.
+                remaining.append({**item, "attempts": int(item.get("attempts") or 0) + 1,
+                                  "deferred": deferred})
+                continue
+            try:
+                self.ledger.accept_execution_plan(
+                    execution_id=execution_id, steps=steps, task_id=task["task_id"],
+                    definition_version=task["definition_version"], trigger_source="recompute",
+                    audit={"action": "production.execution.recompute", "actor": "system:scheduler",
+                           "request_id": None})
+            except ProductionConflict:
+                remaining.append({**item, "attempts": int(item.get("attempts") or 0) + 1})
+                continue
+            planned.extend(step["dedupe_key"] for step in steps)
+        return remaining, planned
+
     def reconcile_publications(self, *, limit: int = 20, step_budget: int = 8) -> dict:
         """Derive what the published raw layer has made possible, from a cursor.
 
@@ -673,10 +732,18 @@ class ProductionTasks:
             # The boundary is read from step rows, so they must reflect the run
             # outcomes first.
             self.ledger.refresh_task_steps(task["task_id"])
+            progress = self.ledger.production_progress(task["task_id"]) or {}
+            # Repaired windows are owed whatever the publication boundary says:
+            # they sit behind the cursor, so nothing else would plan them again.
+            repaired = self._recompute_ranges(task["task_id"])
+            if repaired:
+                remaining, repaired_planned = self._consume_recompute(
+                    task=task, definition=definition, ranges=repaired, step_budget=step_budget)
+                self.ledger.record_progress(task["task_id"], {"recompute": remaining})
+                planned.extend(repaired_planned)
             boundary = self.ledger.completed_raw_boundary(task["task_id"])
             if boundary is None:
                 continue
-            progress = self.ledger.production_progress(task["task_id"]) or {}
             cursor = progress.get("derived_cursor") or _default_cursor(definition)
             if cursor is None:
                 continue
@@ -1094,6 +1161,20 @@ class ProductionTasks:
                 "derived_deferred": closure["deferred"] + publications["deferred"],
                 "reconciled_at": now.isoformat()}
 
+    def _record_repaired_windows(self, *, task: dict, steps: builtins.list[dict]) -> None:
+        """Send raw windows that were republished after derivation back for recompute."""
+        for step in steps:
+            if step["stage"] != "raw" or step["state"] != "completed":
+                continue
+            if not step.get("window_start") or not step.get("window_end"):
+                continue
+            if self.ledger.stale_derived_steps(task["task_id"], window_start=step["window_start"],
+                                               window_end=step["window_end"],
+                                               after_created_at=step["created_at"]):
+                self.record_recompute(task["task_id"], window_start=step["window_start"],
+                                      window_end=step["window_end"],
+                                      reason="raw_republished_after_derivation")
+
     def _advance_dependency_closure(self, *, limit: int, step_budget: int) -> dict:
         """Plan downstream steps for rounds whose upstream publication is done."""
         planned, deferred = [], []
@@ -1112,6 +1193,7 @@ class ProductionTasks:
             if any(step["state"] not in self.ledger.STEP_TERMINAL_STATES for step in steps):
                 # Finish the current layer before planning the next one.
                 continue
+            self._record_repaired_windows(task=task, steps=steps)
             plan = self.plan_derived(task=task, definition=definition, execution=execution,
                                      step_budget=step_budget)
             if plan["steps"]:
@@ -1120,6 +1202,10 @@ class ProductionTasks:
             planned.extend(step["dedupe_key"] for step in plan["steps"])
             deferred.extend(plan["deferred"])
         return {"planned": planned, "deferred": deferred}
+
+    def recompute_pending(self, task_id: str) -> builtins.list[dict]:
+        """The persisted recompute set of a plan, for the read model."""
+        return self._recompute_ranges(task_id)
 
     def _run_now(self, conn, task_id: str, *, now: datetime) -> dict:
         """Trigger one manual execution, or locate the execution already in flight."""
