@@ -64,7 +64,7 @@ class RunLedger:
         return datetime.fromtimestamp(self.clock(), tz=timezone.utc).isoformat()
 
     def put(self, run_id: str, payload: dict) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("begin immediate")
             row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
             original = json.loads(row[0]) if row else {}
@@ -91,7 +91,7 @@ class RunLedger:
         self.put(run_id, payload)
 
     def list(self) -> list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             rows = conn.execute("select payload from runs order by rowid desc").fetchall()
             states = {row[0]: {"state": row[1], "acknowledged_at": row[2], "resolved_by_run_id": row[3],
                                "resolved_at": row[4]}
@@ -103,7 +103,7 @@ class RunLedger:
         return payloads
 
     def get(self, run_id: str) -> dict:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             row = conn.execute("select payload from runs where run_id = ?", (run_id,)).fetchone()
             state = conn.execute("select state,acknowledged_at,resolved_by_run_id,resolved_at from dead_letter_state where run_id=?", (run_id,)).fetchone()
         if row is None:
@@ -115,11 +115,11 @@ class RunLedger:
         return payload
 
     def upsert_maintenance_task(self, task_id: str, payload: dict, status: str = "queued") -> None:
-        with sqlite3.connect(self.path) as conn:
-            conn.execute("insert into maintenance_tasks(task_id,payload,status,updated_at) values (?,?,?,?) on conflict(task_id) do update set payload=excluded.payload,status=excluded.status,updated_at=excluded.updated_at", (task_id, json.dumps(payload), status, datetime.now(timezone.utc).isoformat()))
+        with self._connect() as conn:
+            conn.execute("insert into maintenance_tasks(task_id,payload,status,updated_at) values (?,?,?,?) on conflict(task_id) do update set payload=excluded.payload,status=excluded.status,updated_at=excluded.updated_at", (task_id, json.dumps(payload), status, self._now()))
 
     def list_maintenance_tasks(self) -> list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             rows = conn.execute("select task_id,payload,status,updated_at from maintenance_tasks order by updated_at desc").fetchall()
         runs = {item["run_id"]: item for item in self.list()}
         result = []
@@ -137,15 +137,15 @@ class RunLedger:
         return result
 
     def update_maintenance_task_status(self, task_id: str, status: str) -> dict | None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             row = conn.execute("select payload from maintenance_tasks where task_id=?", (task_id,)).fetchone()
             if row is None: return None
-            now = datetime.now(timezone.utc).isoformat()
+            now = self._now()
             conn.execute("update maintenance_tasks set status=?, updated_at=? where task_id=?", (status, now, task_id))
             return {**json.loads(row[0]), "task_id": task_id, "status": status, "updated_at": now}
 
     def findings(self) -> builtins.list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             rows = conn.execute("select payload from quality_findings order by id desc").fetchall()
         return self._with_finding_state([json.loads(row[0]) for row in rows])
@@ -161,7 +161,7 @@ class RunLedger:
         return records
 
     def add_findings(self, payloads: builtins.list[dict]) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             conn.executemany("insert into quality_findings(payload) values (?)", [(json.dumps(item),) for item in payloads])
 
@@ -193,9 +193,9 @@ class RunLedger:
         Findings never mutate terminal run receipts; they are additive records
         that carry their own stable ``finding_id`` and handling state.
         """
-        stamp = datetime.now(timezone.utc).isoformat()
+        stamp = self._now()
         stored_ids: builtins.list[str] = []
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("create table if not exists quality_findings (id integer primary key, payload text not null)")
             columns = {row[1] for row in conn.execute("pragma table_info(quality_findings)")}
             for column in ("finding_id", "dedupe_key", "created_at"):
@@ -234,7 +234,7 @@ class RunLedger:
         return [item for item in self.findings() if item.get("finding_id") in set(stored_ids)]
 
     def finding_states(self) -> dict[str, dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("create table if not exists quality_finding_state "
                          "(finding_id text primary key, state text not null, updated_at text not null, "
                          "note text, resolved_by_run_id text)")
@@ -250,8 +250,8 @@ class RunLedger:
         known = {item.get("finding_id") for item in self.findings()}
         if finding_id not in known:
             raise KeyError(finding_id)
-        stamp = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.path) as conn:
+        stamp = self._now()
+        with self._connect() as conn:
             conn.execute("create table if not exists quality_finding_state "
                          "(finding_id text primary key, state text not null, updated_at text not null, "
                          "note text, resolved_by_run_id text)")
@@ -271,8 +271,8 @@ class RunLedger:
         The audit trail is additive; it never rewrites a run receipt and never
         stores credentials, only a non-reversible actor fingerprint.
         """
-        stamp = entry.get("at") or datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.path) as conn:
+        stamp = entry.get("at") or self._now()
+        with self._connect() as conn:
             conn.execute(
                 "create table if not exists write_audit (id integer primary key, at text not null, "
                 "action text not null, actor text, request_id text, task_id text, run_ids text, "
@@ -292,7 +292,7 @@ class RunLedger:
         return {**entry, "audit_id": audit_id, "at": stamp}
 
     def write_audit_entries(self, limit: int = 100) -> builtins.list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "create table if not exists write_audit (id integer primary key, at text not null, "
                 "action text not null, actor text, request_id text, task_id text, run_ids text, "
@@ -313,7 +313,7 @@ class RunLedger:
 
     def job_queue_state(self) -> dict:
         """Read-only queue view used by the operations console."""
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             rows = conn.execute("select status, count(*), min(available_at) from jobs group by status").fetchall()
         counts = {row[0]: row[1] for row in rows}
         oldest = min([row[2] for row in rows if row[0] == "queued" and row[2] is not None], default=None)
@@ -375,16 +375,16 @@ class RunLedger:
             return {"job_id": row[0], "run_id": row[1], "payload": json.loads(row[2]), "attempts": row[3] + 1}
 
     def running_jobs(self) -> list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             rows = conn.execute("select job_id, run_id, payload, attempts from jobs where status='running'").fetchall()
         return [{"job_id": r[0], "run_id": r[1], "payload": json.loads(r[2]), "attempts": r[3]} for r in rows]
 
     def complete_job(self, job_id: str) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("update jobs set status = 'completed' where job_id = ?", (job_id,))
 
     def finish_job(self, job_id: str, run_id: str, receipt: dict) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("begin immediate")
             original = json.loads(conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()[0])
             attempt_row = conn.execute("select attempts from jobs where job_id=?", (job_id,)).fetchone()
@@ -395,7 +395,7 @@ class RunLedger:
             payload = {**original, **receipt, "created_at": original.get("created_at"),
                        "attempt_count": attempts, "retry_count": max(0, attempts - 1),
                        "attempt_errors": original.get("attempt_errors", []),
-                       "finished_at": datetime.now(timezone.utc).isoformat(), "error": None, "error_type": None,
+                       "finished_at": self._now(), "error": None, "error_type": None,
                        "failure_stage": None, "retryable": False}
             conn.execute("update runs set payload=? where run_id=?", (json.dumps(payload), run_id))
             conn.execute("update jobs set status='completed' where job_id=?", (job_id,))
@@ -415,7 +415,7 @@ class RunLedger:
     def fail_job(self, job_id: str, run_id: str, error: str, *, error_type: str | None = None,
                  failure_stage: str = "execute", retryable: bool = True, quality_summary: dict | None = None,
                  delay_seconds: float = 0.0) -> None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("begin immediate")
             row = conn.execute("select attempts from jobs where job_id = ?", (job_id,)).fetchone()
             attempts = row[0] if row else 1
@@ -423,9 +423,9 @@ class RunLedger:
             if original.get("status") != "running":
                 raise ValueError("only a running job can fail")
             status = "failed" if not retryable else ("dead_letter" if attempts >= 3 else "queued")
-            available = time.time() + delay_seconds * (2 ** max(0, attempts - 1))
+            available = self.clock() + delay_seconds * (2 ** max(0, attempts - 1))
             failure = {"attempt": attempts, "error_type": error_type or "IngestError", "failure_stage": failure_stage, "error": error,
-                       "retryable": retryable, "at": datetime.now(timezone.utc).isoformat()}
+                       "retryable": retryable, "at": self._now()}
             payload = {**original, **failure, "status": status, "retry_count": max(0, attempts - 1),
                        "attempt_count": attempts, "attempt_errors": original.get("attempt_errors", []) + [failure],
                        "quality_summary": quality_summary or {"status": "not_run", "finding_count": 0, "findings": []},
@@ -438,7 +438,7 @@ class RunLedger:
                 conn.execute("insert or ignore into dead_letter_state(run_id,state) values (?,'active')", (run_id,))
 
     def retry_run(self, run_id: str) -> str:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("begin immediate")
             row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
             if row is None:
@@ -455,15 +455,15 @@ class RunLedger:
                        "provider": request.get("provider"), "run_scope": original.get("run_scope", "legacy_unclassified"),
                        "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
                        "status": "queued", "retry_of": run_id,
-                       "created_at": datetime.now(timezone.utc).isoformat()}
+                       "created_at": self._now()}
             conn.execute("insert into runs(run_id,payload,status,created_at) values (?, ?, ?, ?)",
                          (new_id, json.dumps(payload), "queued", payload["created_at"]))
             conn.execute("insert into jobs(job_id,run_id,status,payload) values (?,?,?,?)", (str(uuid4()), new_id, "queued", job[0]))
         return new_id
 
     def acknowledge_dead_letter(self, run_id: str) -> dict:
-        stamp = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.path) as conn:
+        stamp = self._now()
+        with self._connect() as conn:
             conn.execute("begin immediate")
             row = conn.execute("select payload from runs where run_id=?", (run_id,)).fetchone()
             if row is None:
@@ -485,21 +485,21 @@ class RunLedger:
         return self.get(run_id)
 
     def dead_letter_audit(self, run_id: str) -> list[dict]:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "select action,at,related_run_id from dead_letter_audit where run_id=? order by id", (run_id,),
             ).fetchall()
         return [{"action": row[0], "at": row[1], "related_run_id": row[2]} for row in rows]
 
     def heartbeat(self) -> str:
-        stamp = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.path) as conn:
+        stamp = self._now()
+        with self._connect() as conn:
             conn.execute("insert into worker_heartbeat(id, heartbeat) values (1, ?) on conflict(id) do update set heartbeat=excluded.heartbeat", (stamp,))
         return stamp
 
     def heartbeat_age_seconds(self) -> float | None:
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             row = conn.execute("select heartbeat from worker_heartbeat where id=1").fetchone()
         if not row:
             return None
-        return max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(row[0])).total_seconds())
+        return max(0.0, (datetime.fromtimestamp(self.clock(), tz=timezone.utc) - datetime.fromisoformat(row[0])).total_seconds())
