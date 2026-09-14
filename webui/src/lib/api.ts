@@ -442,6 +442,18 @@ export type Capabilities = {
     shard_minutes: number | null;
     closed_bar_lag_minutes: number;
   }>;
+  // What a plan may be created with.  The wizard enables an option only because
+  // this read model lists it, never because the browser guessed.
+  production?: {
+    schedule_kinds: string[];
+    minimum_interval_seconds: number;
+    plan_states: string[];
+    plan_health: string[];
+    plan_phases: string[];
+    block_reasons: string[];
+    outputs: Array<{ dataset_id: string; timeframes: string[] }>;
+    scheduler_enabled: boolean;
+  };
 };
 
 export type SnapshotSummary = {
@@ -499,6 +511,93 @@ export type RunFilters = {
   symbol?: string;
   created_from?: string;
   created_to?: string;
+};
+
+// Production plans are long-lived definitions; the console renders what the
+// API reports and never derives plan state from a run status.
+export type ProductionPlanHealth = "healthy" | "lagging" | "blocked" | "attention" | "config_drift"
+  | "paused" | "archived" | "deleted";
+// The plan's own lifecycle stage, reported by the API and never inferred here.
+export type ProductionPlanPhase = "initializing" | "catching_up" | "maintaining";
+export type ProductionExecution = {
+  execution_id: string; task_id: string; definition_version: number; trigger_source: string;
+  scheduled_for: string | null; state: string; outcome: string | null; created_at: string;
+  finished_at: string | null; coalesced_count: number; retry_of_execution_id?: string | null;
+};
+export type ProductionStep = {
+  step_id: string; execution_id: string; stage: string; window_start: string | null;
+  window_end: string | null; state: string; block_reason: string | null; run_id: string | null;
+  created_at: string; recipe_id?: string | null; timeframe?: string | null;
+};
+export type ProductionPlanGap = {
+  window_start: string | null; window_end: string | null; state: string; attempts: number;
+  reason: string | null;
+};
+export type ProductionPlanProgress = {
+  raw_frontier: string | null; provider_bounded_end: string | null; backlog: boolean;
+  derived_cursor: string | null; last_outcome: string | null; last_finished_at: string | null;
+  last_execution_id: string | null; recompute_pending: number; recorded: boolean; note: string;
+  observed_boundary: string | null; complete_boundary: string | null; gaps: ProductionPlanGap[];
+  deferred_derived: string[];
+};
+export type ProductionPlan = {
+  task_id: string; alias: string | null; name: string; desired_state: "enabled" | "paused" | "archived";
+  definition_version: number; created_at: string; updated_at: string; deleted_at: string | null;
+  provider: string | null; symbol: string | null; next_run_at: string | null; health: string | null;
+  phase?: ProductionPlanPhase; block_reason?: string | null;
+  payload: Record<string, unknown>;
+  ownership?: Array<{ ownership_key: string; state: string; updated_at: string }>;
+  executions?: ProductionExecution[];
+  current_execution?: ProductionExecution | null;
+  schedule?: { kind: string | null; next_run_at: string | null };
+  progress?: ProductionPlanProgress;
+};
+export type ProductionPreview = {
+  validation: { errors: Array<{ field: string; message: string }>; warnings?: string[] };
+  submittable: boolean;
+  ownership_keys: string[];
+  dependencies: Array<{ recipe_id: string; recipe_version: string; target_timeframe: string }>;
+  schedule: { kind: string | null; interval_seconds?: number | null; next_runs: string[]; rule: string | null };
+  policy: Record<string, unknown> | null;
+  minimum_interval_seconds?: number;
+  conflicts: Array<{ ownership_key: string; task_id: string }>;
+  dispatch_enabled: boolean;
+};
+export type SchedulerView = {
+  scheduler: {
+    dispatch_enabled: boolean; heartbeat_at: string | null; instance_id: string | null;
+    last_tick_at: string | null; tick_count: number; last_error: string | null;
+    lease: { owner_id: string; fencing_token: number; expires_at: number } | null;
+  };
+  dispatch_enabled: boolean;
+  due_now: number; due_task_ids: string[]; plans_by_state: Record<string, number>;
+  oldest_due_at: string | null; queue: QueueState;
+  blocked: Array<{ task_id: string; reason: string; health: string }>;
+  // The capacity gate: a critical state refuses new publishing dispatch, and a
+  // warning is decided per plan against its unattended catch-up span.
+  capacity: { status: string; free_ratio: number | null; measurement_source: string };
+  publishing_allowed: boolean;
+  provider_backoff: Array<{ provider: string; until: string; failures: number; reason: string | null }>;
+  queue_backoff: Array<{ provider: string; waiting: number; next_attempt_at: string }>;
+};
+export type ProductionPlanPage = { tasks: ProductionPlan[]; page: PageInfo };
+export type CatalogMatrixRow = {
+  dataset_id: string; provider: string; symbol: string; timeframe: string; price_basis: string;
+  ownership_key: string; status: "planned" | "unplanned" | "unavailable" | "config_drift";
+  task_id: string | null; plan_state: string | null; reason: string | null;
+};
+export type CatalogMatrix = {
+  rows: CatalogMatrixRow[]; counts: Record<string, number>; planned_scope: number; note: string;
+};
+export type GovernanceUnit = {
+  unit: string; owner: string; read_only: boolean;
+  declaration: "installed" | "declared_not_installed" | "installed_not_declared" | "unknown";
+  cadence: Record<string, string>; receipt_action: string | null;
+  latest_receipt: { completed_at?: string; result?: string } | null; evidence: string;
+};
+export type GovernanceUnits = {
+  available: boolean; units: GovernanceUnit[]; declared_not_installed: string[];
+  installed_not_declared: string[]; note: string;
 };
 
 export type PageInfo = { count: number; next_cursor: string | null; page_size: number | null; paginated: boolean; has_more: boolean; order: string };
@@ -713,5 +812,40 @@ export function createDataCenterClient(apiKey: string) {
     capacityHistory: (limit = 50) => request<CapacityHistory>(`/operations/capacity-history${queryString({ limit })}`),
     worker: () => request<WorkerActivity>("/operations/worker"),
     receipts: (limit = 5) => request<ReceiptHistory>(`/operations/receipts${queryString({ limit })}`),
+    productionPlans: (query: { provider?: string; symbol?: string; desired_state?: string;
+                              health?: string; phase?: string; page_size?: number;
+                              cursor?: string | null } = {}) =>
+      request<ProductionPlan[]>(`/production/tasks${queryString(query)}`),
+    productionPlan: (taskId: string) => request<ProductionPlan>(`/production/tasks/${encodeURIComponent(taskId)}`),
+    createProductionTask: (body: { name: string; definition: Record<string, unknown>; desired_state: string },
+                           idempotencyKey: string) =>
+      request<ProductionPlan>("/production/tasks", {
+        method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(body),
+      }),
+    productionPreview: (definition: Record<string, unknown>) =>
+      request<ProductionPreview>("/production/plans", { method: "POST", body: JSON.stringify({ definition }) }),
+    productionPlanAction: (taskId: string, command: string, idempotencyKey: string,
+                           options: { expected_version?: number; definition?: Record<string, unknown>;
+                                      name?: string; alias?: string } = {}) =>
+      request<Record<string, unknown>>(`/production/tasks/${encodeURIComponent(taskId)}/actions`, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ command, ...options }),
+      }),
+    productionExecutions: (taskId: string, pageSize = 10, cursor?: string | null) =>
+      request<ProductionExecution[]>(`/production/tasks/${encodeURIComponent(taskId)}/executions${queryString({ page_size: pageSize, cursor })}`),
+    productionExecutionSteps: (executionId: string, limit = 100) =>
+      request<ProductionStep[]>(`/production/executions/${encodeURIComponent(executionId)}/steps${queryString({ limit })}`),
+    retryProductionExecution: (executionId: string, idempotencyKey: string) =>
+      request<Record<string, unknown>>(`/production/executions/${encodeURIComponent(executionId)}/retry`, {
+        method: "POST", headers: { "Idempotency-Key": idempotencyKey },
+      }),
+    catalogMatrix: () => request<CatalogMatrix>("/production/catalog-matrix"),
+    governanceUnits: () => request<GovernanceUnits>("/operations/units"),
+    scheduler: () => request<SchedulerView>("/operations/scheduler"),
+    schedulerAction: (command: "pause_dispatch" | "resume_dispatch") =>
+      request<{ command: string; dispatch_enabled: boolean }>("/operations/scheduler/actions", {
+        method: "POST", body: JSON.stringify({ command }),
+      }),
   };
 }

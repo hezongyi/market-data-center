@@ -17,6 +17,8 @@ from pathlib import Path
 
 from data_center.catalog.manifest import manifest_path
 
+from .instants import parse_instant
+
 TERMINAL_STATUSES = ("pass", "failed", "dead_letter")
 DEFAULT_RUN_PAGE_SIZE = 50
 MAX_RUN_PAGE_SIZE = 500
@@ -51,7 +53,7 @@ def _parse_boundary(value: str | None, field: str) -> str:
     if value is None:
         return ""
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = parse_instant(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise RunValidationError(f"{field} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:

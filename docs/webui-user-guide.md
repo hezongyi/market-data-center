@@ -57,7 +57,7 @@
 
 ## 2. 界面骨架
 
-### 2.1 左侧导航（7 个工作区）
+### 2.1 左侧导航（8 个工作区）
 
 | 导航项 | 中文含义 | 一句话用途 | 是否写数据 |
 |---|---|---|---|
@@ -68,6 +68,7 @@
 | **Quality** | 质量 | 看 findings、流转处理状态、按 finding 生成修复任务（校验 run 要去 Maintenance 发起） | **是**（finding 状态、修复任务） |
 | **Explorer** | 数据浏览 | 直接查行情/宏观序列与覆盖率，可把查询条件交给 Maintenance | 否 |
 | **Operations** | 运维 | 队列、worker 心跳、容量历史、receipts、写审计 | **是**（Queue ingest） |
+| **Production plans** | 生产计划 | **统一调度与生产任务的唯一入口**：计划注册表、向导与编辑、调度器状态与退避、目录矩阵与治理单元 | **是**（计划生命周期） |
 
 侧栏左上角的 `‹ / ›` 按钮可折叠侧栏（窄屏时给表格让位）；底部 `Refresh data` 重新拉取全局数据（不做写操作）。
 
@@ -520,7 +521,7 @@ Maintenance 页把每种任务画成一张卡片，卡片上写明它写哪个�
    - 注意 `Measurement source`：若显示 `Pinned by the acceptance harness (fixed_measurement)`，说明这是验收环境**钉住的确定性数值**，不是真实磁盘读数（此时会额外给出说明）。生产应为 `Reported by the API as a live measurement (fixed_measurement = false)`。
    - 只有监控**实际记录**到的迁移事件才出现在表里：页面优先显示 API 的 `note`（生产实测为 `Only capacity transitions the monitor recorded are shown; no history is interpolated.`），API 未给时回退到 `Only capacity transitions the monitor recorded are listed.`
 4. **Runtime**（`Deployment identity`）：`Deployment` / `Version` / `Source commit` / `Read path` / `Write path` / `Worker heartbeat`。身份信息全部来自 readiness 信封，控制台不会显示它没被告知的 commit。
-5. **Capacity and recovery**（`Storage protection`）：容量进度条 + `Total` / `Used` / `Warning threshold` / `Critical threshold` / `Latest backup` / `Latest recovery drill`；下方 `Latest receipt per action` 列出**API 实际记录的动作**（如 `backup`、`backup_verify`、`restore`、`recovery_drill`、`capacity_check`、`deployment_stage`、`deployment_activate`、`deployment_rollback`、`deployment_runtime_failure`、`monitor`、`derived_market_bars_maintenance`、`real_release_webui_acceptance`、`post_release_rehearsal`），每条给出 `result`、完成时间、`deployment`、引用路径与关键字段；未记录的动作显示 `No receipt recorded`。再往下是 `Recent receipts (N)`。
+5. **Capacity and recovery**（`Storage protection`）：容量进度条 + `Total` / `Used` / `Warning threshold` / `Critical threshold` / `Latest backup` / `Latest recovery drill`；下方 `Latest receipt per action` 列出**API 实际记录的动作**（如 `backup`、`backup_verify`、`restore`、`recovery_drill`、`capacity_check`、`retention_audit`、`scheduler_tick`、`deployment_stage`、`deployment_activate`、`deployment_rollback`、`deployment_runtime_failure`、`monitor`、`derived_market_bars_maintenance`、`real_release_webui_acceptance`、`post_release_rehearsal`），每条给出 `result`、完成时间、`deployment`、引用路径与关键字段；未记录的动作显示 `No receipt recorded`。再往下是 `Recent receipts (N)`。
    - **只渲染 API 报告的动作用途**：既不把已存在的记录误报为缺失，也不会出现平台从不写入的"幽灵动作名"。
    - 若 receipt 索引不可用，会显示 `Receipt index unavailable` 并明确写着 `This is a capability gap, not an empty success state.`
 6. **Active alerts**（`Aggregated signals`）：聚合三类信号 —— 容量非 ok、存在 active 死信、operational snapshot 非 fresh；都正常时显示 `No active alerts`。
@@ -644,6 +645,15 @@ Maintenance 页把每种任务画成一张卡片，卡片上写明它写哪个�
 6. **演练与生产分开**：验收/演练请用 `acceptance` scope，别把演练 run 混进 `production` 统计口径。
 
 ---
+
+### 8. Production plans（生产计划）
+
+统一调度与生产任务的唯一界面。顶部是调度器状态条：派发开关（唯一开关是运维动作 `POST /operations/scheduler/actions`）、心跳与租约、
+当前到期数、**新发布型派发是否允许**（容量 `critical` 时拒绝，`warning` 只挡无人值守补齐）与按提供方的退避。注册表列出计划的选择器、
+产物、`phase`/`health`（含 `block_reason`）、下次运行与当前轮次，并提供按健康度筛选。操作列可暂停/继续/立即执行/归档/删除（破坏性操作需确认）
+与**编辑**：编辑带 `definition_version` 乐观锁，名称等展示字段就地更新、不产生新版本，冲突时提示重新加载。向导从 `/capabilities` 播种，
+先预览再保存，"保存为暂停"与"保存并启用"是两个独立动作。详情面板显示调度器**实际持久化**的边界（raw 规划到哪、提供方已提供到哪、
+完整到哪、派生游标、欠多少重算、未解决缺口、等待输入的 bucket）并注明"这是记录，不是实时新鲜度"。
 
 ## 15. 想深入时读什么
 
