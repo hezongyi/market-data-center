@@ -26,9 +26,11 @@ from data_center.takeover import (
     import_entries,
     legacy_symbols,
     main,
+    merged_definitions,
     plan_definitions,
     planned_entries,
     schedule_for,
+    schedule_seconds,
     verify_takeover,
 )
 
@@ -313,3 +315,53 @@ def test_declared_entry_is_not_reported_as_host_only(tmp_path):
     comparison = compare_entries([entry], {"status": "known", "units": [entry.unit]},
                                  declared_units={entry.unit}, maintenance_symbols=LEGACY_SYMBOLS)
     assert comparison["entries"][0]["host_only"] is False
+
+
+def test_a_delay_entry_and_a_calendar_entry_merge_on_one_instrument():
+    """Both cadences survive the merge and the faster one is imported."""
+    delay = LegacyEntry(unit="raw.service", timer="raw.timer",
+                        command="python -m data_center.maintenance_runner --provider dukascopy "
+                                f"--symbols {' '.join(LEGACY_SYMBOLS)}",
+                        argv=("python", "-m", "data_center.maintenance_runner", "--provider", "dukascopy",
+                              "--symbols", *LEGACY_SYMBOLS),
+                        cadence_seconds=900, cadence_source="OnUnitInactiveSec", requires_api=True)
+    calendar = LegacyEntry(unit="derived.service", timer="derived.timer",
+                           command="python -m data_center.derived_maintenance_runner --provider dukascopy "
+                                   "--symbols EURUSD --recipes utc-24x7-1m-to-5m-ohlcv",
+                           argv=("python", "-m", "data_center.derived_maintenance_runner",
+                                 "--provider", "dukascopy", "--symbols", "EURUSD",
+                                 "--recipes", "utc-24x7-1m-to-5m-ohlcv"),
+                           cadence_seconds=None, cadence_source="OnCalendar", requires_api=False,
+                           calendar="*-*-* 06:30:00 UTC")
+    merged = merged_definitions([delay, calendar])
+    eurusd = next(item for item in merged if item["symbol"] == "EURUSD")
+    # The delay is the more frequent trigger, so it is the plan's schedule...
+    assert eurusd["schedule"] == {"schedule": "fixed_delay", "interval_seconds": 900}
+    # ...and the receipt still shows what each entry actually did.
+    assert eurusd["cadences"] == {
+        "raw.service": {"schedule": "fixed_delay", "interval_seconds": 900},
+        "derived.service": {"schedule": "daily", "timezone": "UTC", "local_time": "06:30"},
+    }
+    assert eurusd["bar_timeframes"] == ["5m"] and eurusd["sources"] == ["raw.service", "derived.service"]
+    assert schedule_seconds({"schedule": "daily"}) == 86400.0
+    assert schedule_seconds({"schedule": "manual"}) == float("inf")
+
+
+def test_an_entry_can_state_the_price_basis_its_provider_publishes():
+    """One wrapper covers several providers; each publishes its own basis."""
+    wrapper = bytes(json.dumps({"entries": [
+        {"unit": "macro-binance", "exec_start": "python -m data_center.derived_maintenance_runner "
+                                                 "--provider binance --symbols BTCUSDT "
+                                                 "--recipes utc-24x7-1m-to-5m-ohlcv",
+         "price_basis": "raw", "calendar": "*-*-* 06:30:00 UTC", "cadence_source": "OnCalendar"}]}),
+        "utf-8").decode()
+    entry = entries_from_inventory(json.loads(wrapper))[0]
+    assert entry.price_basis == "raw"
+    definition = plan_definitions(entry)[0]
+    assert definition["price_basis"] == "raw" and definition["provider"] == "binance"
+    # Without the statement the caller's default applies, and binance rejects it.
+    plain = LegacyEntry(unit="macro-binance", timer=None,
+                        command=entry.command, argv=entry.argv, cadence_seconds=None,
+                        cadence_source="OnCalendar", requires_api=False,
+                        calendar="*-*-* 06:30:00 UTC")
+    assert plan_definitions(plain)[0]["price_basis"] == "bid"

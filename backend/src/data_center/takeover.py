@@ -51,12 +51,16 @@ class LegacyEntry:
     #: A calendar expression when the timer is not a monotonic delay, kept as the
     #: host spelled it instead of being flattened into a made-up interval.
     calendar: str | None = None
+    #: The price basis this entry produced.  One wrapper can carry several
+    #: instruments whose provider publishes a different basis (binance publishes
+    #: ``raw`` where dukascopy publishes ``bid``), so the operator states it.
+    price_basis: str | None = None
 
     def as_dict(self) -> dict:
         return {"unit": self.unit, "timer": self.timer, "command": self.command,
                 "argv": list(self.argv), "cadence_seconds": self.cadence_seconds,
                 "cadence_source": self.cadence_source, "requires_api": self.requires_api,
-                "calendar": self.calendar}
+                "calendar": self.calendar, "price_basis": self.price_basis}
 
 
 def _unit_value(text: str, key: str) -> str | None:
@@ -281,6 +285,7 @@ def entries_from_inventory(inventory: dict | None) -> list[LegacyEntry]:
             cadence_source=item.get("cadence_source") or ("host_inventory" if cadence else None),
             requires_api=bool(item.get("requires_api", False)),
             calendar=str(calendar) if calendar else None,
+            price_basis=str(item["price_basis"]) if item.get("price_basis") else None,
         ))
     return entries
 
@@ -463,6 +468,7 @@ def plan_definitions(entry: LegacyEntry, *, price_basis: str = "bid",
     """
     argv = entry.argv
     provider = _argument(argv, "--provider") or "dukascopy"
+    price_basis = entry.price_basis or price_basis
     symbols = legacy_symbols(entry, maintenance_symbols=maintenance_symbols) or []
     recipe_ids, recipe_versions = _recipe_arguments(argv)
     recipes = sorted(recipe_ids | {f"{identifier}@{version}"
@@ -511,6 +517,21 @@ def _history_start(provider: str, raw_timeframe: str, *, now: datetime | None = 
     return (moment - timedelta(days=max(1, policy.tail_days))).replace(microsecond=0)
 
 
+def schedule_seconds(schedule: dict) -> float:
+    """How often a schedule fires, for comparing two legacy cadences.
+
+    A daily calendar is once a day; a plan with no automatic trigger (manual or
+    one-shot) is least frequent.  Comparing the schedules directly used to raise
+    ``KeyError`` as soon as a delay entry and a calendar entry covered the same
+    instrument.
+    """
+    if "interval_seconds" in schedule:
+        return float(schedule["interval_seconds"])
+    if schedule.get("schedule") == "daily":
+        return 86400.0
+    return float("inf")
+
+
 def merged_definitions(entries: list[LegacyEntry], *, price_basis: str = "bid",
                        maintenance_symbols: tuple[str, ...] = (),
                        now: datetime | None = None) -> list[dict]:
@@ -529,17 +550,19 @@ def merged_definitions(entries: list[LegacyEntry], *, price_basis: str = "bid",
                                            maintenance_symbols=maintenance_symbols, now=now):
             key = (definition["provider"], definition["symbol"])
             current = grouped.get(key)
-            cadence = definition["schedule"]["interval_seconds"]
             if current is None:
                 grouped[key] = {**definition, "sources": [entry.unit],
-                                "cadences": {entry.unit: cadence}}
+                                "cadences": {entry.unit: dict(definition["schedule"])}}
                 continue
             current["bar_timeframes"] = sorted(set(current["bar_timeframes"])
                                                | set(definition["bar_timeframes"]))
             current["sources"].append(entry.unit)
-            current["cadences"][entry.unit] = cadence
-            if cadence < current["schedule"]["interval_seconds"]:
-                current["schedule"] = {**definition["schedule"]}
+            current["cadences"][entry.unit] = dict(definition["schedule"])
+            # The more frequent cadence wins: a slower schedule would stop
+            # producing what the faster entry used to produce.  Both are kept in
+            # the comparison receipt so the operator can see the difference.
+            if schedule_seconds(definition["schedule"]) < schedule_seconds(current["schedule"]):
+                current["schedule"] = dict(definition["schedule"])
     return [grouped[key] for key in sorted(grouped)]
 
 
@@ -558,7 +581,8 @@ def import_entries(service: ProductionTasks, *, entries: list[LegacyEntry], acto
                "sources": definition["sources"], "cadences": definition["cadences"],
                "bar_timeframes": definition["bar_timeframes"],
                "schedule": definition["schedule"]["schedule"],
-               "interval_seconds": definition["schedule"]["interval_seconds"]}
+               # A daily plan has no interval: the schedule object is the truth.
+               "interval_seconds": definition["schedule"].get("interval_seconds")}
         import_rows.append(row)
         if task_id in existing:
             skipped.append({**row, "reason": "already_imported"})
@@ -605,9 +629,10 @@ def verify_takeover(service: ProductionTasks, *, entries: list[LegacyEntry],
             problems.append(f"{task_id} was never imported")
             continue
         document = service.read(task_id)
-        expected = definition["schedule"]["interval_seconds"]
-        actual = (task["payload"].get("schedule") or {}).get("interval_seconds")
-        if actual != expected:
+        expected = definition["schedule"]
+        actual = task["payload"].get("schedule") or {}
+        if actual.get("schedule") != expected.get("schedule") or \
+                actual.get("interval_seconds") != expected.get("interval_seconds"):
             problems.append(f"{task_id} cadence {actual} does not match the legacy {expected}")
         rows.append({"task_id": task_id, "desired_state": task["desired_state"],
                      "health": document["health"], "block_reason": document["block_reason"],
