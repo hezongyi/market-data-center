@@ -131,7 +131,9 @@ Readiness separates `read_status`, `write_status`, and `capacity_status`. `capac
 
 Default free-space thresholds are warning 15% and critical 10%; production may configure stricter values with `DATACENTER_CAPACITY_WARNING_FREE_RATIO` and `DATACENTER_CAPACITY_CRITICAL_FREE_RATIO`.
 
-1. Run `python -m data_center.operations retention-audit` and retain the capacity receipt.
+1. Run `python -m data_center.operations retention-audit` and retain the `retention_audit` receipt.
+   The audit runs as its own unit (`market-data-center-retention-audit.timer`) and no longer
+   depends on provider acceptance: a failing provider must not stop it (spec §9.3).
 2. At warning, pause broad backfills and schedule expansion or archival to a separately governed destination.
 3. At critical, keep ingest paused; do not delete canonical parts, manifests, terminal receipts, or ledger rows.
 4. Expand the filesystem or move approved archives under an explicit maintenance change. Automatic canonical cleanup is forbidden.

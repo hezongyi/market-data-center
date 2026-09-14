@@ -99,7 +99,7 @@ provider/timeframe 组合属于独立的 spec，不在本条契约内。
 运维只读视图：`GET /api/v1/operations/queue`（队列深度与 `runs_by_status`）、
 `/operations/worker`（heartbeat 状态、in-flight jobs）、`/operations/capacity-history`（live 采样 +
 monitor 实际记录的容量迁移事件）、`/operations/receipts`（按**实际记录的动作名**返回 backup、backup_verify、restore、
-recovery_drill、capacity_check、deployment_stage/activate/rollback、deployment_runtime_failure、
+recovery_drill、capacity_check、retention_audit、scheduler_tick、deployment_stage/activate/rollback、deployment_runtime_failure、
 monitor、derived_market_bars_maintenance、real_release_webui_acceptance、post_release_rehearsal 等
 receipt；未记录的动作返回 null，Console 只渲染 API 实际报告的动作，因此不会为平台从不写入的名字
 显示"缺失"）以及 `/operations/audit`（写操作审计：actor 指纹、时间、selector、任务类型、结果；

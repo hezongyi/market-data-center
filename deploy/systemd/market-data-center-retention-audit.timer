@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic retention audit
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+Unit=market-data-center-retention-audit.service
+
+[Install]
+WantedBy=timers.target

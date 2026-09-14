@@ -124,3 +124,5 @@ AC04 放在 S3 而不是 S2：影子模式不派发、不产生 execution，因�
 - 2026-09-14：原扩展规划中的功能、状态、接口、数据与验收要求已归入原 spec；本文件精简为实施步骤。
 - 2026-09-14：规范完成第二、三次修订（缺口 G1–G14、四项已确认决策、AC19–AC24）。本文件随该修订第一次进入版本控制，采用 S0–S5 阶段编号并给出与原未提交草稿 P1–P5 的对应关系；新增 S0 基座与 S1 注册表检查点、S4 依赖闭环检查点，把 `retention-audit` 解耦列为接管前必须完成的独立工作项，并在接管步骤中补入 receipt action 登记与 `docs/current-state.md` 更新。
 - S0–S5 尚未据本计划实施或验收，未执行生产接管；后续以实际 commit、PR 与 receipt 更新进度。
+- 2026-09-14（第二次，开发分支 `feat/production-scheduler-s0-20260914`）：S0 基座、S1 注册表、S2 时间与影子调度、S3 真实派发的主要代码已实现并附回归测试（迁移与 WAL 争用、所有权与墓碑、幂等、时钟与 DST、真实 worker 派发与收口、配置漂移、deployment 哈希成本），后端与全量门禁在本机通过；**S4 依赖闭环、WebUI、接管与回滚未实现**。
+- 2026-09-14：`retention-audit` 解耦已按 spec §9 第 3 条独立完成——独立 `market-data-center-retention-audit.service`/`.timer`、独立 `retention_audit` receipt action 并登记到运维 receipt 视图，provider acceptance 不再承担该副作用；仍待以独立小发布进入生产并留 receipt。

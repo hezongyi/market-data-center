@@ -3,6 +3,7 @@ import os
 import tarfile
 import time
 import tracemalloc
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,7 @@ from data_center.operations import (
     retention_audit,
     verify_backup,
 )
+from data_center.operations_views import RECEIPT_ACTIONS
 
 
 def publish_test_part(root, part):
@@ -375,3 +377,24 @@ def test_restore_atomic_publish_never_replaces_racing_target(tmp_path, monkeypat
     with pytest.raises(ValueError, match="differs"):
         restore_backup(archive, restore_root, restore_root / "audit/ledger.sqlite")
     assert target.read_bytes() == b"racing-writer"
+
+
+def test_retention_audit_is_independent_of_provider_acceptance(tmp_path):
+    """The audit owns its unit, its receipt action and its evidence directory.
+
+    It used to run as an `ExecStartPost` of provider acceptance, so a failing
+    provider silently stopped the audit (spec 9.3, AC24).
+    """
+    repository = Path(__file__).resolve().parents[2]
+    units = repository / "deploy" / "systemd"
+    acceptance = (units / "market-data-center-provider-acceptance.service").read_text()
+    assert "retention-audit" not in acceptance
+
+    audit_service = (units / "market-data-center-retention-audit.service").read_text()
+    audit_timer = (units / "market-data-center-retention-audit.timer").read_text()
+    assert "data_center.operations retention-audit" in audit_service
+    assert "%h/.config/market-data-center/env" in audit_service
+    assert "WorkingDirectory=%h/market-data-center/releases/current" in audit_service
+    assert "Unit=market-data-center-retention-audit.service" in audit_timer
+    # The audit never deletes: it reports, and capacity stays a policy decision.
+    assert "retention_audit" in RECEIPT_ACTIONS
