@@ -1,0 +1,22 @@
+[Unit]
+Description=Market Data Center production task scheduler
+After=market-data-center-api.service market-data-center-worker.service
+Requires=market-data-center-api.service market-data-center-worker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/market-data-center/releases/current
+EnvironmentFile=%h/.config/market-data-center/env
+Environment=PYTHONPATH=%h/market-data-center/releases/current/backend/src
+Environment=DATACENTER_DEPLOYMENT_MANIFEST=%h/market-data-center/releases/current/deployment.json
+# Shadow mode until an operator enables dispatch through the operations action;
+# the flag lives in the machine-level environment file, not in this unit.
+ExecStart=%h/market-data-center/releases/current/.venv/bin/python -m data_center.scheduler_main
+Restart=on-failure
+RestartSec=5s
+# Each tick is bounded by the scheduler's own budget and never holds the ledger
+# write lock while waiting on a provider; the process itself is long-lived, so
+# no RuntimeMaxSec is set here.
+
+[Install]
+WantedBy=default.target
