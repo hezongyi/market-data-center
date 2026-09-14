@@ -566,8 +566,12 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Acknowledge finding", exact: true }).waitFor();
     await page.getByRole("button", { name: "Acknowledge finding", exact: true }).click();
     await page.locator(".notice, [role=status]").filter({ hasText: "acknowledg" }).first().waitFor();
-    const acknowledged = await call("GET", "/quality/findings?state=acknowledged");
-    assert.ok(acknowledged.length > 0, "the finding handling state was not persisted");
+    // The write lands when the API says so; polling avoids reading the list
+    // between the click and its persistence (the old assertion flaked).
+    const acknowledged = await waitFor(async () => {
+      const rows = await call("GET", "/quality/findings?state=acknowledged");
+      return Array.isArray(rows) && rows.length > 0 ? rows : null;
+    }, "the finding handling state was not persisted");
     assert.ok(acknowledged.every(item => item.run_id), "a finding must stay linked to its reporting run");
     await page.getByRole("button", { name: "Close details", exact: true }).last().click();
     await page.getByLabel("Finding state").selectOption("open");
