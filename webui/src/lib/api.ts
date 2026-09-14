@@ -577,7 +577,8 @@ export type SchedulerView = {
   // warning is decided per plan against its unattended catch-up span.
   capacity: { status: string; free_ratio: number | null; measurement_source: string };
   publishing_allowed: boolean;
-  provider_backoff: Array<{ provider: string; waiting: number; next_attempt_at: string }>;
+  provider_backoff: Array<{ provider: string; until: string; failures: number; reason: string | null }>;
+  queue_backoff: Array<{ provider: string; waiting: number; next_attempt_at: string }>;
 };
 export type ProductionPlanPage = { tasks: ProductionPlan[]; page: PageInfo };
 export type CatalogMatrixRow = {

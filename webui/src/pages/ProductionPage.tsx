@@ -334,10 +334,14 @@ export function ProductionPage({ services, onMessage, onChanged }: {
             <strong>{scheduler.publishing_allowed ? t("allowed") : t("refused")}</strong>
             <small>{t("capacity")}: {scheduler.capacity.status}</small></article>
           <article className={`metric${scheduler.provider_backoff.length ? " metric-warn" : ""}`}><span>{t("Provider backoff")}</span>
-            <strong>{scheduler.provider_backoff.reduce((total, item) => total + item.waiting, 0)}</strong>
+            <strong>{scheduler.provider_backoff.length
+              ? scheduler.provider_backoff[0].provider
+              : scheduler.queue_backoff.reduce((total, item) => total + item.waiting, 0)}</strong>
             <small>{scheduler.provider_backoff.length
-              ? `${scheduler.provider_backoff[0].provider} · ${new Date(scheduler.provider_backoff[0].next_attempt_at).toISOString().slice(11, 16)}Z`
-              : t("no provider waiting")}</small></article>
+              ? `${t("until")} ${new Date(scheduler.provider_backoff[0].until).toISOString().slice(11, 16)}Z · ${scheduler.provider_backoff[0].failures} ${t("failures")}`
+              : scheduler.queue_backoff.length
+                ? `${scheduler.queue_backoff[0].provider} · ${t("retrying")}`
+                : t("no provider waiting")}</small></article>
         </div>
         : <LoadingSkeleton rows={1} />}
       {scheduler && scheduler.blocked.length > 0 && <ul className="warnings">

@@ -50,6 +50,18 @@ DERIVE_RUNS_PER_WINDOW = 12
 #: Unattended catch-up beyond this span needs an explicit capacity decision
 #: rather than being sharded into smaller requests (spec 5.6, AC08).
 UNATTENDED_BACKFILL_DAYS = 31
+#: A terminal failure the worker itself classified as retryable is provider-side:
+#: its attempt budget is spent, so the plan backs off instead of fetching again on
+#: the next tick.  The delay doubles per consecutive failure up to a cap, and it
+#: is persisted per provider so other providers keep producing (spec 5.5, AC13).
+PROVIDER_BACKOFF_BASE_SECONDS = 300
+PROVIDER_BACKOFF_MAX_SECONDS = 3600
+PROVIDER_BACKOFF_REASON = "provider_transient_failures"
+#: Failures that say something about the data or the configuration, not about the
+#: provider being unable to serve us: those keep their own cooldown paths.
+NON_PROVIDER_ERROR_TYPES = frozenset({
+    "ProviderGapError", "QualityError", "InputUnavailableError", "DefinitionError",
+    "ValueError", "PublicationError"})
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
 CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",
@@ -477,24 +489,30 @@ class ProductionTasks:
                        if item["state"] in RunLedger.ACTIVE_EXECUTION_STATES), None)
         definition = task.get("payload") or {}
         progress = self.ledger.production_progress(task["task_id"])
+        # The governed provider backoff is shared state, so it is read live rather
+        # than trusted from a copy that a later recovery would leave stale.
+        moment = datetime.fromtimestamp(self.ledger.clock(), tz=timezone.utc)
+        provider = task.get("provider") or definition.get("provider")
+        active_backoff = next(iter(self.ledger.provider_backoff(provider, now=moment)), None) \
+            if provider else None
         return {
             **task,
             "ownership": self.ledger.ownership_of(task["task_id"]),
             "executions": executions,
             "current_execution": active,
-            "health": self._health(task, active, progress),
+            "health": self._health(task, active, progress, active_backoff),
             "phase": self._phase(progress),
-            "block_reason": self.block_reason(task, progress),
+            "block_reason": self.block_reason(task, progress, active_backoff),
             "tombstone": bool(task["deleted_at"]),
             "schedule": {"kind": (definition.get("schedule") or {}).get("schedule"),
                          "next_run_at": task.get("next_run_at")},
             # The recorded progress, not a guess: how far raw has been planned
             # and derived, what is still owed, and how the last round ended.
-            "progress": self._progress_view(progress),
+            "progress": self._progress_view(progress, provider_backoff=active_backoff),
         }
 
     @staticmethod
-    def _progress_view(progress: dict | None) -> dict:
+    def _progress_view(progress: dict | None, *, provider_backoff: dict | None = None) -> dict:
         progress = progress or {}
         return {
             "raw_frontier": progress.get("frontier"),
@@ -524,11 +542,14 @@ class ProductionTasks:
             "backlog_span_days": int(progress.get("backlog_span_days") or 0),
             "capacity_status": progress.get("capacity_status"),
             "capacity_block": progress.get("capacity_block"),
+            # The live governed backoff, next to the copy the refusing round left.
+            "provider_backoff": provider_backoff or progress.get("provider_backoff"),
             "recorded": bool(progress),
             "note": "Recorded planning boundaries, not live provider freshness.",
         }
 
-    def _health(self, task: dict, active_execution: dict | None, progress: dict | None) -> str:
+    def _health(self, task: dict, active_execution: dict | None, progress: dict | None,
+                backoff: dict | None = None) -> str:
         """The plan's read-model health (spec 4.1).
 
         Health is derived from recorded facts only and never replaces the user's
@@ -545,7 +566,7 @@ class ProductionTasks:
             return "archived"
         if active_execution is not None and active_execution["state"] in {"pausing", "paused"}:
             return "attention"
-        block_reason = self.block_reason(task, progress)
+        block_reason = self.block_reason(task, progress, backoff)
         if block_reason == "capacity":
             # New publishing work is refused, but the backlog and read paths stay.
             return "blocked"
@@ -553,20 +574,24 @@ class ProductionTasks:
             # Outputs are owed but their input cannot be built yet: the plan is
             # blocked on a dependency rather than on its own progress.
             return "blocked"
-        if block_reason in {"input_unavailable", "backlog"}:
+        if block_reason in {"input_unavailable", "backlog", "provider_backoff"}:
+            # Provider backoff is transient by construction: the plan is behind
+            # and retrying, not stuck.
             return "lagging"
         if (progress or {}).get("last_outcome") == "failed":
             return "attention"
         return "healthy"
 
     @staticmethod
-    def block_reason(task: dict, progress: dict | None) -> str | None:
+    def block_reason(task: dict, progress: dict | None, backoff: dict | None = None) -> str | None:
         """Why a plan is not simply healthy, using the capabilities enum."""
         if task["deleted_at"] or task.get("health") == "config_drift":
             return None
         progress = progress or {}
         if (progress.get("capacity_block") or {}).get("reason"):
             return "capacity"
+        if backoff is not None and backoff.get("until"):
+            return "provider_backoff"
         if progress.get("deferred_derived"):
             return "dependency"
         if progress.get("gaps"):
@@ -586,7 +611,8 @@ class ProductionTasks:
         if not progress:
             return "initializing"
         if (progress.get("backlog") or progress.get("gaps") or progress.get("deferred_derived")
-                or progress.get("recompute") or progress.get("capacity_block")):
+                or progress.get("recompute") or progress.get("capacity_block")
+                or progress.get("provider_backoff")):
             return "catching_up"
         return "maintaining"
 
@@ -1419,6 +1445,45 @@ class ProductionTasks:
         return {"allowed": not blocked, "block_reason": "capacity" if blocked else None,
                 "capacity": state, "now": (now or datetime.now(timezone.utc)).isoformat()}
 
+    def provider_backoff_until(self, provider: str, *, now: datetime) -> dict | None:
+        """The governed provider backoff, if one is still in force."""
+        rows = self.ledger.provider_backoff(provider, now=now)
+        return rows[0] if rows else None
+
+    def record_provider_failures(self, *, task: dict, definition: dict,
+                                 now: datetime) -> dict | None:
+        """Back a provider off after its attempt budget was spent on transient errors.
+
+        Counting stops at the most recent successful run, so a provider that
+        recovers is not punished for old failures.
+        """
+        runs = self.ledger.recent_plan_runs(
+            task["task_id"], since=now - timedelta(seconds=PROVIDER_BACKOFF_MAX_SECONDS), limit=50)
+        failures = 0
+        last_failure: datetime | None = None
+        for run in runs:
+            if run.get("status") not in {"failed", "dead_letter"} or run.get("finished_at") is None:
+                continue
+            error_type = str(run.get("error_type") or "")
+            if not run.get("retryable") or error_type in NON_PROVIDER_ERROR_TYPES:
+                continue
+            failures += 1
+            finished = _optional_utc(run.get("finished_at"))
+            if finished is not None and (last_failure is None or finished > last_failure):
+                last_failure = finished
+        if not failures or last_failure is None:
+            return None
+        delay = min(PROVIDER_BACKOFF_BASE_SECONDS * (2 ** (failures - 1)), PROVIDER_BACKOFF_MAX_SECONDS)
+        until = last_failure + timedelta(seconds=delay)
+        if until <= now:
+            # The failures are old enough that their own backoff has elapsed; the
+            # persisted row (if any) is left to expire on its own.
+            return None
+        recorded = self.ledger.record_provider_backoff(
+            definition["provider"], until=until, failures=failures,
+            reason=PROVIDER_BACKOFF_REASON)
+        return {**recorded, "task_id": task["task_id"]}
+
     def record_dispatch_block(self, task_id: str, *, reason: str, capacity: dict | None = None,
                               now: datetime | None = None) -> dict:
         """Record that new publishing dispatch was refused for this plan.
@@ -1496,6 +1561,17 @@ class ProductionTasks:
         """
         now = now or datetime.now(timezone.utc)
         definition = task.get("payload") or {}
+        backoff = self.provider_backoff_until(str(definition.get("provider") or ""), now=now)
+        if backoff is not None:
+            # The provider is cooling down: the round stays pending with its
+            # backlog, and no new request is made on its behalf (spec 5.5).
+            self.ledger.record_progress(task["task_id"], {
+                "provider_backoff": backoff, "blocked_at": now.isoformat()})
+            return {"execution_id": execution["execution_id"], "task_id": task["task_id"],
+                    "step_ids": [], "run_ids": [], "planned_steps": 0,
+                    "blocked": "provider_backoff",
+                    "plan": {"steps": [], "reason": "provider_backoff", "backlog": True,
+                             "provider_backoff": backoff}}
         gate = self.dispatch_gate(now=now)
         if not gate["allowed"]:
             self.ledger.record_progress(task["task_id"], {
@@ -1536,6 +1612,7 @@ class ProductionTasks:
             # unattended catch-up back instead of sharding around it.
             "capacity_status": gate["capacity"]["status"],
             "capacity_block": None,
+            "provider_backoff": None,
             "backlog_blocked": bool(plan.get("backlog_blocked")),
             "backlog_span_days": int(plan.get("backlog_span_days") or 0),
             # The high-water mark is what makes a later rewind visible.
@@ -1579,10 +1656,40 @@ class ProductionTasks:
                     healthy.append(task["task_id"])
         return {"config_drift": drifted, "config_ok": healthy}
 
+    def _record_provider_backoffs(self, *, now: datetime, limit: int) -> dict:
+        """Turn spent retry budgets into a persisted, provider-wide backoff.
+
+        Only enabled plans are examined, and in bounded number: a provider that
+        keeps failing cools down while every other provider keeps producing
+        (spec 5.5, AC13).
+        """
+        recorded, cleared = [], []
+        checked = 0
+        for task in self.ledger.list_production_tasks():
+            definition = task.get("payload") or {}
+            if task["desired_state"] != "enabled" or task["deleted_at"] or not definition.get("provider"):
+                continue
+            if checked >= max(1, limit):
+                break
+            checked += 1
+            entry = self.record_provider_failures(task=task, definition=definition, now=now)
+            if entry is not None:
+                recorded.append({"task_id": task["task_id"], **entry})
+                continue
+            progress = self.ledger.production_progress(task["task_id"]) or {}
+            stale = (progress.get("provider_backoff") or {}).get("until")
+            if stale and stale <= now.isoformat():
+                # The copy a refusing round left is stale; the governed row is
+                # what actually gates dispatch, and it expires on its own.
+                self.ledger.record_progress(task["task_id"], {"provider_backoff": None})
+                cleared.append(task["task_id"])
+        return {"recorded": recorded, "cleared": cleared}
+
     def reconcile(self, *, now: datetime | None = None, limit: int = 50) -> dict:
         """Close finished executions and advance the schedules their outcome decides."""
         now = now or datetime.now(timezone.utc)
         drift = self.reconcile_config_digest(limit=limit)
+        backoffs = self._record_provider_backoffs(now=now, limit=limit)
         closure = self._advance_dependency_closure(limit=limit, step_budget=8)
         # A round that died after publishing, or raw published outside a round,
         # is still owed its derived outputs (spec 6.2, AC10).
@@ -1610,6 +1717,8 @@ class ProductionTasks:
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],
+                "provider_backoff_recorded": backoffs["recorded"],
+                "provider_backoff_cleared": backoffs["cleared"],
                 "reconciled_at": now.isoformat()}
 
     def _record_repaired_windows(self, *, task: dict, steps: builtins.list[dict]) -> None:

@@ -413,3 +413,70 @@ def test_the_scheduler_view_reports_capacity_and_provider_backoff(tmp_path):
     assert waiting[0]["waiting"] == 1 and waiting[0]["next_attempt_at"] > NOW.isoformat()
     # Nothing is waiting once the job's own delay has elapsed.
     assert ledger.provider_backoff_state(now=NOW + timedelta(hours=1)) == []
+
+
+def test_spent_retry_budgets_back_a_provider_off_without_stopping_others(tmp_path):
+    """AC13: transient failures back off; other providers keep producing."""
+    from data_center.production_tasks import ProductionTasks
+    from data_center.runs.ledger import RunLedger
+    from data_center.scheduler import Scheduler
+
+    register_fixture_instrument()
+    ledger = RunLedger(tmp_path / "ledger.sqlite", clock=lambda: NOW.timestamp())
+    service = ProductionTasks(ledger, canonical_root=tmp_path / "lake")
+    service.create(definition=definition(), name="first", task_id="p1", desired_state="enabled",
+                   now=NOW)
+    # A second plan on another provider must not inherit the first one's backoff.
+    service.create(definition=definition(provider="binance", symbol="BTCUSDT", raw_timeframe="1m",
+                                         price_basis="raw"),
+                   name="second", task_id="p2", desired_state="enabled", now=NOW)
+
+    first = service.change("p1", "run_now", now=NOW)
+    Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service).tick(now=NOW)
+    # The provider fails every attempt the worker was allowed.  The worker keeps
+    # retrying while the budget lasts; only the spent budget is evidence the
+    # scheduler may act on, so the run has to reach its terminal state.
+    for _ in range(3):
+        claim = ledger.claim_next_job()
+        if claim is None:
+            break
+        ledger.fail_job(claim["job_id"], claim["run_id"], "provider exploded",
+                        error_type="ProviderError", retryable=True)
+
+    result = service.reconcile(now=NOW + timedelta(minutes=1), limit=10)
+    recorded = [item for item in result["provider_backoff_recorded"] if item["task_id"] == "p1"]
+    assert recorded, result
+    assert recorded[0]["failures"] >= 1 and recorded[0]["reason"] == "provider_transient_failures"
+    assert [item["provider"] for item in ledger.provider_backoff(now=NOW + timedelta(minutes=1))] == [
+        "fixture"]
+
+    # While the provider cools down, this plan makes no new request...
+    blocked = service.dispatch(task=ledger.get_production_task("p1"),
+                               execution={"execution_id": first["execution_id"]}, now=NOW + timedelta(minutes=2))
+    assert blocked["planned_steps"] == 0 and blocked["blocked"] == "provider_backoff"
+    document = service.read("p1")
+    assert (document["health"], document["block_reason"]) == ("lagging", "provider_backoff")
+    assert document["progress"]["provider_backoff"]["failures"] >= 1
+
+    # ...and the other provider is untouched: it plans and runs.
+    second = service.change("p2", "run_now", now=NOW + timedelta(minutes=2))
+    assert second["execution_id"]
+    other = service.dispatch(task=ledger.get_production_task("p2"), execution=second,
+                             now=NOW + timedelta(minutes=2))
+    assert other["planned_steps"] >= 1 and other.get("blocked") is None
+
+    # Once the backoff elapses the first plan is planned again, and the recorded
+    # copy of the refusal is cleared.
+    later = NOW + timedelta(hours=2)
+    resumed = service.dispatch(task=ledger.get_production_task("p1"), execution=first, now=later)
+    assert resumed["planned_steps"] >= 1 and resumed.get("blocked") is None
+    assert ledger.provider_backoff(now=later) == []
+    # The read model follows the ledger's own clock, so it is advanced with it:
+    # an expired backoff is no longer reported as this plan's block.
+    ledger.clock = lambda: later.timestamp()
+    document = service.read("p1")
+    assert document["progress"]["provider_backoff"] is None
+    assert document["block_reason"] != "provider_backoff"
+    # The windows the provider never produced are still owed, and are still
+    # reported as such: a spent backoff must not look like a repair.
+    assert document["block_reason"] == "input_unavailable"

@@ -816,7 +816,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # decided per plan against its unattended catch-up span (spec 5.6).
             "capacity": gate["capacity"],
             "publishing_allowed": gate["allowed"],
-            "provider_backoff": ledger.provider_backoff_state(now=moment),
+            # Governed provider backoff (durable, per provider) next to the jobs
+            # that are waiting on their own retry delay.
+            "provider_backoff": ledger.provider_backoff(now=moment),
+            "queue_backoff": ledger.provider_backoff_state(now=moment),
             "blocked": blocked,
         })
 

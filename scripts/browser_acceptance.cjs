@@ -654,6 +654,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     // must agree with the API instead of showing a hard-coded green state.
     assert.equal(schedulerView.publishing_allowed, schedulerView.capacity.status !== "critical");
     assert.ok(Array.isArray(schedulerView.provider_backoff));
+    assert.ok(Array.isArray(schedulerView.queue_backoff),
+      "the queue-level retry waits must stay distinct from the governed backoff");
     assert.ok(await page.getByText("New publishing", { exact: true }).count() > 0);
     assert.ok(await page.getByText("Provider backoff", { exact: true }).count() > 0);
     assert.ok(await page.getByText("Dispatch", { exact: true }).count() > 0);

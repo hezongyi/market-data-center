@@ -290,8 +290,16 @@ def test_scheduler_view_reports_the_capacity_gate_and_provider_backoff(client, c
     claim = ledger.claim_next_job()
     ledger.fail_job(claim["job_id"], claim["run_id"], "transient", retryable=True,
                     delay_seconds=600.0)
-    backoff = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]["provider_backoff"]
-    assert [item["provider"] for item in backoff] == ["fixture"] and backoff[0]["waiting"] == 1
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    assert [item["provider"] for item in payload["queue_backoff"]] == ["fixture"]
+    assert payload["queue_backoff"][0]["waiting"] == 1
+    # The governed backoff is durable state, not a queue measurement.
+    assert payload["provider_backoff"] == []
+    RunLedger(config.ledger_path).record_provider_backoff(
+        "fixture", until=datetime.now(timezone.utc) + timedelta(hours=1), failures=2,
+        reason="provider_transient_failures")
+    governed = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]["provider_backoff"]
+    assert [(item["provider"], item["failures"]) for item in governed] == [("fixture", 2)]
 
 
 def test_global_pause_action_stops_dispatch_and_is_audited(client, config):

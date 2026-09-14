@@ -12,7 +12,7 @@ from uuid import uuid4
 
 #: Highest schema version this binary understands.  A ledger recorded by a
 #: newer binary is refused instead of being silently downgraded.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 BASELINE_TABLES = (
     "create table if not exists runs (run_id text primary key, payload text not null)",
@@ -158,11 +158,25 @@ def _manual_retry_migration(conn) -> None:
                  "where retry_of_execution_id is not null")
 
 
+def _provider_backoff_migration(conn) -> None:
+    """Version 5: governed provider backoff, shared by every plan of a provider.
+
+    Rate limiting and provider outages are provider-wide facts, so the state is
+    durable and keyed by provider rather than hidden in one plan's progress
+    (spec 5.5).  Failing tasks cool down while other providers keep working.
+    """
+    conn.execute(
+        "create table if not exists provider_backoff ("
+        "provider text primary key, until text not null, failures integer not null default 1, "
+        "reason text, updated_at text not null)")
+
+
 MIGRATIONS = {
     1: _baseline_migration,
     2: _production_semantics_migration,
     3: _fixed_input_migration,
     4: _manual_retry_migration,
+    5: _provider_backoff_migration,
 }
 
 
@@ -1338,6 +1352,37 @@ class RunLedger:
                 "completed": counts.get("completed", 0), "by_status": counts,
                 "oldest_queued_available_at": None if oldest is None else datetime.fromtimestamp(
                     oldest, tz=timezone.utc).isoformat()}
+
+    def record_provider_backoff(self, provider: str, *, until: datetime, failures: int,
+                                reason: str | None = None) -> dict:
+        """Persist the governed backoff for one provider (spec 5.5)."""
+        stamp = self._now()
+        with self._transaction() as tx:
+            tx.execute(
+                "insert into provider_backoff(provider,until,failures,reason,updated_at) "
+                "values (?,?,?,?,?) on conflict(provider) do update set "
+                "until=excluded.until, failures=excluded.failures, reason=excluded.reason, "
+                "updated_at=excluded.updated_at",
+                (provider, until.isoformat(), int(failures), reason, stamp))
+        return {"provider": provider, "until": until.isoformat(), "failures": int(failures),
+                "reason": reason, "updated_at": stamp}
+
+    def clear_provider_backoff(self, provider: str) -> None:
+        with self._transaction() as tx:
+            tx.execute("delete from provider_backoff where provider=?", (provider,))
+
+    def provider_backoff(self, provider: str | None = None, *, now: datetime | None = None) -> builtins.list[dict]:
+        """Providers whose governed backoff has not elapsed, soonest first."""
+        moment = (now or datetime.now(timezone.utc)).isoformat()
+        with self._connect() as conn:
+            if provider is None:
+                rows = conn.execute("select provider,until,failures,reason from provider_backoff "
+                                    "where until > ? order by until", (moment,)).fetchall()
+            else:
+                rows = conn.execute("select provider,until,failures,reason from provider_backoff "
+                                    "where provider=? and until > ?", (provider, moment)).fetchall()
+        return [{"provider": row[0], "until": row[1], "failures": row[2], "reason": row[3]}
+                for row in rows]
 
     def provider_backoff_state(self, *, now: datetime | None = None) -> builtins.list[dict]:
         """Per-provider retry backoff: jobs whose own retry delay has not elapsed.
