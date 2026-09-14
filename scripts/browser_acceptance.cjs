@@ -283,11 +283,14 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByLabel("Query start date").fill("2026-01-03");
     await page.getByLabel("Query end date").fill("2026-01-01");
     await page.getByLabel("Page size").selectOption("2");
-    await page.getByRole("button", { name: "Load coverage", exact: true }).click();
+    // Issue #84: bars mode loads bars and coverage in one submit, so the label must name both and
+    // stay distinguishable from the market/economic labels asserted below and further down.
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).click();
     await page.getByText("Start date must not be after end date.", { exact: true }).waitFor();
     await page.getByLabel("Query start date").fill("");
     await page.getByLabel("Query end date").fill("");
-    await page.getByRole("button", { name: "Load coverage", exact: true }).click();
+    await page.getByRole("button", { name: "Load bars and coverage", exact: true }).click();
     await page.locator(".coverage-strip").waitFor();
     await page.getByText("Page 1 · 2 rows", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Next page", exact: true }).click();
