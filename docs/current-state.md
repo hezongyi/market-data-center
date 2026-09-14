@@ -18,12 +18,16 @@
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.5.0`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致 | `v0.5.0` release contract test |
-| 最新发布标签 | `v0.5.0` → `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（annotated；按仓库约定发布后不再移动） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.5.0) + `release-receipt.json` |
-| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`）；protected `main` 已在其之后合入多个纯文档提交，生产 deployment 不随文档提交前进 | active deployment manifest + `git log --oneline v0.5.0..origin/main` |
+| 源码版本 | `0.5.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致（生产进程仍运行 `0.5.0`，见下） | `v0.5.1` release contract test |
+| 最新发布标签 | `v0.5.1` → `edc6c1c442e4960fdd82d08fd6db4da279d0e275`（annotated tag object `859469aa…`；按仓库约定发布后不再移动） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.5.1) + `release-receipt.json`（`result=pass`） |
+| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`）；`v0.5.1` 已打标签但**未激活**，生产 deployment 不随新标签自动前进 | active deployment manifest + `git log --oneline v0.5.0..origin/main` |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
 生产 deployment 现与 `v0.5.0` 发布基线一致（WebUI v0.5 可用性、访问控制和版本收口）。上一版本 `v0.4.1` 的 stage/activate、回滚路径和 receipt 均保留，可作为回滚目标；本次 `v0.5.0` activation 的 canonical 与 ledger 哈希均未变化。更早版本的 stage/activate、注入候选 readiness 失败后的自动恢复、回滚和 monitor soak receipt 也继续保留在 data-center evidence root。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+
+2026-09-14 发布 `v0.5.1`（**仅打标签与发布 GitHub Release，不推生产**）：把 `v0.5.0` 之后合入的修复收口为补丁版——WebUI 跨工作区移交（#82/#83）、探索页提交语义（#84）、覆盖度"未计算"的原因（#85）、容量测量来源（#86）、验收 receipt 可判读（#94）、告警闸门收窄（#95）、生产配置来源守卫（#92/#93）。发布准备 PR #102 以 squash 合入为 protected-main 提交 `edc6c1c442e4960fdd82d08fd6db4da279d0e275`，其 commit-scoped `verify`（run `34804428044`）成功；本地统一门禁在与之树等价的 `d8aed91` 上 `result=pass`（`software_version=0.5.1`，276 passed / 4 skipped，浏览器验收 57 checks 双视口）。`Release` run `34804615895` 发布了 `v0.5.1` 与 `release-receipt.json`。
+
+**本次没有执行 `deployment_stage`/`deployment_activate`**：生产继续服务 `v0.5.0`（`3e2362ab0b31-6005b252`），readiness 仍为 `ready`，canonical 与 ledger 未受影响；`v0.5.1` 的激活需要另行审批与维护窗口，届时按 `docs/release-checklist.md` 的 immutable activation 清单执行。发布证据见 `docs/release-checklist.md` 的 "v0.5.1 protected-main evidence" 与 `docs/releases/v0.5.1.md`（后者同时记录真实 provider 验收仍为红的观察项）。
 
 2026-09-14 收口生产配置来源：host-local drop-in `provider-env.conf` 曾让 API/worker 额外读取 `market-data-center-latest/.env.local`（仓库 checkout）。它与机器级 env 的三个共有键（`DATACENTER_API_KEY`、`DATACENTER_PROXY_URL`、`FRED_API_KEY`）取值一致，另含一个生产不使用的 `GITHUB_TOKEN`，因此两个 drop-in 已移除，机器级 env 成为唯一配置来源；provider 通路不受影响（`DATACENTER_PROXY_URL` 仍在进程环境中）。移除后 `DropInPaths` 为空、进程环境不再含 `GITHUB_TOKEN`，`deployment_id`/`software_version`/`source_commit` 与 `v0.5.0` 基线保持一致（本次不涉及 release）。回滚副本保留在 `$HOME/market-data-center/config-history/2026-09-14/`，receipt 见 evidence root `operations/production_env_source_consolidation/`。约束不变：仍不得手工改动 immutable release 的 unit 或依赖，生产行为变更必须走 approval。
 

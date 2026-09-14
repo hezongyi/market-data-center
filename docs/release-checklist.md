@@ -72,6 +72,22 @@ Patch release for the operations receipts panel. Release preparation PR #80 merg
 
 The walkthrough receipt records the fix taking effect in production state: `GET /api/v1/operations/receipts` returned the thirteen actions the platform actually records (including `deployment_stage`, `deployment_activate`, `deployment_rollback`) and no `release`/`deployment` phantom names. No run was queued and no canonical part was written.
 
+## v0.5.0 protected-main evidence
+
+No separate evidence section was written for `v0.5.0` when it was published; the tag `v0.5.0` points immutably to `3e2362ab0b31a194639f3e4801322bb6d14f1ee6` (release preparation PR #90) and its activation is recorded in `docs/current-state.md` and in the deployment receipts under the data-center evidence root.
+
+## v0.5.1 protected-main evidence
+
+Patch release for the fixes merged after `v0.5.0` (Web UI hand-off between workspaces, explorer submit semantics, explained absence of detailed coverage, capacity measurement source, receipt-readable real-provider acceptance, narrowed warning gate, production configuration guard). Release preparation PR #102 merged as protected-main commit `edc6c1c442e4960fdd82d08fd6db4da279d0e275`; the post-merge `Checks` `verify` run `34804428044` succeeded on that commit (Python 3.10/3.11/3.12 and Node 22 browser jobs green).
+
+Local unified CI (`bash scripts/ci.sh all`) passed on the PR head `d8aed91d7d4644f8f6bac9fab2e22731450484d5`, whose tree is identical to the merged commit: 276 passed / 4 skipped, docs-consistency, Ruff, `pip check`, compatibility, dependency lock, production-env check, secret scan (230 tracked files), operations acceptance, snapshot benchmark, Web build, browser acceptance (57 checks at 1440×1000 and 390×844), and service acceptance; receipt `acceptance-receipts/ci/all.json` with `result=pass`, `software_version=0.5.1`. Committed constraints were unchanged from `v0.5.0`, so the existing dependency refresh evidence still applies.
+
+Annotated tag `v0.5.1` (tag object `859469aaeb41704f14124800c7bcca1923193320`) points immutably to that commit, and `Release` run `34804615895` published the GitHub release with `release-receipt.json` (`release-receipt.v1`, `result=pass`, `tag=v0.5.1`, `commit=edc6c1c4…`, hosted `verify` run `34804428044`).
+
+The real-provider acceptance observation required by step 8 is recorded in `docs/releases/v0.5.1.md`: the most recent retained run (2026-09-14T01:00:21Z) fails `binance` (`ValueError`) and `dukascopy` (`HTTPError`) while `yfinance` and `fred` pass, and those receipts predate the classification added by this release. This tag claims no provider-level green.
+
+**Production activation is deliberately excluded from this release.** The tag exists on protected `main`, but no `deployment_stage` or `deployment_activate` was run for it and production continues to serve `v0.5.0` (`3e2362ab0b31-6005b252`). Activation requires a separate approval and its own receipts; until then the rollback target of record stays `v0.5.0`, and `v0.5.1` is the forward target once activation is approved.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
