@@ -293,6 +293,13 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await page.getByRole("button", { name: "Load bars and coverage", exact: true }).click();
     await page.locator(".coverage-strip").waitFor();
     await page.getByText("Page 1 · 2 rows", { exact: true }).waitFor();
+    // Issue #85: this selector gets a summary response, so the console must name the reason instead of
+    // rendering the same "not published" it renders for a selector that was checked and is unhealthy.
+    await page.getByText("Detailed coverage was not computed:", { exact: false }).waitFor();
+    const summaryCoverage = await envelope("GET", "/provider-bars/coverage?provider=fixture&symbol=UI_TEST&timeframe=1d");
+    assert.equal(summaryCoverage.payload.data.coverage_detail_unavailable,
+      "detailed coverage is computed for provider=dukascopy timeframe=1m with start and end; "
+      + "fixture 1d answers with the summary only");
     await page.getByRole("button", { name: "Next page", exact: true }).click();
     await page.getByText(/Page 2 · \d+ rows/, { exact: false }).waitFor();
     await page.getByRole("button", { name: "Economic", exact: true }).click();

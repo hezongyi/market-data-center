@@ -250,6 +250,8 @@ export type CoverageReport = BarsCoverage & {
   calendar_unit?: string;
   selector?: Record<string, string>;
   quality_status?: string;
+  // Present when the API did not compute the governance fields above; null when it did (issue #85).
+  coverage_detail_unavailable?: string | null;
 };
 
 export type MarketBarsCoverage = {
