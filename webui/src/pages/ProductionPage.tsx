@@ -4,7 +4,7 @@ import {
   ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingSkeleton, PageHeader, PanelHeading, StatusBadge,
 } from "../components/ui";
 import { TimeDisplay, usePreferences } from "../preferences";
-import type { ProductionExecution, ProductionPlan, SchedulerView } from "../lib/api";
+import type { Capabilities, ProductionExecution, ProductionPlan, ProductionPreview, SchedulerView } from "../lib/api";
 import type { Services } from "../services";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -22,6 +22,58 @@ const outputs = (plan: ProductionPlan) => {
   return [payload.raw_timeframe ?? "1m", ...(payload.bar_timeframes ?? [])].join(", ");
 };
 
+type DefinitionDraft = {
+  provider: string; symbol: string; raw_timeframe: string; price_basis: string;
+  bar_timeframes: string[]; history_start: string; schedule: string;
+  interval_minutes: number; timezone: string; local_time: string;
+};
+
+const blankDefinition = (): DefinitionDraft => ({
+  provider: "", symbol: "", raw_timeframe: "1m", price_basis: "",
+  bar_timeframes: [], history_start: localDateTime(new Date(Date.now() - 7 * 86400_000)),
+  schedule: "manual", interval_minutes: 15, timezone: "UTC", local_time: "08:00",
+});
+
+/** A datetime-local value is a wall clock, not an instant. */
+const localDateTime = (value: Date) => {
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
+    + `T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+};
+
+/** Seed the wizard from the registry so it never offers a value the API rejects. */
+const seedFromRegistry = (registry: Capabilities): DefinitionDraft => {
+  const provider = registry.providers[0];
+  return {
+    ...blankDefinition(),
+    provider: provider?.provider ?? "",
+    symbol: provider?.instruments?.[0]?.symbol ?? "",
+    raw_timeframe: provider?.maintenance_timeframes?.[0] ?? provider?.timeframes?.[0] ?? "1m",
+    price_basis: provider?.price_bases?.[0] ?? "",
+  };
+};
+
+/** Render the wizard draft as the definition the API validates. */
+const definitionBody = (draft: DefinitionDraft) => ({
+  provider: draft.provider,
+  symbol: draft.symbol,
+  raw_timeframe: draft.raw_timeframe,
+  price_basis: draft.price_basis,
+  bar_timeframes: draft.bar_timeframes,
+  window_policy: {
+    mode: "continuous",
+    // A local datetime is a wall clock; the console sends the instant in UTC.
+    history_start: draft.history_start ? new Date(draft.history_start).toISOString() : "",
+  },
+  schedule: draft.schedule === "manual" || draft.schedule === "fixed_delay"
+    ? { schedule: draft.schedule, interval_seconds: draft.interval_minutes * 60 }
+    : draft.schedule === "daily"
+      ? { schedule: "daily", timezone: draft.timezone, local_time: draft.local_time }
+      : draft.schedule === "fixed_rate"
+        ? { schedule: "fixed_rate", interval_seconds: draft.interval_minutes * 60 }
+        : { schedule: draft.schedule },
+});
+
 const idempotencyKey = (command: string, taskId: string) =>
   `ui-${command}-${taskId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -38,17 +90,27 @@ export function ProductionPage({ services, onMessage, onChanged }: {
   const [busy, setBusy] = useState("");
   const [confirming, setConfirming] = useState<{ plan: ProductionPlan; command: string } | null>(null);
   const [selected, setSelected] = useState<ProductionPlan | null>(null);
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [definition, setDefinition] = useState(() => blankDefinition());
+  const [planName, setPlanName] = useState("");
+  const [preview, setPreview] = useState<ProductionPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [steps, setSteps] = useState<Array<{ step_id: string; stage: string; state: string; block_reason: string | null; window_start: string | null; window_end: string | null }>>([]);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [registered, schedulerView] = await Promise.all([
+      const [registered, schedulerView, registry] = await Promise.all([
         services.production.plans({ page_size: 50 }),
         services.production.scheduler(),
+        services.catalog.capabilities(),
       ]);
       setPlans(registered);
       setScheduler(schedulerView);
+      setCapabilities(registry);
+      // A draft with no provider cannot be validated; seed it from the registry
+      // without discarding edits the operator already made.
+      setDefinition(current => current.provider ? current : seedFromRegistry(registry));
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -110,6 +172,57 @@ export function ProductionPage({ services, onMessage, onChanged }: {
       onMessage(command === "pause_dispatch" ? "Dispatch paused." : "Dispatch resumed.");
     } catch (reason) {
       onMessage(`${command} refused: ${(reason as Error).message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // The wizard only offers what the registry reports: a plan for an unapproved
+  // instrument is refused by the API, so the console does not offer it at all.
+  const providerOptions = capabilities?.providers ?? [];
+  const selectedProvider = providerOptions.find(item => item.provider === definition.provider) ?? providerOptions[0];
+  const symbolOptions = selectedProvider?.instruments ?? [];
+  const derivedTimeframes = capabilities?.production?.outputs
+    ?.find(item => item.dataset_id === "market_bars")?.timeframes ?? [];
+  const minimumInterval = capabilities?.production?.minimum_interval_seconds ?? 300;
+  const scheduleKinds = capabilities?.production?.schedule_kinds ?? ["manual", "once", "fixed_rate", "fixed_delay", "daily"];
+
+  const update = (patch: Record<string, unknown>) => {
+    setDefinition(current => ({ ...current, ...patch }));
+    // Any edit invalidates a preview: showing stale validation would be worse
+    // than showing none.
+    setPreview(null);
+  };
+
+  const runPreview = async () => {
+    setPreviewing(true);
+    onMessage("");
+    try {
+      setPreview(await services.production.preview(definitionBody(definition)));
+    } catch (reason) {
+      onMessage(`preview refused: ${(reason as Error).message}`);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const save = async (desiredState: "paused" | "enabled") => {
+    setBusy(`create:${desiredState}`);
+    onMessage("");
+    try {
+      await services.production.create({
+        name: planName || `${definition.provider}/${definition.symbol}`,
+        definition: definitionBody(definition),
+        desired_state: desiredState,
+      }, idempotencyKey("create", planName || definition.symbol));
+      onMessage(desiredState === "enabled" ? "Plan saved and enabled." : "Plan saved as paused.");
+      setDefinition(blankDefinition());
+      setPlanName("");
+      setPreview(null);
+      await load();
+      onChanged();
+    } catch (reason) {
+      onMessage(`save refused: ${(reason as Error).message}`);
     } finally {
       setBusy("");
     }
@@ -188,6 +301,75 @@ export function ProductionPage({ services, onMessage, onChanged }: {
           <article className="metric"><span>{t("Plans")}</span><strong>{Object.values(scheduler.plans_by_state).reduce((total, count) => total + count, 0)}</strong><small>{Object.entries(scheduler.plans_by_state).map(([state, count]) => `${count} ${state}`).join(" · ") || t("none")}</small></article>
         </div>
         : <LoadingSkeleton rows={1} />}
+    </section>
+    <section className="panel">
+      <PanelHeading eyebrow="Wizard" title="New plan" action={
+        <div className="row-actions">
+          <button className="secondary-button" onClick={() => void runPreview()} disabled={previewing}>
+            {previewing ? t("Previewing…") : t("Preview")}
+          </button>
+          <button className="secondary-button" disabled={busy === "create:paused"} onClick={() => void save("paused")}>{t("Save as paused")}</button>
+          <button className="primary-button" disabled={busy === "create:enabled"} onClick={() => void save("enabled")}>{t("Save and enable")}</button>
+        </div>
+      } />
+      <div className="form-grid">
+        <label>{t("Name")}<input value={planName} onChange={event => setPlanName(event.target.value)} placeholder="EURUSD continuous" /></label>
+        <label>{t("Provider")}<select aria-label={t("Provider")} value={definition.provider}
+          onChange={event => {
+            const provider = event.target.value;
+            const first = providerOptions.find(item => item.provider === provider)?.instruments?.[0]?.symbol ?? "";
+            update({ provider, symbol: first });
+          }}>
+          {providerOptions.map(item => <option key={item.provider} value={item.provider}>{item.provider}</option>)}
+        </select></label>
+        <label>{t("Symbol")}<select aria-label={t("Symbol")} value={definition.symbol}
+          onChange={event => update({ symbol: event.target.value })}>
+          {symbolOptions.map(item => <option key={item.symbol} value={item.symbol}>{item.symbol}</option>)}
+        </select></label>
+        <label>{t("Raw timeframe")}<select aria-label={t("Raw timeframe")} value={definition.raw_timeframe}
+          onChange={event => update({ raw_timeframe: event.target.value })}>
+          {(selectedProvider?.maintenance_timeframes ?? selectedProvider?.timeframes ?? []).map(item => <option key={item} value={item}>{item}</option>)}
+        </select></label>
+        <label>{t("Price basis")}<select aria-label={t("Price basis")} value={definition.price_basis}
+          onChange={event => update({ price_basis: event.target.value })}>
+          {(selectedProvider?.price_bases ?? []).map(item => <option key={item} value={item}>{item}</option>)}
+        </select></label>
+        <label>{t("Derived outputs")}<select aria-label={t("Derived outputs")} multiple size={4}
+          value={definition.bar_timeframes}
+          onChange={event => update({ bar_timeframes: [...event.target.selectedOptions].map(option => option.value) })}>
+          {derivedTimeframes.map(item => <option key={item} value={item}>{item}</option>)}
+        </select></label>
+        <label>{t("History start")}<input type="datetime-local" aria-label={t("History start")}
+          value={definition.history_start} onChange={event => update({ history_start: event.target.value })} /></label>
+        <label>{t("Schedule")}<select aria-label={t("Schedule")} value={definition.schedule}
+          onChange={event => update({ schedule: event.target.value })}>
+          {scheduleKinds.map(item => <option key={item} value={item}>{item}</option>)}
+        </select></label>
+        {(definition.schedule === "fixed_rate" || definition.schedule === "fixed_delay") &&
+          <label>{t("Interval (minutes)")}<input type="number" min={Math.ceil(minimumInterval / 60)} aria-label={t("Interval (minutes)")}
+            value={definition.interval_minutes}
+            onChange={event => update({ interval_minutes: Number(event.target.value) })} /></label>}
+        {definition.schedule === "daily" && <>
+          <label>{t("Time zone")}<input aria-label={t("Time zone")} value={definition.timezone}
+            onChange={event => update({ timezone: event.target.value })} /></label>
+          <label>{t("Local time")}<input aria-label={t("Local time")} value={definition.local_time}
+            onChange={event => update({ local_time: event.target.value })} /></label>
+        </>}
+      </div>
+      {preview && <div className="preview">
+        {preview.validation.errors.length > 0
+          ? <ul className="warnings">{preview.validation.errors.map(item => <li key={`${item.field}-${item.message}`}><b>{item.field}</b>: {item.message}</li>)}</ul>
+          : <>
+            <p>{t("Submittable")}: <b>{preview.submittable ? t("yes") : t("conflicts with an existing plan")}</b> · {preview.ownership_keys.length} {t("ownership key(s)")}</p>
+            <p>{t("Next runs")}: {preview.schedule.next_runs.length > 0
+              ? preview.schedule.next_runs.map(value => <TimeDisplay key={value} value={value} />)
+              : <span className="muted">{preview.schedule.rule ?? t("no scheduled time")}</span>}</p>
+            <p>{t("Dependencies")}: {preview.dependencies.map(item => item.recipe_id).join(", ") || t("none")}</p>
+            {preview.conflicts.length > 0 && <ul className="warnings">
+              {preview.conflicts.map(item => <li key={item.ownership_key}><b>{item.ownership_key}</b>: {t("held by")} {item.task_id}</li>)}
+            </ul>}
+          </>}
+      </div>}
     </section>
     <section className="panel">
       <PanelHeading eyebrow="Registry" title="Registered plans" />

@@ -110,6 +110,8 @@ export function createServices(apiKey: string) {
     production: {
       plans: async (query: Parameters<typeof client.productionPlans>[0] = {}) => (await client.productionPlans(query)).data,
       plan: async (taskId: string) => (await client.productionPlan(taskId)).data,
+      create: async (body: Parameters<typeof client.createProductionTask>[0], idempotencyKey: string) =>
+        (await client.createProductionTask(body, idempotencyKey)).data,
       preview: async (definition: Record<string, unknown>) => (await client.productionPreview(definition)).data,
       act: async (taskId: string, command: string, idempotencyKey: string,
                   options: Parameters<typeof client.productionPlanAction>[3] = {}) =>

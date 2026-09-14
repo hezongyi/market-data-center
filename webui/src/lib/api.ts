@@ -442,6 +442,17 @@ export type Capabilities = {
     shard_minutes: number | null;
     closed_bar_lag_minutes: number;
   }>;
+  // What a plan may be created with.  The wizard enables an option only because
+  // this read model lists it, never because the browser guessed.
+  production?: {
+    schedule_kinds: string[];
+    minimum_interval_seconds: number;
+    plan_states: string[];
+    plan_health: string[];
+    block_reasons: string[];
+    outputs: Array<{ dataset_id: string; timeframes: string[] }>;
+    scheduler_enabled: boolean;
+  };
 };
 
 export type SnapshotSummary = {
@@ -763,6 +774,11 @@ export function createDataCenterClient(apiKey: string) {
     productionPlans: (query: { provider?: string; symbol?: string; desired_state?: string; page_size?: number; cursor?: string | null } = {}) =>
       request<ProductionPlan[]>(`/production/tasks${queryString(query)}`),
     productionPlan: (taskId: string) => request<ProductionPlan>(`/production/tasks/${encodeURIComponent(taskId)}`),
+    createProductionTask: (body: { name: string; definition: Record<string, unknown>; desired_state: string },
+                           idempotencyKey: string) =>
+      request<ProductionPlan>("/production/tasks", {
+        method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(body),
+      }),
     productionPreview: (definition: Record<string, unknown>) =>
       request<ProductionPreview>("/production/plans", { method: "POST", body: JSON.stringify({ definition }) }),
     productionPlanAction: (taskId: string, command: string, idempotencyKey: string,

@@ -651,6 +651,25 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     const schedulerView = await call("GET", "/operations/scheduler");
     assert.equal(typeof schedulerView.dispatch_enabled, "boolean");
     assert.ok(await page.getByText("Dispatch", { exact: true }).count() > 0);
+
+    // The wizard validates against the live registry before anything is saved:
+    // a preview must render either the field errors or the computed plan.
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("Acceptance plan");
+    await page.getByRole("button", { name: "Preview", exact: true }).click();
+    await page.getByText("Submittable", { exact: false }).waitFor();
+    assert.ok(await page.getByLabel("Provider", { exact: true }).inputValue(),
+      "the wizard must be seeded from the registry");
+    // Saving is a real write.  The plan owns its outputs, so a second run only
+    // verifies the plan the first run created rather than colliding with it.
+    const registeredBefore = await call("GET", "/production/tasks");
+    if (!registeredBefore.some(plan => plan.name === "Acceptance plan")) {
+      await page.getByRole("button", { name: "Save as paused", exact: true }).click();
+    }
+    await page.locator("tr").filter({ hasText: "Acceptance plan" }).waitFor();
+    const created = await call("GET", "/production/tasks");
+    assert.ok(created.some(plan => plan.name === "Acceptance plan" && plan.desired_state === "paused"),
+      "the saved plan must be readable through the plan registry");
+
     await page.getByRole("button", { name: "overview", exact: true }).click();
 
     const widths = await page.evaluate(() => ({
@@ -701,7 +720,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "catalog_capability", "explorer_market_bars", "explorer_snapshot_meta", "coverage_to_task_handoff",
       "quality_finding_filters", "quality_finding_acknowledge", "operations_queue_worker_capacity",
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
-      "production_plans_workspace"],
+      "production_plans_workspace", "production_plan_wizard"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
