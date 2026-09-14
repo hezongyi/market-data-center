@@ -12,7 +12,7 @@ from uuid import uuid4
 
 #: Highest schema version this binary understands.  A ledger recorded by a
 #: newer binary is refused instead of being silently downgraded.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 BASELINE_TABLES = (
     "create table if not exists runs (run_id text primary key, payload text not null)",
@@ -150,10 +150,19 @@ def _fixed_input_migration(conn) -> None:
                  "on production_steps(execution_id, dedupe_key) where dedupe_key is not null")
 
 
+def _manual_retry_migration(conn) -> None:
+    """Version 4: link a manual retry to the round whose needs it re-plans."""
+    _add_columns(conn, "production_executions", {"retry_of_execution_id": "text"})
+    conn.execute("create index if not exists production_executions_retry_of "
+                 "on production_executions(retry_of_execution_id) "
+                 "where retry_of_execution_id is not null")
+
+
 MIGRATIONS = {
     1: _baseline_migration,
     2: _production_semantics_migration,
     3: _fixed_input_migration,
+    4: _manual_retry_migration,
 }
 
 
@@ -433,9 +442,11 @@ class RunLedger:
         with self._connect() as conn:
             row = conn.execute(
                 "select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,"
-                "created_at,finished_at,coalesced_count,schedule_revision from production_executions "
-                "where execution_id=?", (execution_id,)).fetchone()
-        return None if row is None else self._execution_row(row)
+                "created_at,finished_at,coalesced_count,schedule_revision,retry_of_execution_id "
+                "from production_executions where execution_id=?", (execution_id,)).fetchone()
+        if row is None:
+            return None
+        return {**self._execution_row(row), "retry_of_execution_id": row[11]}
 
     def active_execution(self, conn, task_id: str) -> dict | None:
         placeholders = ",".join("?" for _ in self.ACTIVE_EXECUTION_STATES)
@@ -759,20 +770,24 @@ class RunLedger:
     def create_production_execution(self, *, execution_id: str, task_id: str,
                                     definition_version: int, trigger_source: str,
                                     scheduled_for: str | None = None,
-                                    schedule_revision: int = 0, conn=None) -> dict:
+                                    schedule_revision: int = 0, conn=None,
+                                    retry_of_execution_id: str | None = None) -> dict:
         """Create one execution for a task; the single-active-slot index is the arbiter."""
         stamp = self._now()
         with self._transaction(conn) as tx:
             try:
-                tx.execute("insert into production_executions(execution_id,task_id,definition_version,trigger_source,scheduled_for,state,created_at,schedule_revision) values (?,?,?,?,?,?,?,?)",
-                             (execution_id, task_id, definition_version, trigger_source, scheduled_for,
-                              "pending", stamp, schedule_revision))
+                tx.execute("insert into production_executions(execution_id,task_id,definition_version,"
+                           "trigger_source,scheduled_for,state,created_at,schedule_revision,"
+                           "retry_of_execution_id) values (?,?,?,?,?,?,?,?,?)",
+                           (execution_id, task_id, definition_version, trigger_source, scheduled_for,
+                            "pending", stamp, schedule_revision, retry_of_execution_id))
             except sqlite3.IntegrityError as exc:
                 raise ProductionConflict("active_execution",
                                          "task already has an active execution") from exc
         return {"execution_id": execution_id, "task_id": task_id, "definition_version": definition_version,
                 "trigger_source": trigger_source, "scheduled_for": scheduled_for, "state": "pending",
-                "created_at": stamp, "schedule_revision": schedule_revision}
+                "created_at": stamp, "schedule_revision": schedule_revision,
+                "retry_of_execution_id": retry_of_execution_id}
 
     def refresh_task_steps(self, task_id: str, *, limit: int = 5) -> None:
         """Refresh the step states of a plan's most recent rounds, in bounded number."""
@@ -950,10 +965,12 @@ class RunLedger:
 
     def list_production_executions(self, task_id: str, *, limit: int = 100) -> list[dict]:
         with self._connect() as conn:
-            rows = conn.execute("select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,created_at,finished_at,coalesced_count from production_executions where task_id=? order by created_at desc limit ?", (task_id, max(1, min(limit, 500)))).fetchall()
-        return [{"execution_id": r[0], "task_id": r[1], "definition_version": r[2], "trigger_source": r[3],
-                 "scheduled_for": r[4], "state": r[5], "outcome": r[6], "created_at": r[7],
-                 "finished_at": r[8], "coalesced_count": r[9]} for r in rows]
+            rows = conn.execute(
+                "select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,"
+                "created_at,finished_at,coalesced_count,schedule_revision,retry_of_execution_id "
+                "from production_executions where task_id=? order by created_at desc limit ?",
+                (task_id, max(1, min(limit, 500)))).fetchall()
+        return [{**self._execution_row(row[:11]), "retry_of_execution_id": row[11]} for row in rows]
 
     def add_production_step(self, *, step_id: str, execution_id: str, stage: str,
                             window_start: str | None = None, window_end: str | None = None) -> dict:

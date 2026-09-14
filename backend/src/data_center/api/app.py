@@ -651,6 +651,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="production task not found")
         return api_envelope(ledger.list_production_executions(task["task_id"], limit=limit))
 
+    @app.post(f"{config.api_prefix}/production/executions/{{execution_id}}/retry", status_code=202)
+    def production_execution_retry(execution_id: str, request: Request,
+                                   x_api_key: str | None = Header(default=None)) -> dict:
+        """Re-plan the unfinished needs of a terminal round as a linked follow-up."""
+        require_api_key(config, x_api_key)
+        try:
+            result = production_tasks_service.retry(
+                execution_id=execution_id, actor=operator_identity(request, config),
+                request_id=current_request_id(),
+                idempotency_key=request.headers.get("Idempotency-Key"))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="production execution not found") from exc
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict",
+                                                         "message": str(exc)}) from exc
+        except ProductionConflict as exc:
+            raise HTTPException(status_code=production_conflict_status(exc.code),
+                                detail={"code": exc.code, "message": str(exc)}) from exc
+        return api_envelope(result)
+
     @app.get(f"{config.api_prefix}/production/executions/{{execution_id}}")
     def production_execution_detail(execution_id: str) -> dict:
         execution = ledger.get_production_execution(execution_id)

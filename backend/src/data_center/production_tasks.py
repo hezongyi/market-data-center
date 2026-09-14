@@ -8,6 +8,7 @@ ledger stays responsible for durable, transactional state.
 from __future__ import annotations
 
 import base64
+import builtins
 import hashlib
 import hmac
 import json
@@ -813,6 +814,126 @@ class ProductionTasks:
             windows=[(step["window_start"], step["window_end"]) for step in published],
             step_budget=step_budget)
         return {"steps": steps, "deferred": deferred}
+
+    def retry(self, *, execution_id: str, actor: str | None = None, request_id: str | None = None,
+              idempotency_key: str | None = None, step_budget: int = 8,
+              now: datetime | None = None) -> dict:
+        """Create a linked follow-up round for the needs the original left open.
+
+        A retry re-plans only the windows that did not complete, keeps the
+        original round's terminal receipt untouched, and inherits every pause
+        and ownership constraint: a paused plan is refused rather than quietly
+        producing (spec 5.2, AC13).
+        """
+        now = now or datetime.now(timezone.utc)
+        original = self.ledger.get_production_execution(execution_id)
+        if original is None:
+            # A refused retry is audited like any other refusal.
+            self.ledger.record_write_audit({
+                "action": "production.execution.retry", "actor": actor, "request_id": request_id,
+                "outcome": "rejected", "code": "not_found",
+                "message": "production execution not found"})
+            raise KeyError(execution_id)
+        task = self._resolve(original["task_id"])
+        definition = task.get("payload") or {}
+        request = {"execution_id": execution_id, "task_id": task["task_id"]}
+        audit = {"action": "production.execution.retry", "actor": actor, "request_id": request_id}
+
+        def action(conn):
+            # Every check lives here so that a replay of an already applied
+            # retry returns its stored response instead of tripping over the
+            # round the first attempt created.
+            if original["state"] not in {"completed", "failed", "skipped"}:
+                raise ProductionConflict(
+                    "active_execution",
+                    "the round has not finished yet; retry applies to a terminal round")
+            if task["desired_state"] == "paused":
+                raise ProductionConflict("task_paused", "resume the plan before retrying its round")
+            if task["desired_state"] == "archived":
+                raise ProductionConflict("task_archived", "an archived plan cannot be retried")
+            if self.ledger.active_execution_for_task(task["task_id"]) is not None:
+                raise ProductionConflict("active_execution", "another round of this plan is still active")
+            incomplete = [step for step in self.ledger.list_production_steps(execution_id)
+                          if step["state"] in {"failed", "blocked", "skipped", "pending", "running"}]
+            if not incomplete:
+                raise ProductionConflict("nothing_to_retry", "the round has no unfinished work")
+            new_execution_id = str(uuid4())
+            steps = self._retry_steps(task=task, definition=definition, execution_id=new_execution_id,
+                                      steps=incomplete, step_budget=step_budget)
+            if not steps:
+                raise ProductionConflict("input_unavailable",
+                                         "the unfinished windows cannot be replanned yet")
+            self.ledger.create_production_execution(
+                execution_id=new_execution_id, task_id=task["task_id"],
+                definition_version=task["definition_version"], trigger_source="retry",
+                conn=conn, retry_of_execution_id=execution_id)
+            accepted = self.ledger.accept_execution_plan(
+                execution_id=new_execution_id, steps=steps, conn=conn, audit=audit)
+            return {"execution_id": new_execution_id, "retry_of_execution_id": execution_id,
+                    "task_id": task["task_id"], "planned_steps": len(steps),
+                    "step_ids": accepted["step_ids"], "run_ids": accepted["run_ids"]}
+
+        return self._apply(task["task_id"], "retry", action, request=request,
+                           idempotency_key=idempotency_key, actor=actor,
+                           audit_action="production.execution.retry", request_id=request_id)
+
+    def _retry_steps(self, *, task: dict, definition: dict, execution_id: str,
+                     steps: builtins.list[dict], step_budget: int) -> builtins.list[dict]:
+        """Re-plan exactly the unfinished windows, one step per original step."""
+        planned: list[dict] = []
+        deferred: list[str] = []
+        for step in steps:
+            if len(planned) >= max(1, step_budget):
+                break
+            window_start, window_end = step.get("window_start"), step.get("window_end")
+            if not window_start or not window_end:
+                continue
+            if step["stage"] == "raw":
+                built = self._raw_step(task=task, definition=definition, execution_id=execution_id,
+                                       window_start=window_start, window_end=window_end)
+            else:
+                timeframe = step.get("timeframe") or step["stage"].split(":", 1)[-1]
+                try:
+                    chain = _recipe_chain(timeframe, raw_timeframe=definition.get("raw_timeframe")
+                                          or DEFAULT_RAW_TIMEFRAME,
+                                          provider=definition["provider"],
+                                          price_basis=definition.get("price_basis") or "bid")
+                except DefinitionError:
+                    chain = None
+                recipe_document = next((item for item in chain or []
+                                        if item["target_timeframe"] == timeframe), None)
+                if recipe_document is None:
+                    continue
+                identity = (f"derive:{recipe_document['recipe_id']}:"
+                            f"{_as_utc(window_start, 'window_start').isoformat()}:"
+                            f"{_as_utc(window_end, 'window_end').isoformat()}")
+                built = self._derive_step(task=task, definition=definition, execution_id=execution_id,
+                                          recipe_document=recipe_document, window_start=window_start,
+                                          window_end=window_end, identity=identity, deferred=deferred)
+            if built is not None:
+                planned.append(built)
+        return planned
+
+    def _raw_step(self, *, task: dict, definition: dict, execution_id: str,
+                  window_start: str, window_end: str) -> dict | None:
+        """Rebuild one raw window as a step, with the policy in force now."""
+        policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+        capability = REGISTRY.capability(definition["provider"])
+        job = IngestJob(
+            job_id=f"{task['task_id']}:{execution_id[:8]}:raw",
+            dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
+            asset_class=definition.get("asset_class") or capability.asset_classes[0],
+            timeframe=definition["raw_timeframe"],
+            start=_as_utc(window_start, "window_start"), end=_as_utc(window_end, "window_end"),
+            run_scope="production", run_kind="ingest")
+        payloads = ingest_window_payloads(job=job, policy=policy)
+        if not payloads:
+            return None
+        payload = payloads[0]
+        identity = (f"raw:{_as_utc(payload['start'], 'window_start').isoformat()}:"
+                    f"{_as_utc(payload['end'], 'window_end').isoformat()}")
+        return {"stage": "raw", "window_start": payload["start"], "window_end": payload["end"],
+                "dedupe_key": identity, "payloads": [payload]}
 
     # -- dispatch and closure -------------------------------------------
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,

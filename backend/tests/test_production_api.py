@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from data_center.api.app import create_app
+from data_center.production_tasks import ProductionTasks
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 
@@ -280,3 +281,38 @@ def test_operations_scheduler_action_rejects_an_unknown_command(client):
     unauthenticated = client.post("/api/v1/operations/scheduler/actions",
                                   json={"command": "pause_dispatch"})
     assert unauthenticated.status_code == 401
+
+
+def test_execution_retry_returns_a_linked_follow_up_round(client, config):
+    """The retry route re-plans a failed round and reports the link (spec 8)."""
+    from data_center.production_tasks import ProductionTasks
+
+    create_plan(client, "p1", desired_state="enabled")
+    started = client.post("/api/v1/production/tasks/p1/actions", json={"command": "run_now"},
+                          headers=auth())
+    execution_id = started.json()["data"]["execution_id"]
+    ledger = RunLedger(config.ledger_path)
+    # Plan the round (the API has no scheduler running) and fail its first run,
+    # which is what a provider failure would leave behind.
+    service = ProductionTasks(ledger, canonical_root=config.canonical_root)
+    service.dispatch(task=ledger.get_production_task("p1"),
+                     execution=ledger.get_production_execution(execution_id), step_budget=1)
+    claim = ledger.claim_next_job()
+    assert claim is not None
+    ledger.fail_job(claim["job_id"], claim["run_id"], "provider exploded",
+                    error_type="ProviderError", retryable=False)
+    ledger.refresh_execution_steps(execution_id)
+    ledger.close_finished_executions()
+    assert ledger.get_production_execution(execution_id)["state"] == "failed"
+
+    response = client.post(f"/api/v1/production/executions/{execution_id}/retry", headers=auth())
+    assert response.status_code == 202, response.text
+    payload = response.json()["data"]
+    assert payload["retry_of_execution_id"] == execution_id
+    assert payload["planned_steps"] >= 1
+    follow_up = ledger.get_production_execution(payload["execution_id"])
+    assert follow_up["trigger_source"] == "retry"
+    assert follow_up["retry_of_execution_id"] == execution_id
+    # The refusal path stays explicit: retrying an unknown round is a 404.
+    missing = client.post("/api/v1/production/executions/absent/retry", headers=auth())
+    assert missing.status_code == 404

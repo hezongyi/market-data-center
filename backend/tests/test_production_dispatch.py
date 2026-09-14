@@ -20,7 +20,7 @@ from data_center.production_tasks import (
     plan_execution,
     scheduled_end,
 )
-from data_center.runs.ledger import RunLedger
+from data_center.runs.ledger import ProductionConflict, RunLedger
 from data_center.scheduler import Scheduler
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
@@ -423,3 +423,92 @@ def test_raw_progress_without_a_derivation_is_repaired_without_new_raw(tmp_path)
     second = scheduler.tick(now=NOW + timedelta(minutes=2))
     assert second["reconcile"]["derived_planned"] == []
     assert len(ledger.list()) == before
+
+
+def _failed_round(tmp_path, service, ledger, execution):
+    """Drive a round to a terminal failed state with one failed raw run."""
+    claim = ledger.claim_next_job()
+    assert claim is not None
+    ledger.fail_job(claim["job_id"], claim["run_id"], "provider exploded",
+                    error_type="ProviderError", retryable=False)
+    ledger.refresh_execution_steps(execution["execution_id"])
+    ledger.close_finished_executions()
+    return ledger.get_production_execution(execution["execution_id"])
+
+
+def test_retry_replans_only_the_unfinished_windows_as_a_linked_round(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    original = _failed_round(tmp_path, service, ledger, execution)
+    assert original["state"] == "failed"
+    original_receipt = ledger.get(ledger.list()[0]["run_id"])
+
+    retried = service.retry(execution_id=execution["execution_id"], now=NOW + timedelta(minutes=1))
+    assert retried["retry_of_execution_id"] == execution["execution_id"]
+    follow_up = ledger.get_production_execution(retried["execution_id"])
+    # The follow-up round is created together with its first plan, so it is
+    # already running its planned steps.
+    assert follow_up["trigger_source"] == "retry" and follow_up["state"] == "running"
+    assert follow_up["retry_of_execution_id"] == execution["execution_id"]
+    # Only the failed window is re-planned, and it carries its own fixed input.
+    assert retried["planned_steps"] == 1 and retried["run_ids"]
+    # The original round's terminal result is untouched.
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "failed"
+    assert ledger.get(original_receipt["run_id"]) == original_receipt
+    # The follow-up round re-plans the raw window; complete it the same isolated
+    # way as the first round so no test contacts a real provider.
+    follow_up_raw = ledger.list_production_steps(retried["execution_id"])[0]
+    claim = ledger.claim_next_job()
+    assert claim["run_id"] in retried["run_ids"]
+    publish_raw(tmp_path / "lake", start=datetime.fromisoformat(follow_up_raw["window_start"]),
+                run_id=claim["run_id"], provider="binance", symbol="BTCUSDT")
+    ledger.finish_job(claim["job_id"], claim["run_id"],
+                      {"status": "pass", "run_id": claim["run_id"], "row_count": 60})
+    scheduler.tick(now=NOW + timedelta(minutes=2))
+    # The follow-up round advances its own dependency graph: the raw window it
+    # re-planned is complete and its derived layer has been planned.
+    follow_up_steps = ledger.list_production_steps(retried["execution_id"])
+    assert any(step["state"] == "completed" for step in follow_up_steps)
+    assert any(step["stage"].startswith("derive:") for step in follow_up_steps)
+
+
+def test_retry_refuses_a_running_round_and_a_paused_plan(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service).tick(now=NOW)
+    # Still running: a retry would race the round in flight.
+    with pytest.raises(ProductionConflict) as running:
+        service.retry(execution_id=execution["execution_id"], now=NOW)
+    assert running.value.code == "active_execution"
+    _failed_round(tmp_path, service, ledger, execution)
+    service.change("p1", "pause", now=NOW)
+    with pytest.raises(ProductionConflict) as paused:
+        service.retry(execution_id=execution["execution_id"], now=NOW)
+    assert paused.value.code == "task_paused"
+    # Nothing was created by either refusal.
+    assert len(ledger.list_production_executions("p1")) == 1
+
+
+def test_retry_reports_an_unknown_round_and_audits_the_refusal(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    with pytest.raises(KeyError):
+        service.retry(execution_id="absent")
+    entries = ledger.write_audit_entries()
+    assert entries[0]["action"] == "production.execution.retry"
+    assert entries[0]["outcome"] == "rejected" and entries[0]["code"] == "not_found"
+
+
+def test_retry_is_idempotent_under_a_repeated_key(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    service.change("p1", "update", definition=derived_definition(), expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service).tick(now=NOW)
+    _failed_round(tmp_path, service, ledger, execution)
+    first = service.retry(execution_id=execution["execution_id"], idempotency_key="retry-1", now=NOW)
+    replay = service.retry(execution_id=execution["execution_id"], idempotency_key="retry-1", now=NOW)
+    assert replay == first
+    assert len(ledger.list_production_executions("p1")) == 2
