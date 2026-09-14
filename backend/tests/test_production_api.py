@@ -285,8 +285,6 @@ def test_operations_scheduler_action_rejects_an_unknown_command(client):
 
 def test_execution_retry_returns_a_linked_follow_up_round(client, config):
     """The retry route re-plans a failed round and reports the link (spec 8)."""
-    from data_center.production_tasks import ProductionTasks
-
     create_plan(client, "p1", desired_state="enabled")
     started = client.post("/api/v1/production/tasks/p1/actions", json={"command": "run_now"},
                           headers=auth())
