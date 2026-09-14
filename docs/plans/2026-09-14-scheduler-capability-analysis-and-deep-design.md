@@ -308,7 +308,7 @@ jobs(owner_plan_id) WHERE owner_plan_id IS NOT NULL     -- 部分索引，claim 
 
 1. `PRAGMA journal_mode=WAL` + `busy_timeout`（建议 5s，保留 Python 默认值即可但要显式）+ 写事务保持毫秒级；WAL 需要与现有 backup（`operations.py:74-90` 用 `sqlite3.backup()`）和 restore 一起回归验证。
 2. 顺序迁移：`user_version` + 迁移函数列表 + 打开时校验"库版本 ≤ 代码版本"，并补"从 v0 库升级"的测试。
-3. `deployment._sqlite_logical_hash` 的表清单（`deployment.py:438`）必须加入新表，否则部署身份看不到 scheduler 状态（G5）。
+3. `deployment._sqlite_logical_hash` 的表清单（`deployment.py:438`）必须加入全部调度表，否则部署身份看不到 scheduler 状态（G5）；但**必须同时改造实现**：它现在对清单内每张表执行 `select * ... order by <所有列>` 再逐行摘要，实测在生产 ledger（1,138 runs / 1,138 jobs）单次 ≈ 519 ms，而每次 stage/activate 至少调用两次（`deployment.py:223-243`）。已确认方案（issue #107）：全部纳入 + 按 `rowid` 流式 + receipt 记录每表行数与耗时 + 不引入删除式保留；退路是"小状态表逐行 + 追加型历史表 `(count, max(rowid), 尾部摘要)`"两级方案（哈希只在同一次操作内前后比较，换算法安全）。
 4. SQL 侧读模型：`runs` 增列；`RunStore.list_by_plan(plan_id, cursor, limit)` 走索引；**不改**现有 `/runs` 契约。
 5. 批量原子入队：`RunStore.enqueue_batch(payloads) -> list[run_id]`，内部一次连接一次事务；`enqueue_ingest_plan` 改为调用它。旧的 `enqueue_job` 保留（单窗口路径与测试仍用）。
 6. 时钟注入：`RunLedger(..., clock=...)` 或方法参数化；`available_at`/`heartbeat`/`created_at` 全部走注入时钟，便于 misfire 与 DST 测试。
