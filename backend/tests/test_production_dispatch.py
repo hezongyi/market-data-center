@@ -11,7 +11,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from data_center.control_plane import InstrumentMetadata
 from data_center.ingest.worker import LocalWorker
 from data_center.instants import parse_instant
@@ -297,6 +296,21 @@ def test_planning_is_bounded_by_policy_and_reports_a_backlog(tmp_path):
     # The bounded round never plans past its policy window.
     planned_end = parse_instant(plan["planned_end"])
     assert planned_end <= parse_instant(plan["planned_start"]) + timedelta(days=31)
+
+
+def test_fixed_window_plan_reports_no_rewind_and_dispatches(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    fixed = definition(window_policy={
+        "mode": "fixed", "start": "2026-09-14T08:00:00+00:00",
+        "end": "2026-09-14T09:00:00+00:00",
+    })
+    service.change("p1", "update", definition=fixed, expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    result = service.dispatch(
+        task=ledger.get_production_task("p1"), execution=execution, now=NOW,
+    )
+    assert result["plan"]["rewound"] is False
+    assert result["planned_steps"] == 1
 
 
 def test_scheduled_end_respects_the_provider_availability_lag():

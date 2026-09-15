@@ -1987,6 +1987,7 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
     backlog_blocked = False
     backlog_span_days = 0
     observed_boundary = complete_boundary = None
+    rewound = False
     if mode == "fixed":
         start = _as_utc(window_policy["start"], "window_policy.start")
         end = _as_utc(window_policy["end"], "window_policy.end")
