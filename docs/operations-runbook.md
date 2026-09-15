@@ -1,5 +1,12 @@
 # Operations runbook
 
+## Current scope (2026-09-15)
+
+Production maintenance remains available, but unfinished migration/rollout work is paused under the
+[EURUSD product baseline](specs/2026-09-15-eurusd-first-product-baseline.md). Commands below are operational
+references, not instructions to resume old work. Branch/integration previews use the separate
+[preview specification](specs/2026-09-15-isolated-preview-environment.md) and development guide.
+
 ## Machine-level configuration only
 
 Production configuration has exactly one source: `$HOME/.config/market-data-center/env` (mode 0600), loaded by
@@ -368,8 +375,10 @@ PYTHONPATH=backend/src python scripts/query_benchmark.py \
 ```
 
 The receipt passes only when a 1,000-row query has warm P95 below one second, cold latency below three seconds,
-and additional peak RSS below 512 MiB. Run `scripts/query_pagination_acceptance.py` after deploying the same
-commit to prove paged/unpaged and `macro-market-lab` consumer parity on production fixtures.
+and additional peak RSS below 512 MiB. For a change to query pagination, run
+`scripts/query_pagination_acceptance.py` against the matching isolated acceptance deployment to prove
+paged/unpaged consistency. Cross-repository `macro-market-lab` consumer parity belongs only to a separately
+scoped consumer migration and is not a default EURUSD development or release gate.
 
 ## Acceptance evidence
 

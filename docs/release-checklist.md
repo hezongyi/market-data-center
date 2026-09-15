@@ -1,5 +1,15 @@
 # Release checklist
 
+## Applicability after the EURUSD-first decision (2026-09-15)
+
+This checklist governs version releases and production activation, not branch previews or ordinary
+documentation PRs. The [current product baseline](specs/2026-09-15-eurusd-first-product-baseline.md)
+and its §5 mapping replace migration-specific prerequisites for this iteration. Preserve compatibility,
+immutable evidence, single-writer ownership and applicable recovery checks. Legacy ≥4h shadow comparison,
+crypto rollout and macro-market-lab consumer parity are not EURUSD release prerequisites; record deferred
+consumer/migration scope explicitly instead of declaring it accepted. Historical version evidence below
+is unchanged. Preview and integration updates follow [the development guide](development-guide.md).
+
 ## Required inputs
 
 - semantic version and immutable tag name
@@ -175,4 +185,6 @@ Corrections use a new commit and a new semantic version tag. Historical receipts
 - check out the previous immutable tag and install its matching lock artifact;
 - restore configuration without changing canonical data;
 - if recovery is required, verify the archive before restore and fail closed on conflicting bytes;
-- restart API/worker and run readiness, smoke, query parity, and browser acceptance.
+- restart the applicable API/worker/scheduler units and run readiness, smoke, internal query consistency,
+  and relevant browser acceptance. Cross-repository consumer parity applies only to an explicitly scoped
+  consumer migration; it is not a general rollback prerequisite.

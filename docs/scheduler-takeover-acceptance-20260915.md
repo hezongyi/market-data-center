@@ -1,5 +1,7 @@
 # 调度器接管补充验收索引
 
+排期更新（2026-09-15）：迁移补证与扩面暂停，当前验收按[EURUSD 产品规范 §5](specs/2026-09-15-eurusd-first-product-baseline.md#5-旧工作暂停与规范接续)映射。以下证据与当时状态保留，未完成项不标通过，不据此自动继续 legacy 对照。
+
 规范：[调度器接管修复与验收补充规范](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)
 跟踪：issue #120
 更新时间：2026-09-15 03:10 UTC

@@ -2,6 +2,7 @@
 
 日期：2026-09-11
 状态：accepted；Phases 1-4 implemented and verified
+当前适用范围更新（2026-09-15）：历史验收记录保留；新的视觉、技术采用、导航与阶段交付要求以[EURUSD 产品与 UI 基线](2026-09-15-eurusd-first-product-baseline.md)及 `webui/AGENTS.md` 为准。旧组件/CSS 实现不能作为新页面放弃 shadcn-admin 的依据。
 相关研究：`docs/plans/2026-09-11-webui-framework-research.md`
 API 契约：`docs/api-and-webui-contract.md`
 

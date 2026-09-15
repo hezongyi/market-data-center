@@ -1,5 +1,7 @@
 # Provider Migration Plan
 
+排期：paused（2026-09-15）。未完成迁移暂停，已有实现与证据保留；当前执行[EURUSD 路线图](2026-09-15-eurusd-first-implementation.md)，范围取代关系见[产品规范 §5](../specs/2026-09-15-eurusd-first-product-baseline.md#5-旧工作暂停与规范接续)。
+
 ## Phase 1：MVP 稳定
 
 - fixture `provider_bars` ingest/query/quality/receipt

@@ -1,10 +1,11 @@
 # 生产任务与统一调度管理设计与验收规范
 
 日期：2026-09-14
-状态：in_progress（S0–S5 已于 2026-09-15 部署；补充规范 TA01–TA10 尚在修复与验收）
+状态：in_progress（历史总目标尚未全部验收）
+排期：paused（2026-09-15，总接管/扩面暂停）。持久化、所有权、幂等、数据和接口契约保留；当前范围与验收改由[EURUSD 产品规范](2026-09-15-eurusd-first-product-baseline.md)决定，冲突以其 §5 为准。
 前置版本：WebUI v0.5 任务中心
 
-本文件是生产任务与统一调度管理的唯一功能规范，沿用原 Maintenance Scheduler 的文件路径与引用。本文规定功能、状态、数据和接口契约，以及完成门槛；[实施计划](../plans/2026-09-14-production-task-scheduler.md)只规定实施顺序、代码落点和验证安排。[调度能力分析与深化设计](../plans/2026-09-14-scheduler-capability-analysis-and-deep-design.md)记录独立评审的证据、缺口（G 编号）与落库设计；需求冲突时以本文件为准。
+本文件保留生产任务与统一调度管理的既有功能契约，沿用原 Maintenance Scheduler 的文件路径与引用。当前范围与完成门槛以文首 EURUSD 后继规范为准。[旧实施计划](../plans/2026-09-14-production-task-scheduler.md)与[调度能力分析](../plans/2026-09-14-scheduler-capability-analysis-and-deep-design.md)保留历史顺序、证据与设计，不再驱动当前排期。
 
 关联规范：
 

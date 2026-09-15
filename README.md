@@ -1,5 +1,7 @@
 # Market Data Center
 
+当前开发主线已调整为独立 Dukascopy EURUSD 维护闭环与 shadcn-admin WebUI。先读[交付基线入口](docs/README.md)和[开发指南](docs/development-guide.md)；旧迁移/扩面默认暂停排期。独立预览工具尚待 P0 交付，下面的运行命令不能视为隔离预览。
+
 本地生产数据资产服务，覆盖 Binance、yfinance 与 FRED ingest、immutable Parquet/manifest、运行 ledger、economic current/PIT 查询、worker、告警、容量保护、原子备份恢复和管理 Web UI。
 
 ## Runtime
@@ -31,7 +33,7 @@ PYTHONPATH=backend/src .venv/bin/python -m data_center.worker_main
 
 ## Verification
 
-统一入口：`bash scripts/ci.sh`。它执行 lock/warning 检查、ruff、pytest、secret/compatibility 检查、operations acceptance、Web UI build、隔离 Playwright acceptance 和 service restart acceptance。
+完整验证入口：`bash scripts/ci.sh`。它执行 lock/warning 检查、ruff、pytest、secret/compatibility 检查、operations acceptance、Web UI build、隔离 Playwright acceptance 和 service restart acceptance。开发中按[风险矩阵](docs/development-guide.md)跑相关检查；高风险/版本候选运行完整适用 gate，合并仍要求 hosted verify。
 
 浏览器默认使用 Playwright 管理的 Chromium；本机已有浏览器时可设置 `PLAYWRIGHT_BROWSER_EXECUTABLE=/path/to/chrome`。该变量只属于本机环境，不写入 `.env.example`。
 

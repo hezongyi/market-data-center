@@ -2,7 +2,8 @@
 
 日期：2026-09-14
 
-状态：in_progress（S0–S5 已实现并进入生产接管；issue #120 正在按补充 spec 修复与补验）
+状态：in_progress（历史总目标尚未全部验收；不再作为当前排期依据）
+排期：paused（2026-09-15）。剩余总接管暂停；必要缺口修复、EURUSD 自动/派生闭环进入[当前路线图](2026-09-15-eurusd-first-implementation.md)。本文以下步骤与进度保留为历史，冲突以[产品规范 §5](../specs/2026-09-15-eurusd-first-product-baseline.md#5-旧工作暂停与规范接续)及开发指南为准。
 
 功能依据：[生产任务与统一调度管理设计与验收规范](../specs/2026-09-14-maintenance-scheduler.md)及
 [接管修复与验收补充规范](../specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)。
