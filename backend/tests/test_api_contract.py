@@ -226,3 +226,8 @@ def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path
     })
     assert refused_update.status_code == 422
     assert refused_update.json()["errors"][0]["code"] == "live_scope_required"
+    refused_action = client.post("/api/v1/production/tasks/live-p1/actions", json={
+        "command": "update", "definition": definition, "expected_version": 1,
+    })
+    assert refused_action.status_code == 422
+    assert refused_action.json()["errors"][0]["code"] == "live_scope_required"

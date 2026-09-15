@@ -578,7 +578,7 @@ def print_status(payload: dict, *, as_json: bool = False) -> None:
         print(
             f"Live limits: EURUSD {limits['start']} -> {limits['end']}; "
             f"requests={limits['request_budget']}; bytes={limits['byte_budget']}; "
-            f"runtime_seconds={limits['runtime_budget_seconds']}"
+            f"runtime_seconds={limits.get('runtime_budget_seconds', 600)}"
         )
     print(f"Logs: {payload['logs']}")
     for name, record in payload["processes"].items():

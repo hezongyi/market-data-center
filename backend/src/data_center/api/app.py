@@ -745,6 +745,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
         command = str(payload.get("command") or "")
+        if command in {"update", "copy"}:
+            require_preview_definition(payload.get("definition") or {})
         actor = operator_identity(request, config)
         try:
             result = production_tasks_service.change(

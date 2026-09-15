@@ -90,6 +90,24 @@ def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
     assert env["HTTPS_PROXY"] == "http://proxy.example.invalid:8080"
 
 
+def test_status_keeps_legacy_live_metadata_without_a_runtime_budget(capsys):
+    payload = {
+        "id": "legacy-live", "state": "stopped", "mode": "live",
+        "ui_url": "http://127.0.0.1:1", "api_docs_url": "http://127.0.0.1:2/docs",
+        "actual_identity": {"branch": "main", "commit": "a" * 40, "dirty": False},
+        "scheduler": {"process_enabled": False, "ledger_enabled": False,
+                      "effective_dispatch": False},
+        "data_root": "/tmp/legacy-live/data", "logs": "/tmp/legacy-live/logs",
+        "live_limits": {"start": "2026-09-14T00:00:00Z", "end": "2026-09-15T00:00:00Z",
+                        "request_budget": 30, "byte_budget": 104857600},
+        "processes": {},
+    }
+
+    dev_preview.print_status(payload)
+
+    assert "runtime_seconds=600" in capsys.readouterr().out
+
+
 def test_live_mode_requires_a_bounded_window():
     args = SimpleNamespace(
         command="start", mode="live", live_start="2026-09-14T00:00:00Z",
