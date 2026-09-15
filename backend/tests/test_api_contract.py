@@ -133,3 +133,21 @@ def test_published_manifest_endpoint_is_read_only_and_validated(tmp_path):
     payload = response.json()["data"]
     assert payload["status"] == "published" and payload["parts"][0]["bytes"] == path[0].stat().st_size
     assert TestClient(app).get("/api/v1/runs/missing/manifest").status_code == 404
+
+
+def test_fixture_preview_hides_and_rejects_real_providers(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "fixture")
+    client = TestClient(create_app(Settings(
+        canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+        evidence_root=tmp_path / "evidence",
+    )))
+    providers = client.get("/api/v1/capabilities").json()["data"]["providers"]
+    assert [item["provider"] for item in providers] == ["fixture"]
+    request = {
+        "run_kind": "ingest", "run_scope": "acceptance", "provider": "dukascopy",
+        "symbol": "EURUSD", "timeframe": "1m", "start": "2026-01-01T00:00:00Z",
+        "end": "2026-01-02T00:00:00Z",
+    }
+    response = client.post("/api/v1/maintenance/plans", json=request)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "provider_disabled"

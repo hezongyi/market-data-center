@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import Cookie, FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -261,7 +261,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     identity = validated_runtime_identity(
         config.deployment_manifest, config.evidence_root, component="api", webui_dist=config.webui_dist,
     ) if config.deployment_manifest else {
-        "deployment_id": "development", "software_version": __version__, "source_commit": "unknown"
+        "deployment_id": config.environment_name, "software_version": __version__,
+        "source_commit": config.source_commit or "unknown"
     }
     print(json.dumps({"event": "api_started", "request_id": None,
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
@@ -272,7 +273,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
         try: token = auth.login(username, password)
         except AuthError as exc: raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-        response.set_cookie("mdc_session", token, httponly=True, samesite="lax", secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
+        response.set_cookie(config.auth_cookie_name, token, httponly=True, samesite="lax",
+                            secure=config.auth_cookie_secure, max_age=config.auth_session_ttl_seconds)
         return api_envelope({"username": username})
 
     @app.get(f"{config.api_prefix}/auth/status")
@@ -303,20 +305,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope({"initialized": True, "username": username})
 
     @app.post(f"{config.api_prefix}/auth/logout")
-    def auth_logout(session: str | None = Cookie(default=None, alias="mdc_session")):
+    def auth_logout(request: Request):
+        session = request.cookies.get(config.auth_cookie_name)
         auth.logout(session)
         result = {"data": {"logged_out": True}, "meta": {"schema_version": "v1"}, "errors": []}
-        response = Response(content=json.dumps(result), media_type="application/json"); response.delete_cookie("mdc_session"); return response
+        response = Response(content=json.dumps(result), media_type="application/json")
+        response.delete_cookie(config.auth_cookie_name)
+        return response
 
     @app.get(f"{config.api_prefix}/auth/me")
-    def auth_me(session: str | None = Cookie(default=None, alias="mdc_session")):
+    def auth_me(request: Request):
+        session = request.cookies.get(config.auth_cookie_name)
         current = auth.session(session)
         if not current: raise HTTPException(status_code=401, detail="not authenticated")
         return api_envelope(current)
 
     @app.post(f"{config.api_prefix}/auth/change-password")
-    def auth_change_password(payload: dict, session: str | None = Cookie(default=None, alias="mdc_session"),
+    def auth_change_password(payload: dict, request: Request,
                              x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+        session = request.cookies.get(config.auth_cookie_name)
         # Keep the protected-route contract's stable API-key failure response,
         # then require an active browser session before rotating credentials.
         require_api_key(config, x_api_key, session)
@@ -328,11 +335,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def audit_request(request: Request, call_next):
         request_id = request.headers.get("x-request-id", str(uuid4()))[:128]
-        token = _request_id.set(request_id); session_token = _session_id.set(request.cookies.get("mdc_session")); auth_token = _auth_store.set(auth)
+        token = _request_id.set(request_id)
+        session_token = _session_id.set(request.cookies.get(config.auth_cookie_name))
+        auth_token = _auth_store.set(auth)
         started = time.monotonic()
         try:
             origin = request.headers.get("origin")
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.cookies.get("mdc_session") and origin:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.cookies.get(config.auth_cookie_name) and origin:
                 expected = f"{request.url.scheme}://{request.url.netloc}"
                 if origin.rstrip("/") != expected.rstrip("/"):
                     raise HTTPException(status_code=403, detail="origin not allowed")
@@ -477,7 +486,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "operational_snapshot_status": snapshot.status if snapshot else "unknown",
             "worker_heartbeat_age_seconds": age,
             "software_version": identity["software_version"], "source_commit": identity["source_commit"],
-            "deployment_id": identity["deployment_id"],
+            "deployment_id": identity["deployment_id"], "environment": config.environment_name,
+            "data_mode": config.data_mode, "source_dirty": config.source_dirty,
         }))
 
     @app.get(f"{config.api_prefix}/metrics")
@@ -548,6 +558,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ledger, cursor_secret=config.api_key or str(config.canonical_root),
         canonical_root=config.canonical_root, capacity_policy=capacity_policy)
 
+    def require_allowed_provider(provider: str | None) -> None:
+        allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
+                   if item.strip()}
+        if allowed and provider not in allowed:
+            raise HTTPException(status_code=422, detail={
+                "code": "provider_disabled",
+                "message": f"provider disabled in this environment: {provider}",
+            })
+
+    @app.middleware("http")
+    async def preview_provider_boundary(request: Request, call_next):
+        allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
+                   if item.strip()}
+        if allowed and request.method in {"POST", "PUT", "PATCH"}:
+            content_type = request.headers.get("content-type", "")
+            if content_type.startswith("application/json"):
+                body = await request.body()
+                try:
+                    payload = json.loads(body or b"{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                definition = payload.get("definition") if isinstance(payload, dict) else None
+                provider = (definition or payload).get("provider") if isinstance(definition or payload, dict) else None
+                if provider and provider not in allowed:
+                    return JSONResponse(status_code=422, content={
+                        "data": None,
+                        "meta": {"request_id": request.headers.get("x-request-id"), "schema_version": "v1"},
+                        "errors": [{"code": "provider_disabled",
+                                    "message": f"provider disabled in this environment: {provider}"}],
+                    })
+        return await call_next(request)
+
     def production_conflict_status(code: str) -> int:
         """Refusals that are bad requests stay 422; genuine state conflicts are 409."""
         return 422 if code in {"expected_version_required", "unsupported_command", "cursor_error",
@@ -574,6 +616,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def production_task_create(payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        require_allowed_provider((payload.get("definition") or {}).get("provider"))
         actor = operator_identity(request, config)
         try:
             task = production_tasks_service.create(
@@ -597,7 +640,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(f"{config.api_prefix}/production/plans")
     def production_plan_preview(payload: dict) -> dict:
         """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
-        return api_envelope(production_tasks_service.preview(payload.get("definition") or payload))
+        definition = payload.get("definition") or payload
+        require_allowed_provider(definition.get("provider"))
+        return api_envelope(production_tasks_service.preview(definition))
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
     def production_task_detail(task_id: str) -> dict:
@@ -618,6 +663,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
         else:
             command = "update"
+        if command == "update":
+            require_allowed_provider((payload.get("definition") or {}).get("provider"))
         try:
             task = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
@@ -715,9 +762,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.patch(f"{config.api_prefix}/maintenance/tasks/{{task_id}}")
     def maintenance_task_status(task_id: str, payload: dict, request: Request,
-                                x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-                                session: str | None = Cookie(default=None, alias="mdc_session")) -> dict:
-        require_api_key(config, x_api_key, session)
+                                x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
+        require_api_key(config, x_api_key)
         status = str(payload.get("status", ""))
         if status not in {"paused", "enabled"}:
             raise HTTPException(status_code=422, detail="status must be paused or enabled")
@@ -730,6 +776,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def maintenance_task(request: MaintenanceTaskRequest, http_request: Request,
                          x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        require_allowed_provider(request.provider)
         envelope = submit_maintenance(request=request, ledger=ledger, config=config,
                                       capacity_policy=capacity_policy, http_request=http_request,
                                       request_id=current_request_id())

@@ -99,3 +99,19 @@ def test_password_change_revokes_sessions_across_workers(tmp_path):
     assert b.get("/api/v1/auth/me").status_code == 401
     assert b.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"}).status_code == 401
     assert b.post("/api/v1/auth/login", json={"username": "admin", "password": "replacement-password-123"}).status_code == 200
+
+
+def test_preview_cookie_name_is_configurable_without_changing_the_default(tmp_path):
+    settings = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "ledger.sqlite",
+                        evidence_root=tmp_path / "evidence", auth_cookie_secure=False,
+                        auth_cookie_name="mdc_preview_alpha")
+    client = TestClient(create_app(settings))
+    client.post("/api/v1/auth/initialize", json={"username": "admin", "password": "initial-password-123"})
+    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "initial-password-123"})
+    assert "mdc_preview_alpha=" in login.headers["set-cookie"]
+    assert "mdc_session=" not in login.headers["set-cookie"]
+    assert client.get("/api/v1/auth/me").status_code == 200
+    logout = client.post("/api/v1/auth/logout")
+    assert "mdc_preview_alpha=" in logout.headers["set-cookie"]
+    assert client.get("/api/v1/auth/me").status_code == 401
+    assert Settings().auth_cookie_name == "mdc_session"

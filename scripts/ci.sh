@@ -51,10 +51,11 @@ run_web() {
     echo "Node 22 is required; found $(node --version)." >&2
     return 1
   fi
-  npm --prefix webui ci
+  npm --prefix webui ci --include=dev
   npm --prefix webui run build
+  "$task_python" scripts/dev_preview_acceptance.py --python "$task_python"
   if ! node -e "require.resolve('playwright', {paths: [process.cwd() + '/webui']})"; then
-    echo "Locked Playwright package is unavailable. Run: npm --prefix webui ci" >&2
+    echo "Locked Playwright package is unavailable. Run: npm --prefix webui ci --include=dev" >&2
     return 1
   fi
   if [[ -z "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" ]]; then

@@ -7,3 +7,4 @@ dist/
 acceptance-receipts/
 .env.local
 .venv*/
+.preview/

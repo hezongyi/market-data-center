@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
@@ -523,8 +524,13 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
     The console disables an option only because this read model says it is
     unavailable, never because the browser guessed.
     """
+    provider_allowlist = {
+        item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",") if item.strip()
+    }
     providers = []
     for capability in REGISTRY.capabilities():
+        if provider_allowlist and capability.provider not in provider_allowlist:
+            continue
         instruments = [{
             "provider": item.provider, "symbol": item.symbol, "canonical_symbol": item.canonical_symbol,
             "asset_class": item.asset_class, "currency": item.currency,

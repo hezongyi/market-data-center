@@ -55,11 +55,22 @@
 
 ## 4. 预览操作与交接
 
-当前可用入口仍是已有 `npm --prefix webui run dev`，但它固定代理到 18380，不能视为安全独立预览，不建议拿它自由试写。新 `scripts/dev-preview.sh` 尚未实现，P0 必须按照预览规范交付后再在此登记实测命令。
+P0 已提供 `scripts/dev-preview.sh` 管理独立本机预览。先按 Python 3.11 约束安装后端，并显式安装 Web 开发依赖；`--include=dev` 即使调用 shell 带有 `NODE_ENV=production` 也不会漏装 Vite、TypeScript 或 Playwright：
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -c backend/constraints/py311.txt -e './backend[dev]'
+npm --prefix webui ci --include=dev
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start --id <preview-id>
+bash scripts/dev-preview.sh status --id <preview-id>
+bash scripts/dev-preview.sh stop --id <preview-id>
+```
+
+`start` 返回 UI、API docs、checkout/commit/dirty、fixture 模式、scheduler 有效派发状态、数据根和日志。默认只绑定 loopback；远程操作使用 `ssh -L <ui-port>:127.0.0.1:<ui-port> -L <api-port>:127.0.0.1:<api-port> <host>`。`stop` 保留 `.preview/<id>/data` 和日志；代码身份变化后须用 `start --update` 明确接受新身份。同一 id 不会静默换端口或代码。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
-待 P0 填写：验证过的 start/status/stop、SSH 转发或受控 URL、数据模式、日志与恢复路径、依赖安装前置条件。遇到 NODE_ENV=production 跳过开发依赖的问题，采用显式开发依赖安装方式并验证，不悄悄降级为缺检查的构建。
+默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成 P1 的路由/shadcn 页面，也不完成 P2/P3 的完整任务数据闭环或 P4 的第二任务旅程；这些限制必须继续显示在阶段验收卡中。
 
 ## 5. 文档与发布
 
