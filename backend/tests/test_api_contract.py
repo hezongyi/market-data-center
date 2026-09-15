@@ -77,6 +77,24 @@ def test_api_can_serve_built_webui(tmp_path) -> None:
     assert "data center" in response.text
 
 
+def test_webui_spa_fallback_preserves_api_and_static_404s(tmp_path) -> None:
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>task app</html>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log('app')", encoding="utf-8")
+    app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                              evidence_root=tmp_path / "evidence", webui_dist=dist))
+    client = TestClient(app)
+
+    detail = client.get("/tasks/task-123")
+    assert detail.status_code == 200
+    assert "task app" in detail.text
+    assert client.get("/assets/app.js").status_code == 200
+    assert client.get("/assets/missing.js").status_code == 404
+    assert client.get("/missing.txt").status_code == 404
+    assert client.get("/api/v1/definitely-missing").status_code == 404
+
+
 def test_validation_errors_use_api_envelope(tmp_path) -> None:
     app = create_app(Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
                               evidence_root=tmp_path / "evidence"))
