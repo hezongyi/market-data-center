@@ -171,9 +171,15 @@ const executionStateLabel = (state: string) => ({
   completed: "已完成",
   failed: "失败",
   skipped: "已跳过",
+  blocked: "已阻塞",
   pausing: "暂停中",
   paused: "已暂停",
 }[state] ?? `未知状态（${state}）`);
+const executionStageLabel = (stage: string) => stage === "raw"
+  ? "原始数据"
+  : stage.startsWith("derive:")
+    ? `派生数据（${stage.slice("derive:".length)}）`
+    : `未知阶段（${stage}）`;
 const executionOutcomeLabel = (outcome: string | null) => outcome ? ({
   pass: "通过",
   failed: "失败",
@@ -1201,11 +1207,11 @@ export function TaskDetailPage() {
                   <TableBody>
                     {steps.data.map((step: ProductionStep) => (
                       <TableRow key={step.step_id}>
-                        <TableCell>{step.stage}</TableCell>
+                        <TableCell>{executionStageLabel(step.stage)}</TableCell>
                         <TableCell className="text-xs">
                           {formatTime(step.window_start)} → {formatTime(step.window_end)}
                         </TableCell>
-                        <TableCell><Badge variant="outline">{step.state}</Badge></TableCell>
+                        <TableCell><Badge variant="outline">{executionStateLabel(step.state)}</Badge></TableCell>
                         <TableCell>
                           {step.run_id ? (
                             <CopyValueButton value={step.run_id} label="run ID" />

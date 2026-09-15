@@ -985,10 +985,17 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(transitionEnvelope([])),
+      body: JSON.stringify(transitionEnvelope([
+        { step_id: "raw-step", stage: "raw", state: "completed", run_id: "raw-run",
+          window_start: "2026-09-14T00:00:00Z", window_end: "2026-09-15T00:00:00Z" },
+        { step_id: "derived-step", stage: "derive:5m", state: "completed", run_id: "derived-run",
+          window_start: "2026-09-14T00:00:00Z", window_end: "2026-09-15T00:00:00Z" },
+      ])),
     }));
   await p1Page.goto(base + "/tasks/status-transition");
   await p1Page.getByText("任务正在运行", { exact: true }).waitFor();
+  await p1Page.getByText("原始数据", { exact: true }).waitFor();
+  await p1Page.getByText("派生数据（5m）", { exact: true }).waitFor();
   statusTransitionComplete = true;
   await p1Page.getByText("本次运行已完成，数据已就绪", { exact: true }).waitFor();
   await p1Page.getByText("已完成 · 通过", { exact: true }).waitFor();

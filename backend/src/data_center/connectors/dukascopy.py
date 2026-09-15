@@ -21,7 +21,8 @@ class DukascopyConnector:
     """Historical provider-native BID bars through dukascopy-python."""
 
     provider = "dukascopy"
-    version = "dukascopy-python-4.0.1-bid-bi5-fallback-v2"
+    version = "dukascopy-python-4.0.1-official-bi5-bid-v3"
+    supports_request_guard = True
 
     _INTERVALS: ClassVar[dict[str, str]] = {
         "1m": dukascopy_python.INTERVAL_MIN_1,
@@ -106,7 +107,7 @@ class DukascopyConnector:
         return min(requested_end, closed_boundary)
 
     @contextmanager
-    def _http_policy(self) -> Iterator[None]:
+    def _http_policy(self, request_guard: Callable[[], None] | None = None) -> Iterator[None]:
         requests_module = getattr(dukascopy_python, "requests", None)
         if requests_module is None or not hasattr(requests_module, "get"):
             yield
@@ -118,6 +119,8 @@ class DukascopyConnector:
             kwargs.setdefault("timeout", self.request_timeout_seconds)
             if proxy:
                 kwargs.setdefault("proxies", {"http": proxy, "https": proxy})
+            if request_guard is not None:
+                request_guard()
             response = original_get(*args, **kwargs)
             response.raise_for_status()
             return response
@@ -189,10 +192,8 @@ class DukascopyConnector:
         return bars.dropna(subset=["open", "high", "low", "close"])
 
     def _fetch_datafeed_minute(self, *, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
-        if start.minute or start.second or start.microsecond or end - start > pd.Timedelta(hours=1):
-            raise ValueError("Dukascopy BI5 fallback requires an hour-aligned window of at most one hour")
         frames = []
-        cursor = start
+        cursor = start.replace(minute=0, second=0, microsecond=0)
         while cursor < end:
             url = self._DATAFEED_URL.format(
                 symbol=symbol,
@@ -208,14 +209,20 @@ class DukascopyConnector:
             raise ProviderGapError("Dukascopy requested range contains no hourly file")
         return pd.concat(frames).sort_index()
 
-    def fetch_bars(self, job: IngestJob) -> list[ProviderBar]:
+    def fetch_bars(
+        self, job: IngestJob, *, request_guard: Callable[[], None] | None = None,
+    ) -> list[ProviderBar]:
         start, requested_end = self._validate_job(job)
         provider_symbol, canonical_symbol, quote_currency = self._provider_symbol(job.symbol)
         effective_end = self._effective_end(requested_end, job.timeframe)
         if effective_end <= start:
             raise ProviderGapError("Dukascopy requested range has no completed bars")
-        with self._http_policy():
-            try:
+        with self._http_policy(request_guard):
+            if job.timeframe == "1m" and canonical_symbol == "EURUSD":
+                frame = self._fetch_datafeed_minute(
+                    symbol=canonical_symbol, start=start, end=effective_end,
+                )
+            else:
                 frame = self._fetch(
                     instrument=provider_symbol,
                     interval=self._INTERVALS[job.timeframe],
@@ -224,13 +231,6 @@ class DukascopyConnector:
                     end=self._naive_utc(effective_end),
                     max_retries=0,
                     limit=30_000,
-                )
-            except Exception as exc:
-                request_error = getattr(dukascopy_python.requests, "RequestException", ())
-                if job.timeframe != "1m" or canonical_symbol != "EURUSD" or not isinstance(exc, request_error):
-                    raise
-                frame = self._fetch_datafeed_minute(
-                    symbol=canonical_symbol, start=start, end=effective_end,
                 )
         frame = self._normalized_frame(frame)
         ingest_ts = datetime.now(timezone.utc)

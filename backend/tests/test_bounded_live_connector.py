@@ -19,6 +19,16 @@ class RecordingConnector:
         return []
 
 
+class RequestAwareConnector(RecordingConnector):
+    supports_request_guard = True
+
+    def fetch_bars(self, job, *, request_guard=None):
+        self.jobs.append(job)
+        request_guard()
+        request_guard()
+        return []
+
+
 def settings(tmp_path, *, budget=1):
     return Settings(
         canonical_root=tmp_path / "canonical",
@@ -58,6 +68,16 @@ def test_live_connector_spends_each_request_once_and_stops_at_budget(tmp_path):
     assert connector.fetch_bars(job()) == []
     with pytest.raises(ValueError, match="request budget exhausted"):
         connector.fetch_bars(job())
+    assert len(real.jobs) == 1
+
+
+def test_live_connector_counts_each_provider_http_request(tmp_path):
+    real = RequestAwareConnector()
+    connector = BoundedLiveConnector(real, settings(tmp_path, budget=1))
+
+    with pytest.raises(ValueError, match="request budget exhausted"):
+        connector.fetch_bars(job())
+
     assert len(real.jobs) == 1
 
 

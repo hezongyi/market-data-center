@@ -60,5 +60,7 @@ class BoundedLiveConnector:
             raise ValueError("live preview request is outside the approved UTC window")
         if self._canonical_bytes() >= self.settings.preview_live_byte_budget:
             raise ValueError("live preview disk budget exhausted")
+        if getattr(self.connector, "supports_request_guard", False):
+            return self.connector.fetch_bars(job, request_guard=self._claim_request)
         self._claim_request()
         return self.connector.fetch_bars(job)
