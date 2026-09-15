@@ -414,11 +414,11 @@ def test_plan_phase_and_health_are_read_from_recorded_progress(ledger, service):
         "catching_up", "lagging", "backlog")
     assert lagging["desired_state"] == "enabled"
 
-    # An unresolved gap is lagging on its input, not merely behind.
+    # An unresolved provider gap is explicit, not conflated with fixed-input loss.
     ledger.record_progress("p1", {"gaps": [{"window_start": "2026-09-14T11:32:00+00:00",
                                             "window_end": "2026-09-14T11:33:00+00:00",
                                             "state": "cooldown", "attempts": 1}]})
-    assert service.read("p1")["block_reason"] == "input_unavailable"
+    assert service.read("p1")["block_reason"] == "provider_gap"
     assert service.read("p1")["health"] == "lagging"
 
     # Outputs waiting on an unavailable dependency are blocked.

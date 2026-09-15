@@ -115,7 +115,7 @@ What the drill asserts, and what to reproduce by hand when a release misbehaves:
 - **Restart takeover**: after a crash the lease row survives until it expires; the next instance takes it over
   with an advanced fencing token, so a stale writer from the previous process is rejected. `tick_count` keeps
   counting across instances while `lease.owner_id` follows the live one.
-- **Schema upgrade**: a database written by the previous release upgrades to `SCHEMA_VERSION=5` in place,
+- **Schema upgrade**: this release retains `SCHEMA_VERSION=5`,
   keeping its runs, plans and progress; the scheduler service and the API must be restarted together so both
   read the same version.
 
@@ -171,13 +171,23 @@ What the tool guarantees, and what the operator still has to decide:
   `calendar_zone_assumed: true`, because systemd's default is the machine's local zone.
 - **Import is not enablement.** Every imported plan is created `paused`; enabling is a separate action, and the
   canary should be one or two plans first (§7.2 step 5).
+- **A fixed-delay import needs one audited first round.** Its `next_run_at` is intentionally empty until a
+  terminal execution exists. Resume the selected canary, invoke `run_now` exactly once, then prove that the next
+  execution is scheduler-triggered at `finished_at + interval_seconds`; a second manual run is not automatic-cycle
+  evidence.
+- **Pause on an unexplained canary result.** Use the audited scheduler `pause_dispatch` action (or pause the one
+  task), wait until queued/running work is zero, and record both dispatch switches, task versions, ownership and
+  in-flight counts. A pure `coverage_not_ready` response is provider-gap evidence: it must not be retried into a
+  dead letter or erase the exact debt. Structural/mixed quality findings remain failures.
 - **`verify` is the gate for the next step.** It fails while any legacy unit is still installed, while an
   imported plan's schedule differs from the entry it came from, or when two plans hold one ownership key.
 - **Operator checks the tool cannot make.** Confirm the wrapper no longer points at a checkout
   (`MARKETLAB_DATA_CENTER_REPO`, `MARKETLAB_DATA_CENTER_PYTHON` in the other repository) before blocking the old
   units, and confirm the canary's `scope_source` is the scope that was really produced.
-- Rollback is the reverse order: pause the new plan (or pause global dispatch), re-enable the old units, and keep
-  both receipts. The isolated drill for the scheduler process itself is
+- Rollback is the reverse order: pause the new plan (or pause global dispatch), settle the queue and verify the
+  old runner's release identity and selector scope before re-enabling its units, then keep both receipts. A timer
+  whose service points at a checkout or is already failed is not a usable rollback merely because it can be
+  enabled. The isolated drill for the scheduler process itself is
   `backend/tests/test_scheduler_service_drill.py`; the takeover preparation is covered by
   `backend/tests/test_takeover_preparation.py`.
 

@@ -2,9 +2,10 @@
 
 日期：2026-09-14
 
-状态：implementation_pending（规范第三次修订后阶段与验收已对齐；尚未执行本计划）
+状态：in_progress（S0–S5 已实现并进入生产接管；issue #120 正在按补充 spec 修复与补验）
 
-唯一功能依据：[生产任务与统一调度管理设计与验收规范](../specs/2026-09-14-maintenance-scheduler.md)。
+功能依据：[生产任务与统一调度管理设计与验收规范](../specs/2026-09-14-maintenance-scheduler.md)及
+[接管修复与验收补充规范](../specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)。
 
 本文件只记录实施顺序、代码落点、验证安排与接管步骤。任务状态、计划类型、暂停继续、数据范围、接口、兼容要求和验收结果以 spec 为准；不得通过修改本计划改变需求。AC 编号均引用 spec 第 11 节，阶段编号（S0–S5）与[调度能力分析与深化设计](2026-09-14-scheduler-capability-analysis-and-deep-design.md)第 5 节一致。
 
@@ -121,8 +122,11 @@ AC04 放在 S3 而不是 S2：影子模式不派发、不产生 execution，因�
 
 ## 9. 进度记录
 
+- 2026-09-15：S0–S5 已通过 PR #110–#114 合入 protected main，v0.6.0 以 shadow 模式激活；接管工具修复 #116、空窗口修复 #117、coverage 网格修复 #118 由 v0.6.1（#119）收口并激活为 `aca73a045275-c6470772`。9 条旧计划已导入；两个 legacy timer 已停用。
+- 2026-09-15：EURUSD raw-only canary 的手动首轮和 fixed-delay 自动续轮均把单纯 `coverage_not_ready` 重试至 dead letter；01:51:39Z 已通过受审计 API 暂停全局派发，queued/running=0。issue #120 已认领，按 TA01–TA10 实施：先修复分类/债务/cooldown 与 Release 竞态，再发新版本、补连续影子对照、FX raw、crypto/5m、回退及扩面证据。
+
 - 2026-09-14：原扩展规划中的功能、状态、接口、数据与验收要求已归入原 spec；本文件精简为实施步骤。
 - 2026-09-14：规范完成第二、三次修订（缺口 G1–G14、四项已确认决策、AC19–AC24）。本文件随该修订第一次进入版本控制，采用 S0–S5 阶段编号并给出与原未提交草稿 P1–P5 的对应关系；新增 S0 基座与 S1 注册表检查点、S4 依赖闭环检查点，把 `retention-audit` 解耦列为接管前必须完成的独立工作项，并在接管步骤中补入 receipt action 登记与 `docs/current-state.md` 更新。
-- S0–S5 尚未据本计划实施或验收，未执行生产接管；后续以实际 commit、PR 与 receipt 更新进度。
+- 2026-09-14 历史起点：当时 S0–S5 尚未据本计划实施或验收，亦未执行生产接管；该状态已由上方 2026-09-15 的合入、部署和 canary 记录取代。
 - 2026-09-14（第二次，开发分支 `feat/production-scheduler-s0-20260914`）：S0 基座、S1 注册表、S2 时间与影子调度、S3 真实派发的主要代码已实现并附回归测试（迁移与 WAL 争用、所有权与墓碑、幂等、时钟与 DST、真实 worker 派发与收口、配置漂移、deployment 哈希成本），后端与全量门禁在本机通过；**S4 依赖闭环、WebUI、接管与回滚未实现**。
 - 2026-09-14：`retention-audit` 解耦已按 spec §9 第 3 条独立完成——独立 `market-data-center-retention-audit.service`/`.timer`、独立 `retention_audit` receipt action 并登记到运维 receipt 视图，provider acceptance 不再承担该副作用；仍待以独立小发布进入生产并留 receipt。

@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_runtime_version_and_release_notes_are_consistent():
     backend = tomllib.loads((ROOT / "backend/pyproject.toml").read_text())
     web = json.loads((ROOT / "webui/package.json").read_text())
-    assert backend["project"]["version"] == web["version"] == __version__ == "0.6.1"
-    assert (ROOT / "docs/releases/v0.6.1.md").is_file()
+    assert backend["project"]["version"] == web["version"] == __version__ == "0.6.2"
+    assert (ROOT / "docs/releases/v0.6.2.md").is_file()
 
 
 def test_portable_environment_template_has_no_machine_defaults():
@@ -55,6 +55,14 @@ def test_release_receipt_schema_and_baseline_receipt_have_required_fields():
     assert set(schema["required"]).issubset(receipt)
     assert receipt["commit"] == "679dafff539d8e64938cd098f61088e173ae114d"
     assert receipt["hosted_ci"]["run_id"] == 34442430045
+
+
+def test_release_waits_for_commit_scoped_verify_and_rejects_empty_evidence():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    assert "for attempt in {1..30}" in workflow
+    assert 'test -n "$check_json"' in workflow
+    assert 'test -n "$run_id"' in workflow
+    assert 'test "$run_id" != "null"' in workflow
 
 
 def test_lock_artifacts_exist_for_every_supported_python_minor():

@@ -6,11 +6,12 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from ..instants import parse_instant
+from ..window_planner import is_provider_gap_receipt
 
 #: Highest schema version this binary understands.  A ledger recorded by a
 #: newer binary is refused instead of being silently downgraded.
@@ -227,6 +228,45 @@ class RunLedger:
                 conn.execute("insert or replace into schema_migrations(version, applied_at) values (?, ?)",
                              (version, self._now()))
                 conn.execute(f"pragma user_version={int(version)}")
+            # Compatible auxiliary structures do not change user_version: an
+            # older schema-5 binary safely ignores them during rollback.
+            conn.execute(
+                "create table if not exists production_gap_debt ("
+                "task_id text not null, window_start text not null, window_end text not null, "
+                "state text not null, attempts integer not null default 0, first_seen_at text not null, "
+                "next_review_at text, policy_id text, updated_at text not null, "
+                "primary key(task_id,window_start,window_end))")
+            conn.execute("create index if not exists production_gap_debt_due "
+                         "on production_gap_debt(task_id,next_review_at,window_start,window_end)")
+            conn.execute("create index if not exists production_gap_debt_window "
+                         "on production_gap_debt(task_id,window_end,window_start,next_review_at)")
+            conn.execute(
+                "create table if not exists production_progress_reconciliation ("
+                "execution_id text primary key, reconciled_at text not null)")
+            conn.execute(
+                "create table if not exists production_aux_migrations ("
+                "version integer primary key, applied_at text not null)")
+            conn.execute("create index if not exists production_executions_terminal "
+                         "on production_executions(finished_at desc,execution_id desc) "
+                         "where state in ('completed','failed','skipped')")
+            # Backfill v0.6.1 TaskProgress without deleting its rollback-readable
+            # JSON. INSERT OR IGNORE makes every opener idempotent.
+            if conn.execute("select 1 from production_aux_migrations where version=1").fetchone() is None:
+                for task_id, payload_text in conn.execute(
+                        "select task_id,payload from production_progress").fetchall():
+                    for gap in (json.loads(payload_text).get("gaps") or []):
+                        if not gap.get("window_start") or not gap.get("window_end"):
+                            continue
+                        first_seen = gap.get("first_seen_at") or self._now()
+                        conn.execute(
+                            "insert or ignore into production_gap_debt(task_id,window_start,window_end,state,"
+                            "attempts,first_seen_at,next_review_at,policy_id,updated_at) "
+                            "values (?,?,?,?,?,?,?,?,?)",
+                            (task_id, gap["window_start"], gap["window_end"],
+                             gap.get("state") or "deferred", int(gap.get("attempts") or 0),
+                             first_seen, gap.get("next_review_at"), gap.get("policy_id"), self._now()))
+                conn.execute("insert into production_aux_migrations(version,applied_at) values (1,?)",
+                             (self._now(),))
 
     def schema_version(self) -> int:
         with sqlite3.connect(self.path, timeout=5.0) as conn:
@@ -1058,6 +1098,28 @@ class RunLedger:
                 (task_id, max(1, min(limit, 500)))).fetchall()
         return [{**self._execution_row(row[:11]), "retry_of_execution_id": row[11]} for row in rows]
 
+    def unreconciled_terminal_executions(self, *, limit: int = 100) -> list[dict]:
+        """Terminal rounds without their durable progress-reconciliation marker."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select execution_id,task_id,definition_version,trigger_source,scheduled_for,state,outcome,"
+                "created_at,finished_at,coalesced_count,schedule_revision "
+                "from production_executions e indexed by production_executions_terminal "
+                "where e.state in ('completed','failed','skipped') and e.finished_at is not null and not exists ("
+                "select 1 from production_progress_reconciliation p "
+                "where p.execution_id=e.execution_id) "
+                "order by finished_at,execution_id limit ?", (max(1, limit),)
+            ).fetchall()
+        return [self._execution_row(row) for row in rows]
+
+    def mark_execution_progress_reconciled(self, execution_id: str) -> None:
+        """Durably mark one terminal execution after its idempotent progress fold."""
+        stamp = self._now()
+        with self._connect() as conn:
+            conn.execute(
+                "insert or ignore into production_progress_reconciliation(execution_id,reconciled_at) "
+                "values (?,?)", (execution_id, stamp))
+
     def add_production_step(self, *, step_id: str, execution_id: str, stage: str,
                             window_start: str | None = None, window_end: str | None = None) -> dict:
         stamp = self._now()
@@ -1166,6 +1228,15 @@ class RunLedger:
                 " order by created_at desc limit ?", tuple(params)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def production_execution_runs(self, execution_id: str) -> builtins.list[dict]:
+        """Return the immutable run documents attributed to one execution."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select payload from runs where execution_id=? order by created_at, run_id",
+                (execution_id,),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def completed_derived_windows(self, task_id: str) -> set[tuple[str, str]]:
         """Derived windows of a plan that are already published.
 
@@ -1192,15 +1263,70 @@ class RunLedger:
         """
         with self._connect() as conn:
             rows = conn.execute(
-                "select s.window_start, s.window_end, s.updated_at from production_steps s "
-                "where s.stage='raw' and s.window_start is not null and s.window_end is not null "
-                "and s.execution_id in (select execution_id from production_executions where task_id=?) "
-                "and s.state in ('failed','dead_letter') "
-                "and not exists (select 1 from production_steps t where t.stage='raw' "
-                "                and t.window_start=s.window_start and t.window_end=s.window_end "
-                "                and t.state='completed') "
-                "order by s.window_start limit ?", (task_id, max(1, limit))).fetchall()
-        return [{"window_start": row[0], "window_end": row[1], "failed_at": row[2]} for row in rows]
+                "select window_start,window_end,first_seen_at,next_review_at,state,attempts,policy_id "
+                "from production_gap_debt where task_id=? order by coalesce(next_review_at,''),"
+                "window_start,window_end limit ?", (task_id, max(1, limit))).fetchall()
+        return [{"window_start": row[0], "window_end": row[1], "failed_at": row[2],
+                 "next_review_at": row[3], "state": row[4], "attempts": row[5], "policy_id": row[6]}
+                for row in rows]
+
+    def due_gap_windows(self, task_id: str, *, now: datetime, limit: int = 50) -> builtins.list[dict]:
+        stamp = now.astimezone(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select window_start,window_end,first_seen_at,next_review_at,state,attempts,policy_id "
+                "from production_gap_debt indexed by production_gap_debt_due "
+                "where task_id=? and next_review_at is null order by next_review_at,window_start,window_end limit ?",
+                (task_id, max(1, limit))).fetchall()
+            remaining = max(0, max(1, limit) - len(rows))
+            if remaining:
+                rows += conn.execute(
+                    "select window_start,window_end,first_seen_at,next_review_at,state,attempts,policy_id "
+                    "from production_gap_debt indexed by production_gap_debt_due "
+                    "where task_id=? and next_review_at<=? order by next_review_at,window_start,window_end limit ?",
+                    (task_id, stamp, remaining)).fetchall()
+        return [{"window_start": row[0], "window_end": row[1], "failed_at": row[2],
+                 "next_review_at": row[3], "state": row[4], "attempts": row[5], "policy_id": row[6]}
+                for row in rows]
+
+    def cooling_gap_windows(self, task_id: str, *, now: datetime, window_start: datetime,
+                            window_end: datetime, limit: int) -> builtins.list[dict]:
+        stamp = now.astimezone(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "select window_start,window_end from production_gap_debt "
+                "indexed by production_gap_debt_window where task_id=? and window_end>? and window_start<? "
+                "and next_review_at>? order by window_end,window_start limit ?",
+                (task_id, window_start.astimezone(timezone.utc).isoformat(),
+                 window_end.astimezone(timezone.utc).isoformat(), stamp, max(1, limit))).fetchall()
+        return [{"start": row[0], "end": row[1]} for row in rows]
+
+    def upsert_gap_windows(self, task_id: str, gaps: builtins.list[dict], *, now: datetime,
+                           cooldown_minutes: int | None = None,
+                           policy_id: str | None = None) -> None:
+        stamp = now.astimezone(timezone.utc).isoformat()
+        with self._transaction() as tx:
+            for gap in gaps:
+                next_review = gap.get("next_review_at")
+                if cooldown_minutes is not None:
+                    next_review = (now + timedelta(minutes=cooldown_minutes)).isoformat()
+                tx.execute(
+                    "insert into production_gap_debt(task_id,window_start,window_end,state,attempts,"
+                    "first_seen_at,next_review_at,policy_id,updated_at) values (?,?,?,?,?,?,?,?,?) "
+                    "on conflict(task_id,window_start,window_end) do update set state=excluded.state,"
+                    "attempts=max(production_gap_debt.attempts,excluded.attempts),"
+                    "next_review_at=coalesce(excluded.next_review_at,production_gap_debt.next_review_at),"
+                    "policy_id=coalesce(excluded.policy_id,production_gap_debt.policy_id),updated_at=excluded.updated_at",
+                    (task_id, gap["window_start"], gap["window_end"], gap.get("state") or "deferred",
+                     int(gap.get("attempts") or 0), gap.get("first_seen_at") or stamp,
+                     next_review, policy_id or gap.get("policy_id"), stamp))
+
+    def resolve_gap_windows(self, task_id: str, windows: builtins.list[dict]) -> None:
+        with self._transaction() as tx:
+            for window in windows:
+                tx.execute(
+                    "delete from production_gap_debt where task_id=? and window_start>=? and window_end<=?",
+                    (task_id, window["window_start"], window["window_end"]))
 
     def get(self, run_id: str) -> dict:
         with self._connect() as conn:
@@ -1593,19 +1719,32 @@ class RunLedger:
                     tx.execute("update production_steps set state='blocked', block_reason='input_unavailable', "
                                "updated_at=? where step_id=?", (stamp, step_id))
                     continue
-                if failed:
+                failed_runs = [json.loads(item[0]) for item in tx.execute(
+                    "select payload from runs where step_id=? and status in ('failed','dead_letter')",
+                    (step_id,),
+                ).fetchall()]
+                provider_gap = bool(failed_runs) and all(is_provider_gap_receipt(item) for item in failed_runs)
+                if provider_gap and not open_runs:
+                    derived = "skipped"
+                    block_reason = "provider_gap"
+                elif failed:
                     derived = "failed"
+                    block_reason = None
                 elif open_runs:
                     derived = "running"
+                    block_reason = None
                 elif total and passed == total:
                     derived = "completed"
+                    block_reason = None
                 elif total == 0:
                     derived = "skipped"
+                    block_reason = None
                 else:
                     derived = "failed"
-                if derived != state:
-                    tx.execute("update production_steps set state=?, updated_at=? where step_id=?",
-                               (derived, stamp, step_id))
+                    block_reason = None
+                if derived != state or block_reason != _block_reason:
+                    tx.execute("update production_steps set state=?, block_reason=?, updated_at=? where step_id=?",
+                               (derived, block_reason, stamp, step_id))
         return self.list_production_steps(execution_id)
 
     def close_finished_executions(self, *, limit: int = 50) -> builtins.list[dict]:
@@ -1670,17 +1809,52 @@ class RunLedger:
     def record_progress(self, task_id: str, payload: dict) -> dict:
         """Persist the per-output frontier and outstanding ranges for a plan."""
         stamp = self._now()
+        supplied_gaps = payload.get("gaps") if "gaps" in payload else None
+        payload = {key: value for key, value in payload.items() if key != "gaps"}
         with self._transaction() as tx:
             existing = tx.execute("select payload from production_progress where task_id=?",
                                   (task_id,)).fetchone()
             merged = {**({} if existing is None else json.loads(existing[0])), **payload,
                       "task_id": task_id, "updated_at": stamp}
+            merged.pop("gaps", None)
             tx.execute("insert into production_progress(task_id,payload,updated_at) values (?,?,?) "
                        "on conflict(task_id) do update set payload=excluded.payload, updated_at=excluded.updated_at",
                        (task_id, json.dumps(merged), stamp))
-        return merged
+            if supplied_gaps is not None:
+                tx.execute("delete from production_gap_debt where task_id=?", (task_id,))
+                for gap in supplied_gaps:
+                    tx.execute(
+                        "insert into production_gap_debt(task_id,window_start,window_end,state,attempts,"
+                        "first_seen_at,next_review_at,policy_id,updated_at) values (?,?,?,?,?,?,?,?,?)",
+                        (task_id, gap["window_start"], gap["window_end"], gap.get("state") or "deferred",
+                         int(gap.get("attempts") or 0), gap.get("first_seen_at") or stamp,
+                         gap.get("next_review_at"), gap.get("policy_id"), stamp))
+        return self.production_progress(task_id) or merged
 
     def production_progress(self, task_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("select payload from production_progress where task_id=?",
+                               (task_id,)).fetchone()
+            gaps = conn.execute(
+                "select window_start,window_end,state,attempts,first_seen_at,next_review_at,policy_id "
+                "from production_gap_debt where task_id=? order by window_start,window_end limit 101",
+                (task_id,)).fetchall()
+            count = conn.execute("select count(*) from production_gap_debt where task_id=?",
+                                 (task_id,)).fetchone()[0]
+        if row is None and not gaps:
+            return None
+        result = {} if row is None else json.loads(row[0])
+        result["gaps"] = [{"window_start": item[0], "window_end": item[1], "state": item[2],
+                           "attempts": item[3], "first_seen_at": item[4],
+                           "next_review_at": item[5], "policy_id": item[6],
+                           "reason": "gap_repair"}
+                          for item in gaps[:100]]
+        result["gap_count"] = count
+        result["gap_overflow"] = count > 100
+        return result
+
+    def production_progress_core(self, task_id: str) -> dict | None:
+        """Internal bounded read without UI gap counts or debt materialization."""
         with self._connect() as conn:
             row = conn.execute("select payload from production_progress where task_id=?",
                                (task_id,)).fetchone()

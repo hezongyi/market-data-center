@@ -24,6 +24,109 @@ from .instants import parse_instant
 PROVIDER_COVERAGE_FINDING = "coverage_not_ready"
 
 
+def is_provider_gap_receipt(receipt: dict) -> bool:
+    """Whether one terminal run proves a pure, exactly recoverable provider gap."""
+    return bool(_provider_gap_windows_from_receipt(receipt))
+
+
+def provider_gap_windows(receipts: Iterable[dict]) -> list[dict]:
+    """Extract exact half-open gap debt from terminal provider responses."""
+    gaps: set[tuple[datetime, datetime]] = set()
+    for receipt in receipts:
+        gaps.update(_provider_gap_windows_from_receipt(receipt))
+    return [{"window_start": start.isoformat(), "window_end": end.isoformat()}
+            for start, end in sorted(gaps)]
+
+
+def _provider_gap_windows_from_receipt(receipt: dict) -> set[tuple[datetime, datetime]]:
+    """Classify and extract together so a degraded outcome can never lose its debt."""
+    gaps: set[tuple[datetime, datetime]] = set()
+    if receipt.get("status") not in {"failed", "dead_letter"}:
+        return gaps
+    error_type = receipt.get("error_type")
+    plan_windows = (receipt.get("execution_plan") or {}).get("windows") or ()
+    if error_type == "ProviderGapError":
+        for window in plan_windows:
+            try:
+                start = utc(parse_instant(str(window["start"])))
+                end = utc(parse_instant(str(window["end"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start < end:
+                gaps.add((start, end))
+        return gaps
+    # Older receipts may lack error_type, but only structured coverage evidence
+    # is authoritative. A historical gap_repair label alone can also accompany
+    # a timeout or provider outage and must fail closed.
+    if error_type not in {None, "QualityError"}:
+        return gaps
+    findings = (receipt.get("quality_summary") or {}).get("findings") or ()
+    if not findings or any(item.get("code") != PROVIDER_COVERAGE_FINDING for item in findings):
+        return gaps
+    for finding in findings:
+        coverage = finding.get("coverage") or {}
+        seconds = int(coverage.get("timeframe_seconds") or 0)
+        if seconds <= 0:
+            return set()
+        cadence = timedelta(seconds=seconds)
+        ready = []
+        for interval in coverage.get("ready_intervals") or ():
+            try:
+                ready_start = utc(parse_instant(str(interval["start"])))
+                ready_end = utc(parse_instant(str(interval["end"])))
+            except (KeyError, TypeError, ValueError):
+                return set()
+            if ready_start >= ready_end:
+                return set()
+            ready.append((ready_start, ready_end))
+        if ready and plan_windows:
+            finding_gaps: set[tuple[datetime, datetime]] = set()
+            for window in plan_windows:
+                try:
+                    cursor = utc(parse_instant(str(window["start"])))
+                    end = utc(parse_instant(str(window["end"])))
+                except (KeyError, TypeError, ValueError):
+                    return set()
+                if cursor >= end:
+                    return set()
+                for ready_start, ready_end in sorted(ready):
+                    if ready_end <= cursor or ready_start >= end:
+                        continue
+                    if cursor < ready_start:
+                        finding_gaps.add((cursor, min(ready_start, end)))
+                    cursor = max(cursor, min(ready_end, end))
+                if cursor < end:
+                    finding_gaps.add((cursor, end))
+            if not finding_gaps:
+                return set()
+            gaps.update(finding_gaps)
+            continue
+        missing_text = coverage.get("first_missing_ts")
+        if not missing_text and coverage.get("latest_complete_boundary"):
+            try:
+                missing_text = (utc(parse_instant(str(coverage["latest_complete_boundary"])))
+                                + cadence).isoformat()
+            except (TypeError, ValueError):
+                return set()
+        if not missing_text:
+            return set()
+        plan_windows = (receipt.get("execution_plan") or {}).get("windows") or ()
+        try:
+            missing = utc(parse_instant(str(missing_text)))
+        except (TypeError, ValueError):
+            return set()
+        if plan_windows:
+            try:
+                bounds = [(utc(parse_instant(str(item["start"]))),
+                           utc(parse_instant(str(item["end"])))) for item in plan_windows]
+            except (KeyError, TypeError, ValueError):
+                return set()
+            if not any(start <= missing and missing + cadence <= end for start, end in bounds):
+                return set()
+        gaps.add((missing, missing + cadence))
+    return gaps
+
+
 def utc(value: datetime) -> datetime:
     """Require an aware timestamp and return it in UTC.
 
@@ -52,7 +155,7 @@ def recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
     for run in runs:
         if (run.get("status") not in {"failed", "dead_letter"} or run.get("provider") != provider
                 or run.get("symbol") != symbol or run.get("run_scope") != run_scope
-                or run.get("run_kind") != "gap_repair"):
+                or not is_provider_gap_receipt(run)):
             continue
         finished_text = run.get("finished_at") or run.get("at")
         if not finished_text:
@@ -62,30 +165,8 @@ def recent_gap_windows(*, runs: Iterable[dict], provider: str, symbol: str,
                 continue
         except (TypeError, ValueError):
             continue
-        execution_plan = run.get("execution_plan") or {}
-        for window in execution_plan.get("windows") or ():
-            if window.get("reason") == "gap_repair":
-                try:
-                    recent.add(window_key(window))
-                except (KeyError, TypeError, ValueError):
-                    continue
-        for finding in (run.get("quality_summary") or {}).get("findings") or ():
-            if finding.get("code") != PROVIDER_COVERAGE_FINDING:
-                continue
-            coverage = finding.get("coverage") or {}
-            seconds = int(coverage.get("timeframe_seconds") or 0)
-            missing_text = coverage.get("first_missing_ts")
-            complete_text = coverage.get("latest_complete_boundary")
-            if not missing_text and complete_text and seconds > 0:
-                missing_text = (utc(parse_instant(str(complete_text)))
-                                + timedelta(seconds=seconds)).isoformat()
-            if not missing_text or seconds <= 0:
-                continue
-            try:
-                missing = utc(parse_instant(str(missing_text)))
-            except (TypeError, ValueError):
-                continue
-            recent.add((missing.isoformat(), (missing + timedelta(seconds=seconds)).isoformat()))
+        for gap in provider_gap_windows([run]):
+            recent.add((gap["window_start"], gap["window_end"]))
     return recent
 
 

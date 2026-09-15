@@ -75,15 +75,13 @@ def _stored_input(request: dict, job: dict) -> dict | None:
 def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
     """Convert provider failures to the exact path-safe payload persisted by workers."""
     if isinstance(exc, QualityError):
-        # A provider can temporarily omit bars from an otherwise valid window.
-        # Maintenance runs must retry this coverage signal so a later timer
-        # pass can repair it; structural/schema quality failures remain final.
-        retryable_coverage = (
-            (job or {}).get("run_scope") in {"maintenance", "production"}
-            and any(item.get("code") == "coverage_not_ready" for item in exc.findings)
-        )
+        # A provider can omit bars from an otherwise valid response.  Production
+        # and maintenance plans persist that exact gap and retry it on the
+        # governed cooldown; spending the worker's short retry budget only
+        # creates three identical requests and a misleading dead letter.
+        # Structural/schema quality failures remain terminal too.
         return {"error_type": "QualityError", "failure_stage": "quality", "error": "quality checks failed",
-                "retryable": retryable_coverage,
+                "retryable": False,
                 "quality_summary": {"status": "fail", "finding_count": len(exc.findings),
                                     "findings": exc.findings}}
     if isinstance(exc, SessionClosedError):
@@ -93,6 +91,14 @@ def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
         # dead-letter queue.
         return {"error_type": "SessionClosedError", "failure_stage": "input",
                 "error": "the session profile keeps the requested window closed", "retryable": False,
+                "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
+    if isinstance(exc, ProviderGapError):
+        # A production plan owns the slower, durable gap cooldown. Other scopes
+        # retain the worker's transient retry behavior because they have no plan
+        # progress in which to persist the debt.
+        governed = (job or {}).get("run_scope") in {"maintenance", "production"}
+        return {"error_type": "ProviderGapError", "failure_stage": "execute",
+                "error": "ingest failed", "retryable": not governed,
                 "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
     if isinstance(exc, InputUnavailableError):
         # Stopped and reported, never retried into a different computation.

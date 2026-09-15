@@ -1,53 +1,54 @@
 # Market Data Center 当前状态
 
-更新时间：2026-09-14。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
+更新时间：2026-09-15 02:06 UTC。本文描述当前生产事实；历史 receipt、旧 deployment 和阶段性计划保留原文，不代表当前状态。
 
 ## 生产运行
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 当前 deployment | `3e2362ab0b31-6005b252`（`software_version=0.5.0`，`source_commit=3e2362a`，`tag=v0.5.0`） | `operations/deployment_activate/2026-09-13T234558…json`（`tag` 由 `operations/deployment_stage/2026-09-13T234519…json` 记录） |
-| API/worker | systemd active；readiness=ready | `/api/v1/health/ready` |
-| 容量/队列 | `capacity_status=ok`、queue=0 | `/api/v1/metrics` |
+| 当前 deployment | `aca73a045275-c6470772`（`software_version=0.6.1`，`source_commit=aca73a0`，`tag=v0.6.1`） | `operations/deployment_activate/2026-09-15T012654.491229+0000-148a0c02052a4403b4b44da872c1d558.json`（pass，canonical/ledger 哈希未变） |
+| API/worker/scheduler | systemd active；readiness=ready；组件身份一致 | `/api/v1/health/ready` + `systemctl --user show` |
+| 容量/队列 | `capacity_status=ok`（free ratio ≈11.68%，生产阈值 5%/2%）；queued=0、running=0 | `/api/v1/metrics`，2026-09-15 02:06 UTC |
 | 生产配置来源 | API/worker 只从机器级 `$HOME/.config/market-data-center/env`（0600）读取环境；unit 无 drop-in，生产进程不再引用任何仓库 checkout | `systemctl --user show -p DropInPaths`（两服务均为空）+ 进程环境键名 |
 | Dukascopy raw | `provider_bars`、1m、BID-only | `2026-09-11-dukascopy-1m-bid-rollout.md` |
 | Dukascopy derived | 5m/15m/30m/1h/4h/1d recipes；完整历史受 coverage 约束 | `dukascopy_derived_multiperiod_acceptance_v3` |
-| Dukascopy maintenance | macro-market-lab systemd service 调用 Data Center runner | `macro_market_lab_maintenance_ownership_cutover` |
+| 行情维护接管 | 9 条计划已导入，EURUSD raw-only enabled、其余 8 条 paused；全局派发已暂停。两个 legacy timer disabled/inactive | issue #120、scheduler API 与 production task 读模型；当前不是已验收接管 |
 
 ## 版本与发布基线
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 源码版本 | `0.5.1`；`backend/pyproject.toml`、`webui/package.json` 与 `data_center.__version__` 三者一致（生产进程仍运行 `0.5.0`，见下） | `v0.5.1` release contract test |
-| 最新发布标签 | `v0.5.1` → `edc6c1c442e4960fdd82d08fd6db4da279d0e275`（annotated tag object `859469aa…`；按仓库约定发布后不再移动） | [GitHub release](https://github.com/hezongyi/market-data-center/releases/tag/v0.5.1) + `release-receipt.json`（`result=pass`） |
-| 生产 deployment source commit | `3e2362ab0b31a194639f3e4801322bb6d14f1ee6`（= `v0.5.0`）；`v0.5.1` 已打标签但**未激活**，生产 deployment 不随新标签自动前进 | active deployment manifest + `git log --oneline v0.5.0..origin/main` |
+| 源码版本 | protected main / 生产为 `0.6.1`；issue #120 分支正在准备 `0.6.2` 候选，尚未合并或发布 | release contract + active deployment manifest |
+| 最新标签 | annotated `v0.6.1` → `aca73a045275908b4fd710df777f563fef673b90`；标签不可移动 | Git ref + protected-main Checks |
+| v0.6.1 GitHub Release | **未完成**：tag-triggered run `34917000586` 在生成 receipt 时因空 CI run ID 失败；补证由 issue #120 跟踪 | GitHub Actions；不能以 activation pass 代替 Release receipt |
+| 生产 deployment source commit | `aca73a045275908b4fd710df777f563fef673b90`；schema 5 | active deployment manifest + readiness |
 | 基线规则 | 生产 deployment 只能由 commit-scoped `verify` 成功的 protected-main commit 创建；release 标签只打在该 commit 上且不可移动 | `docs/release-checklist.md` |
 
-生产 deployment 现与 `v0.5.0` 发布基线一致（WebUI v0.5 可用性、访问控制和版本收口）。上一版本 `v0.4.1` 的 stage/activate、回滚路径和 receipt 均保留，可作为回滚目标；本次 `v0.5.0` activation 的 canonical 与 ledger 哈希均未变化。更早版本的 stage/activate、注入候选 readiness 失败后的自动恢复、回滚和 monitor soak receipt 也继续保留在 data-center evidence root。升级只允许走 immutable activation 流程，不得手工改动 systemd unit 或依赖。
+生产 deployment 已进入 v0.6.1，但调度器接管尚未验收。EURUSD canary 在 01:28 和 01:45 两轮把单纯 `coverage_not_ready` 重试至 dead letter；第二轮证明 fixed-delay 自动续轮有效，也证明缺口分类/冷却错误。01:51:39Z 已通过受审计 API 将账本全局派发位暂停，随后 queued/running 均为 0；原 terminal runs 保持不可变。修复与真实环境补验依据[接管补充 spec](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)和 issue #120。
 
 2026-09-14 发布 `v0.5.1`（**仅打标签与发布 GitHub Release，不推生产**）：把 `v0.5.0` 之后合入的修复收口为补丁版——WebUI 跨工作区移交（#82/#83）、探索页提交语义（#84）、覆盖度"未计算"的原因（#85）、容量测量来源（#86）、验收 receipt 可判读（#94）、告警闸门收窄（#95）、生产配置来源守卫（#92/#93）。发布准备 PR #102 以 squash 合入为 protected-main 提交 `edc6c1c442e4960fdd82d08fd6db4da279d0e275`，其 commit-scoped `verify`（run `34804428044`）成功；本地统一门禁在与之树等价的 `d8aed91` 上 `result=pass`（`software_version=0.5.1`，276 passed / 4 skipped，浏览器验收 57 checks 双视口）。`Release` run `34804615895` 发布了 `v0.5.1` 与 `release-receipt.json`。
 
-**本次没有执行 `deployment_stage`/`deployment_activate`**：生产继续服务 `v0.5.0`（`3e2362ab0b31-6005b252`），readiness 仍为 `ready`，canonical 与 ledger 未受影响；`v0.5.1` 的激活需要另行审批与维护窗口，届时按 `docs/release-checklist.md` 的 immutable activation 清单执行。发布证据见 `docs/release-checklist.md` 的 "v0.5.1 protected-main evidence" 与 `docs/releases/v0.5.1.md`（后者同时记录真实 provider 验收仍为红的观察项）。
+上述 v0.5.1 段落是历史发布事实；当前生产身份以本节表格和 active deployment manifest 为准。
 
 2026-09-14 收口生产配置来源：host-local drop-in `provider-env.conf` 曾让 API/worker 额外读取 `market-data-center-latest/.env.local`（仓库 checkout）。它与机器级 env 的三个共有键（`DATACENTER_API_KEY`、`DATACENTER_PROXY_URL`、`FRED_API_KEY`）取值一致，另含一个生产不使用的 `GITHUB_TOKEN`，因此两个 drop-in 已移除，机器级 env 成为唯一配置来源；provider 通路不受影响（`DATACENTER_PROXY_URL` 仍在进程环境中）。移除后 `DropInPaths` 为空、进程环境不再含 `GITHUB_TOKEN`，`deployment_id`/`software_version`/`source_commit` 与 `v0.5.0` 基线保持一致（本次不涉及 release）。回滚副本保留在 `$HOME/market-data-center/config-history/2026-09-14/`，receipt 见 evidence root `operations/production_env_source_consolidation/`。约束不变：仍不得手工改动 immutable release 的 unit 或依赖，生产行为变更必须走 approval。
 
 monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（systemd 默认 `AccuracySec=1min` 的合并效应），即告警分辨率实际减半；这是配置事实，不是故障。
 
-## 生产任务与统一调度（开发完成，**未进入生产**）
+## 生产任务与统一调度（已部署，接管补验中）
 
-本节记录开发状态，不是生产事实：调度器尚未安装、尚未激活，生产仍由旧入口服务。
+调度器代码和服务已进入生产，当前因 canary 缺口分类故障暂停真实派发；旧入口也保持停用。此状态保护证据与所有权，但不构成已验收的默认接管或已验证的 legacy 回退。
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 调度器单元 | **未安装**：主机 `systemctl --user list-unit-files` 中没有 `market-data-center-scheduler.*` | `systemctl --user list-unit-files --type=service --type=timer`（输出中仅有 api/worker/monitor/smoke/provider-acceptance/1m-maintenance 与 marketlab-market-bars-maintenance） |
-| 生产旧入口（现状） | raw：`market-data-center-1m-maintenance.{service,timer}`（`OnUnitInactiveSec=15min`，`data_center.maintenance_runner`）；derived：`marketlab-market-bars-maintenance.{service,timer}`（`data_center.derived_maintenance_runner`，仓库内**未声明**，仅主机安装） | 同上命令 + `deploy/systemd/market-data-center-1m-maintenance.{service,timer}` |
-| 交付状态 | 五层 stacked PR #110–#114（issue #109），栈顶 `1a63ac9`；本地统一门禁 `result=pass`（438 passed / 5 skipped，浏览器验收 65 checks 双视口） | 每层 PR 的 hosted `verify` 与本地 `acceptance-receipts/ci/all.json` |
-| ledger schema | 生产库**仍是旧版本**；开发分支把迁移链推进到 `SCHEMA_VERSION=5`（新增 `provider_backoff`），只有该 release 被激活时才会在生产库上执行，届时与 API/worker 一起重启 | `backend/src/data_center/runs/ledger.py`、`backend/tests/test_scheduler_service_drill.py`（上一版数据库就地升级演练） |
-| 接管准备 | 工具**只准备不执行**：`data_center.takeover` 可盘点仓库声明与主机实际安装的单元、把旧入口导入为 `paused` 计划（默认 dry-run）并输出对照/校验 receipt；本机盘点已识别出上表两个旧入口（其中 marketlab 一个为 host-only） | `backend/src/data_center/takeover.py`、`backend/tests/test_takeover_preparation.py`、`docs/operations-runbook.md` 的 "Legacy timer takeover" 一节 |
-| 未执行（需批准） | `retention-audit` 独立单元的安装、调度器单元的安装与影子期观察、旧入口停用、canary 启用、回滚演练 | 计划 S5.2 第 3–8 步；均需维护者批准与生产窗口 |
-| 发布边界 | `retention-audit` 解耦（独立单元 + `retention_audit` receipt action）必须作为**独立小发布**进入生产，不并入调度器接管批次 | `docs/operations-runbook.md` 的 "Retention audit is its own release" |
+| 调度器单元 | installed/enabled/active；进程派发位开启，账本全局位暂停，因此有效派发为 false | systemd + `/operations/scheduler` |
+| legacy 入口 | raw、derived timer 均 disabled/inactive；旧 derived service 历史状态 failed 且 runner 曾指向陈旧 checkout，恢复前必须验证身份和 scope | systemd + 补充 spec TA07 |
+| 计划与范围 | 9 条均为 `fixed_delay 900`；EURUSD raw-only enabled，其余 8 条 paused。暂停计划含 5m 及多个更高周期，不得整体恢复来冒充首批 raw/5m 范围 | `/production/tasks` 读模型 |
+| canary 结果 | manual 与 scheduled 两个 execution 均 failed，各产生一个 QualityError dead letter；全局派发随后暂停 | execution/run IDs 与 issue #120 |
+| 影子证据 | 有计划影子窗口约 2h19m，未达到发布约定 ≥4h；原窗口只作为部分证据 | scheduler tick receipts；TA04 待补 |
+| retention audit | 已独立运行并保留 `retention_audit` receipt，不再依赖 provider acceptance | `operations/retention_audit/` |
+| 待完成 | v0.6.2 修复发布、v0.6.1 Release 补证、可用回退、连续影子、FX raw、crypto/5m、分批扩面和文档证据索引 | issue #120、TA01–TA10 |
 
-接管顺序（批准后按 `docs/operations-runbook.md` 执行）：部署含调度器的 release → 影子模式观察并与旧 timer 的窗口对照 → 导入旧入口为 `paused` 计划 → 停用旧单元 → canary 启用 1–2 条计划 → 观察后扩大范围；任一步异常按反向顺序回滚，两个方向都留 receipt。
+恢复顺序以补充 spec 为准：保持派发暂停 → 交付新修复版本 → 验证可用 legacy 回退并补连续影子 → FX raw → crypto/5m → 逐批扩面。任一步异常停止推进并保留 receipt。
 
 ## Consumer / ownership 矩阵
 
@@ -59,20 +60,20 @@ monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（s
 | economic PIT/current consumers | 现有 flag/legacy 路径 | 未完成全量切换 | 必须先完成 PIT parity |
 | ASK/MID | 未采集 | 第一阶段非目标 | 需独立 identity/API/spec |
 
-## WebUI 数据维护工作台（v0.5，deployed）
+## WebUI 数据维护工作台（v0.6.1，deployed）
 
 | 项目 | 当前事实 | 证据 |
 | --- | --- | --- |
-| 分支 | `main`（PR #89 WebUI v0.5、PR #90 v0.5.0 发布准备） | git worktree |
+| 分支 | protected `main`（生产任务控制台由 PR #112 交付，v0.6.1 为当前部署） | GitHub + deployment manifest |
 | 维护任务 | `POST /maintenance/plans` 无副作用预览 + `POST /maintenance/tasks` 统一 queued envelope；`/derive/runs`、`/economic/ingest`、`/quality/checks` 复用同一 contract | `backend/tests/test_maintenance_contract.py` |
 | 只读校验运行 | `quality`/`parity` run 只记录 findings，不发布 canonical part、不产生 manifest | `test_quality_run_executes_as_a_verification_and_records_findings` |
 | Runs 读模型 | kind/scope/时间筛选 + opaque cursor 分页；`/runs/{id}/detail` 投影 stage、window、retry chain、degraded 原因，不改写 terminal receipt | `test_run_list_filters_and_cursor_pagination`、`test_run_detail_projects_stage_windows_and_retry_chain` |
 | findings 治理 | 稳定 `finding_id`、occurrence 计数、`open/acknowledged/resolved` 处理状态与运行结果分离 | `test_findings_support_structured_filters_and_state_transitions` |
 | 写保护 | capacity critical 与 warning 下 >31 天 backfill 返回 507 并进入写审计；鉴权失败 401 | `test_capacity_critical_protects_writes_and_is_audited` |
 | 浏览器验收 | 1440px 与 390px 覆盖 provider ingest、derive、parity、quality（degraded）、economic ingest（本地 provider fixture）、被拒写入与容量保护写入 | `acceptance-receipts/browser/receipt.json` |
-| 部署状态 | 已发布并激活 `v0.5.0`（`3e2362ab0b31-6005b252`）；`/operations/receipts` 按真实记录的动作返回，v0.4.1 的回滚路径和历史 receipt 仍保留 | `operations/deployment_stage/2026-09-13T234519…json`、`operations/deployment_activate/2026-09-13T234558…json`、生产只读走查命令与 API/UI 输出 |
+| 部署状态 | 已激活 `v0.6.1`（`aca73a045275-c6470772`）；生产任务控制台可读，真实调度派发处于全局暂停 | v0.6.1 activation receipt + scheduler/task API |
 
-2026-09-13T23:56Z 完成 v0.5.0 生产只读走查。GET `/api/v1/health`、`/health/live`、`/health/ready`、`/metrics`、`/capabilities`、`/datasets`、`/runs`（含首条 run 的 detail/manifest）、`/quality/findings`、`/maintenance/tasks`、`/operations/queue`、`/operations/capacity-history`、`/operations/worker`、`/operations/receipts` 和 `/openapi.json` 均按预期返回；未调用任何 POST/PATCH/DELETE 写接口。走查时 readiness 为 `ready`，capacity 为 `ok`，queue 为 0，API/worker 为 active，所有身份字段均为 `v0.5.0` / `3e2362a` / `3e2362ab0b31-6005b252`。1440px 浏览器只读验收覆盖总览、数据目录、维护任务、运行记录、质量、数据浏览和运维页面；核心导航为中文，默认 UTC+8，切换 dual 后同时显示 UTC+8 与 UTC，容量文案可见，页面均有内容。深层动态文案的完整中文化仍按独立 spec 延后。
+2026-09-13T23:56Z 的 v0.5.0 生产只读走查继续作为历史证据；当前组件身份和调度状态以本页顶部的 v0.6.1 读回为准。
 
 ## 状态语义
 
@@ -83,4 +84,4 @@ monitor timer 配置为 `OnUnitInactiveSec=60s`，但实测节奏为约 120s（s
 1. yfinance macro-daily 数据域迁移。
 2. economic PIT/current consumer 全量切换。
 3. Dukascopy 历史 provider gap 不补造；高周期完整历史覆盖不作为已完成条件。
-4. 1m maintenance 的 `failed` 语义已收敛：provider 无数据（`ProviderGapError`）与 provider 覆盖不完整（`coverage_not_ready`）均记为 `degraded`，cooldown 抑制同样为 `degraded`，结构性质量失败仍为 `failed`。生产实测：2026-09-13 03:11:52 的运行 `result=pass`、`failed_target_count=0`、`degraded_target_count=1`（BTCUSD 17 个 degraded 窗口），systemd 单元 `Result=success`；数据始终 `quality_status=pass`，未被伪造或丢失。
+4. 旧 maintenance runner 已能把 provider gap 汇总为 degraded；v0.6.1 生产任务路径尚未复用同一轮次语义，导致 issue #120 的两个 dead letter。v0.6.2 候选正在统一该行为，尚未真实验收。

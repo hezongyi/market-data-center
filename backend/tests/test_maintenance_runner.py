@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from data_center.control_plane import CoverageResult, MaintenancePolicy
 from data_center.maintenance_runner import (
     _exclude_planned_windows,
@@ -86,15 +88,16 @@ def test_failed_response_without_observed_suffix_stays_bounded():
     ) is None
 
 
-def test_recent_dead_letter_gap_is_suppressed_by_exact_window_and_cooldown():
+@pytest.mark.parametrize("run_kind,reason", [("ingest", "tail"), ("gap_repair", "gap_repair")])
+def test_terminal_provider_gap_is_suppressed_by_exact_window_and_cooldown(run_kind, reason):
     now = datetime(2026, 9, 12, 5, 0, tzinfo=timezone.utc)
     runs = [{
         "status": "dead_letter", "provider": "dukascopy", "symbol": "BTCUSD",
-        "run_scope": "maintenance", "run_kind": "gap_repair",
+        "run_scope": "maintenance", "run_kind": run_kind, "error_type": "QualityError",
         "finished_at": "2026-09-12T04:59:00+00:00",
         "execution_plan": {"windows": [{
             "start": "2026-09-12T02:09:00+00:00", "end": "2026-09-12T02:39:00+00:00",
-            "reason": "gap_repair",
+            "reason": reason,
         }]},
         "quality_summary": {"findings": [{
             "code": "coverage_not_ready", "coverage": {
@@ -107,10 +110,7 @@ def test_recent_dead_letter_gap_is_suppressed_by_exact_window_and_cooldown():
     assert _recent_gap_windows(
         runs=runs, provider="dukascopy", symbol="BTCUSD", run_scope="maintenance",
         now=now, cooldown_minutes=180,
-    ) == {
-        ("2026-09-12T02:09:00+00:00", "2026-09-12T02:39:00+00:00"),
-        ("2026-09-12T02:21:00+00:00", "2026-09-12T02:22:00+00:00"),
-    }
+    ) == {("2026-09-12T02:21:00+00:00", "2026-09-12T02:22:00+00:00")}
     assert not _recent_gap_windows(
         runs=runs, provider="dukascopy", symbol="BTCUSD", run_scope="maintenance",
         now=now, cooldown_minutes=0,
@@ -121,6 +121,7 @@ def test_recent_terminal_failed_gap_is_also_suppressed():
     now = datetime(2026, 9, 12, 5, 0, tzinfo=timezone.utc)
     runs = [{
         "status": "failed", "provider": "dukascopy", "symbol": "BTCUSD",
+        "error_type": "ProviderGapError",
         "run_scope": "maintenance", "run_kind": "gap_repair",
         "finished_at": "2026-09-12T04:59:00+00:00",
         "execution_plan": {"windows": [{

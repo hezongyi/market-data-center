@@ -112,6 +112,28 @@ secret scan, operations acceptance, Web build, browser acceptance (66 checks at 
 acceptance. The ledger schema stays at 5, so no migration or restore is involved. Statements, measurements and
 rollback notes are in `docs/releases/v0.6.1.md`.
 
+Release preparation PR #119 merged as protected-main commit `aca73a045275908b4fd710df777f563fef673b90`;
+post-merge Checks run `34916986735` completed successfully and the annotated tag `v0.6.1` points to that commit.
+Production stage/activation completed as deployment `aca73a045275-c6470772`; activation receipt
+`operations/deployment_activate/2026-09-15T012654.491229+0000-148a0c02052a4403b4b44da872c1d558.json`
+is pass and records unchanged canonical/ledger hashes.
+
+The first tag-triggered Release run `34917000586` failed before publishing: it started before the merge commit's
+`verify` existed, accepted an empty check lookup, and `write_release_receipt.py` rejected the empty CI run ID.
+This failure and the required later immutable completion must be retained as one evidence chain; activation does not make the
+missing GitHub Release receipt pass retroactively.
+
+## v0.6.2 release candidate evidence
+
+Patch release for issue #120 and the [scheduler takeover remediation spec](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md).
+It stops a pure provider coverage gap from consuming all three worker attempts, closes the owning execution as
+degraded while retaining exact gap debt/cooldown, and waits for commit-scoped `verify` in the Release workflow.
+Structural and mixed quality findings remain failures. Ledger `user_version` remains 5 with a backward-compatible
+indexed TaskProgress backing table, and canonical contracts are unchanged; capabilities add the `provider_gap`
+block reason. The current PR head must pass local unified CI and hosted `verify`; the protected-main commit,
+annotated tag, Release receipt, deployment and real TA acceptance evidence are filled only after each action
+actually completes. Release and rollback details are in `docs/releases/v0.6.2.md`.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.

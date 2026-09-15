@@ -1,7 +1,7 @@
 # 生产任务与统一调度管理设计与验收规范
 
 日期：2026-09-14
-状态：in_progress（需求规范已修订；生产任务调度闭环尚未实施验收）
+状态：in_progress（S0–S5 已于 2026-09-15 部署；补充规范 TA01–TA10 尚在修复与验收）
 前置版本：WebUI v0.5 任务中心
 
 本文件是生产任务与统一调度管理的唯一功能规范，沿用原 Maintenance Scheduler 的文件路径与引用。本文规定功能、状态、数据和接口契约，以及完成门槛；[实施计划](../plans/2026-09-14-production-task-scheduler.md)只规定实施顺序、代码落点和验证安排。[调度能力分析与深化设计](../plans/2026-09-14-scheduler-capability-analysis-and-deep-design.md)记录独立评审的证据、缺口（G 编号）与落库设计；需求冲突时以本文件为准。
@@ -12,6 +12,7 @@
 - [市场数据平台](2026-09-11-data-center-market-data-platform.md)
 - [Dukascopy 1m BID](2026-09-11-dukascopy-1m-bid-rollout.md)
 - [Market bars 派生与 consumer 切换](2026-09-11-market-bars-derivation-and-macro-cutover.md)
+- [调度器接管修复与验收补充规范](2026-09-15-scheduler-takeover-remediation-and-acceptance.md)：v0.6.1 canary 失败后已确认并执行中的补充验收；不替代本文功能契约。
 
 ## 1. 背景、目标与范围
 
@@ -426,4 +427,3 @@ AC19–AC24 已在同一次修订中映射到[实施计划](../plans/2026-09-14-
 2026-09-14（第三次修订，决策定稿）：把维护者确认的四项决策写入本文——统一视图只读纳入治理型单元（§1 决策 1、3.4）、首版单数据 worker 但并行度作为策略字段（决策 2、7.3）、新建周期计划默认 fixed_rate 而旧 timer 导入保留 fixed_delay（决策 3、5.1）、`retention-audit` 解耦作为接管前的先行独立修复（决策 4、9.3）。同时明确只读清单是观测投影而非配置来源，须报告“仓库声明 vs 主机已安装”的差异。实施计划已把该先行修复列为接管前必须完成的独立工作项。
 
 2026-09-14（第四次修订）：确认 deployment 逻辑哈希的处理方案（§7.4 第 7 条、AC22）——新增调度表全部纳入哈希，实现改为按 `rowid` 流式并在 receipt 中记录每表行数与耗时；不引入删除式保留策略，成本仍不可接受时才启用两级摘要退路。理由与实测成本见独立评审文档 §4.8 与 issue #107。
-

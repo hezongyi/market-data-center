@@ -248,7 +248,8 @@ def test_capabilities_route_reports_the_plan_contract(client):
     assert production["plan_states"] == ["enabled", "paused", "archived"]
     assert {"healthy", "lagging", "blocked", "attention", "config_drift"} <= set(production["plan_health"])
     assert production["plan_phases"] == ["catching_up", "initializing", "maintaining"]
-    assert {"paused", "global_pause", "config_drift", "dependency", "input_unavailable", "backlog"} <= set(
+    assert {"paused", "global_pause", "config_drift", "dependency", "input_unavailable", "backlog",
+            "provider_gap"} <= set(
         production["block_reasons"])
     assert production["scheduler_enabled"] is True
     assert {item["dataset_id"] for item in production["outputs"]} == {"provider_bars", "market_bars"}
