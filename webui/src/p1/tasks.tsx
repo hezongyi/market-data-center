@@ -164,6 +164,22 @@ const formatTime = (value: string | null | undefined) =>
     : "—";
 const formatPrice = (value: number) =>
   new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+const executionStateLabel = (state: string) => ({
+  pending: "待处理",
+  queued: "排队中",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  skipped: "已跳过",
+  pausing: "暂停中",
+  paused: "已暂停",
+}[state] ?? `未知状态（${state}）`);
+const executionOutcomeLabel = (outcome: string | null) => outcome ? ({
+  pass: "通过",
+  failed: "失败",
+  degraded: "降级",
+  skipped: "已跳过",
+}[outcome] ?? `未知结果（${outcome}）`) : "—";
 
 function CopyRequestButton({ request }: { request: string }) {
   const [copied, setCopied] = useState(false);
@@ -184,18 +200,19 @@ function CopyRequestButton({ request }: { request: string }) {
 function CopyValueButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
+    <Button
       type="button"
       title={value}
-      className="mono inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      variant="ghost"
+      size="sm"
       onClick={() =>
         void navigator.clipboard.writeText(value).then(() => setCopied(true))
       }
     >
-      {value.slice(0, 12)}
-      <Copy className="size-3" />
+      <span className="mono">{value.slice(0, 12)}</span>
+      <Copy data-icon="inline-end" />
       <span className="sr-only">{copied ? "已复制" : `复制${label}`}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -842,6 +859,7 @@ export function TaskDetailPage() {
   const plan = useQuery({
     queryKey: ["production-plan", taskId],
     queryFn: () => services.production.plan(taskId),
+    refetchInterval: 2500,
   });
   const executions = useQuery({
     queryKey: ["production-executions", taskId],
@@ -854,8 +872,8 @@ export function TaskDetailPage() {
     queryFn: () => services.catalog.capabilities(),
   });
   const latestExecution =
-    plan.data?.current_execution ??
     executions.data?.items[0] ??
+    plan.data?.current_execution ??
     plan.data?.executions?.[0];
   const steps = useQuery({
     queryKey: ["production-steps", latestExecution?.execution_id],
@@ -1067,7 +1085,7 @@ export function TaskDetailPage() {
                     : runIsActive
                       ? "执行状态会自动刷新；完成后这里会明确显示通过结果和处理边界。"
                       : latestExecution
-                        ? `最新执行状态为 ${latestExecution.state}，结果为 ${latestExecution.outcome ?? "尚无结论"}。`
+                        ? `最新执行状态为${executionStateLabel(latestExecution.state)}，结果为${executionOutcomeLabel(latestExecution.outcome)}。`
                         : "点击“立即运行”后，这里会显示本轮是否完成以及数据处理边界。"}
                 </CardDescription>
               </div>
@@ -1075,7 +1093,11 @@ export function TaskDetailPage() {
             <Badge variant={runIsComplete ? "default" : "outline"}>
               {runIsComplete
                 ? "已完成 · 通过"
-                : latestExecution?.outcome ?? latestExecution?.state ?? "未运行"}
+                : latestExecution?.outcome
+                  ? executionOutcomeLabel(latestExecution.outcome)
+                  : latestExecution
+                    ? executionStateLabel(latestExecution.state)
+                    : "未运行"}
             </Badge>
           </div>
         </CardHeader>
@@ -1280,11 +1302,11 @@ export function TaskDetailPage() {
                         </TableCell>
                         <TableCell>{run.trigger_source}</TableCell>
                         <TableCell>
-                          <Badge variant="outline">{run.state}</Badge>
+                          <Badge variant="outline">{executionStateLabel(run.state)}</Badge>
                         </TableCell>
                         <TableCell>
                           <Badge variant={run.outcome === "pass" ? "default" : "outline"}>
-                            {run.outcome ?? "—"}
+                            {executionOutcomeLabel(run.outcome)}
                           </Badge>
                         </TableCell>
                         <TableCell>{formatTime(run.created_at)}</TableCell>

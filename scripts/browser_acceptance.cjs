@@ -908,6 +908,90 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.getByRole("dialog").waitFor();
   await p1Page.keyboard.press("Escape");
   await p1Page.getByRole("dialog").waitFor({ state: "hidden" });
+
+  // A task opened while running must update its summary when both the execution
+  // and recorded progress settle. Keeping only the execution list fresh leaves
+  // the operator with contradictory running/completed states on one page.
+  let statusTransitionComplete = false;
+  const transitionExecution = () => ({
+    execution_id: "status-transition-execution",
+    task_id: "status-transition",
+    definition_version: 1,
+    trigger_source: "manual",
+    scheduled_for: null,
+    state: statusTransitionComplete ? "completed" : "running",
+    outcome: statusTransitionComplete ? "pass" : null,
+    created_at: "2026-09-15T00:00:00Z",
+    finished_at: statusTransitionComplete ? "2026-09-15T00:01:00Z" : null,
+    coalesced_count: 0,
+  });
+  const transitionEnvelope = data => ({
+    data, meta: { request_id: "status-transition", schema_version: "v1" }, errors: [],
+  });
+  await p1Page.route("**/api/v1/production/tasks/status-transition", route => {
+    const execution = transitionExecution();
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(transitionEnvelope({
+        task_id: "status-transition",
+        alias: null,
+        name: "Status transition",
+        desired_state: "enabled",
+        definition_version: 1,
+        payload: {
+          provider: "fixture", symbol: "UI_TEST", raw_timeframe: "1d",
+          price_basis: "raw", bar_timeframes: [],
+          window_policy: { mode: "fixed", start: "2026-09-14T00:00:00Z", end: "2026-09-15T00:00:00Z" },
+          schedule: { schedule: "manual", interval_seconds: 900 },
+        },
+        created_at: "2026-09-15T00:00:00Z",
+        updated_at: "2026-09-15T00:00:00Z",
+        deleted_at: null,
+        provider: "fixture",
+        symbol: "UI_TEST",
+        next_run_at: null,
+        health: "healthy",
+        phase: statusTransitionComplete ? "maintaining" : "catching_up",
+        executions: [execution],
+        current_execution: statusTransitionComplete ? null : execution,
+        schedule: { kind: "manual", next_run_at: null },
+        progress: {
+          raw_frontier: statusTransitionComplete ? "2026-09-15T00:00:00Z" : null,
+          provider_bounded_end: "2026-09-15T00:00:00Z",
+          backlog: !statusTransitionComplete,
+          derived_cursor: null,
+          last_outcome: statusTransitionComplete ? "pass" : null,
+          last_finished_at: statusTransitionComplete ? "2026-09-15T00:01:00Z" : null,
+          last_execution_id: execution.execution_id,
+          recompute_pending: 0,
+          recorded: true,
+          note: "Recorded planning boundaries, not live provider freshness.",
+          observed_boundary: null,
+          complete_boundary: null,
+          gaps: [],
+          deferred_derived: [],
+        },
+      })),
+    });
+  });
+  await p1Page.route("**/api/v1/production/tasks/status-transition/executions*", route =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(transitionEnvelope([transitionExecution()])),
+    }));
+  await p1Page.route("**/api/v1/production/executions/status-transition-execution/steps*", route =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(transitionEnvelope([])),
+    }));
+  await p1Page.goto(base + "/tasks/status-transition");
+  await p1Page.getByText("任务正在运行", { exact: true }).waitFor();
+  statusTransitionComplete = true;
+  await p1Page.getByText("本次运行已完成，数据已就绪", { exact: true }).waitFor();
+  await p1Page.getByText("已完成 · 通过", { exact: true }).waitFor();
   assert.deepEqual(p1Errors, []);
   await p1Page.close();
 
@@ -952,7 +1036,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
       "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle",
       "p1_real_cookie_login", "p1_capabilities_task_sheet", "p1_url_search",
-      "p1_direct_detail_refresh", "p1_filter_back", "p1_keyboard_focus",
+      "p1_direct_detail_refresh", "p1_status_transition", "p1_filter_back", "p1_keyboard_focus",
       "p1_scheduler_loading_error", "p1_create_pending_and_save",
       "p1_mobile_task_sheet", "p1_legacy_css_isolation"],
     original_run_id: failed.run_id,
