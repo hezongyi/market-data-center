@@ -60,7 +60,7 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: python -m venv .venv
       - run: .venv/bin/python -m pip install -c backend/constraints/py311.txt -e './backend[dev]'
-      - run: npm --prefix webui ci
+      - run: npm --prefix webui ci --include=dev
       - run: npx --prefix webui playwright install --with-deps chromium
       - name: Unified Web and browser checks
         env:

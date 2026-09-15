@@ -23,6 +23,10 @@ ECONOMIC_CONNECTORS = {"fred": FredConnector()}
 
 
 def get_connector(provider: str) -> MarketConnector:
+    from data_center.settings import Settings
+
+    if not Settings().provider_allowed(provider):
+        raise ValueError(f"provider disabled in this environment: {provider}")
     try:
         return CONNECTORS[provider]
     except KeyError as exc:

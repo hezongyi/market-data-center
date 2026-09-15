@@ -26,6 +26,8 @@ def default_fred_connector() -> FredConnector:
     from data_center.settings import Settings
 
     settings = Settings()
+    if not settings.provider_allowed("fred"):
+        raise ValueError("provider disabled in this environment: fred")
     overrides = {}
     if settings.fred_endpoint:
         overrides["endpoint"] = settings.fred_endpoint

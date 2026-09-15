@@ -525,6 +525,8 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
     """
     providers = []
     for capability in REGISTRY.capabilities():
+        if not config.provider_allowed(capability.provider):
+            continue
         instruments = [{
             "provider": item.provider, "symbol": item.symbol, "canonical_symbol": item.canonical_symbol,
             "asset_class": item.asset_class, "currency": item.currency,

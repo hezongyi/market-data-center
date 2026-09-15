@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     auth_state_path: Path | None = None
     auth_session_ttl_seconds: int = 86400
     auth_cookie_secure: bool = True
+    auth_cookie_name: str = "mdc_session"
+    environment_name: str = "development"
+    data_mode: str | None = None
+    source_commit: str | None = None
+    source_dirty: bool = False
     webui_dist: Path | None = None
     deployment_manifest: Path | None = None
     release_root: Path = Path("./var/releases")
@@ -67,6 +72,8 @@ class Settings(BaseSettings):
             raise ValueError("capacity ratios require 0 <= critical < warning <= 1")
         if self.capacity_fixed_free_ratio is not None and not 0 <= self.capacity_fixed_free_ratio <= 1:
             raise ValueError("capacity_fixed_free_ratio must be between 0 and 1")
+        if not self.auth_cookie_name or not self.auth_cookie_name.replace("_", "").replace("-", "").isalnum():
+            raise ValueError("auth_cookie_name must contain only letters, numbers, underscores or hyphens")
         return self
 
     def capacity_policy(self):
@@ -97,3 +104,16 @@ class Settings(BaseSettings):
             for symbol in re.split(r"[\s,]+", self.maintenance_symbols or "")
             if symbol.strip()
         )
+
+    def provider_allowlist(self) -> frozenset[str]:
+        """Providers this explicitly restricted runtime may contact; empty means unrestricted."""
+        import os
+
+        return frozenset(
+            item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
+            if item.strip()
+        )
+
+    def provider_allowed(self, provider: str | None) -> bool:
+        allowed = self.provider_allowlist()
+        return not allowed or provider in allowed

@@ -1,8 +1,8 @@
 # 独立预览环境规范
 
 日期：2026-09-15
-状态：approved
-来源：维护者确认的 EURUSD 优先闭环与阶段验收方案。实现状态：尚未交付，按路线图 P0 实施。
+状态：approved；P0 基础范围 implemented / user accepted
+来源：维护者确认的 EURUSD 优先闭环与阶段验收方案。P0 已交付 PV01、PV02、PV04、PV05、PV07；PV03、PV06、PV08 的完整范围分别留待 P2/P3、P1、P2。
 
 ## 1. 目标与环境
 
@@ -10,9 +10,9 @@ Draft PR 尚未完成时，用户即可在运行中的完整 WebUI 操作验收�
 
 起步采用本机 worktree+独立端口+受监督进程，不引入云环境平台。预览始终使用独立 API、worker、scheduler、auth、canonical、ledger、evidence、backup 与日志。浏览器自动验收另起临时环境，不重置用户正在试用的预览。
 
-## 2. 管理入口契约（待实现）
+## 2. 管理入口契约
 
-计划提供 `bash scripts/dev-preview.sh start|status|stop --id <preview-id>`；实现前不得宣称这些命令已可执行。持久预览位于仓库 ignored `.preview/<id>/`，也可显式指定受控 preview base；用户操作数据保留，stop 不删除目录。
+已提供 `bash scripts/dev-preview.sh start|status|stop --id <preview-id>`。持久预览位于仓库 ignored `.preview/<id>/`，也可显式指定受控 preview base；用户操作数据保留，stop 不删除目录。默认目录仍随整个 worktree 删除，需跨 worktree 保留时必须使用外置 base 或预先备份。
 
 - start：校验配置与端口，显式构造环境，启动 API/worker/scheduler/Vite，健康通过后返回访问卡。默认 fixture；存在同名环境时校验身份后复用或解释拒绝，不覆盖。
 - status：报告各进程是否存活、实际 checkout/commit/dirty 标识、URL、数据模式、调度进程开关/账本开关/有效派发、数据根、日志与启动时间。身份不一致显示失败，不借用生产 readiness。

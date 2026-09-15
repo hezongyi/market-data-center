@@ -29,35 +29,9 @@ This file applies to the whole repository. Read release/operations documents whe
 - During development run relevant checks. Full `bash scripts/ci.sh all` applies to cross-module/high-risk runtime changes and release candidates, not every small local edit. Documentation-only governance changes use documentation/consistency checks plus independent review before merge. Hosted current-commit `verify` remains required before merge; its full matrix has not yet been narrowed. See `docs/development-guide.md`.
 - Use isolated canonical, ledger, auth, evidence, and backup roots for tests and previews. Default CI/browser acceptance must not read production data or contact real providers. Explicit bounded live-sandbox acceptance is separate, follows the preview spec, and never writes production roots.
 
-## Playwright and Chromium
+## Browser and GitHub Tooling
 
-- Playwright is pinned in `webui/package-lock.json`; use `npm --prefix webui ci` rather than a global package.
-- Hosted CI installs its own browser with `npx --prefix webui playwright install --with-deps chromium`.
-- This Ubuntu host has a reusable Chromium cache. Discover the executable instead of assuming a versioned directory:
-
-  ```bash
-  export PLAYWRIGHT_BROWSER_EXECUTABLE="$(find "$HOME/.cache/ms-playwright" -type f -path '*/chrome-linux/chrome' | sort -V | tail -1)"
-  export LD_LIBRARY_PATH="$HOME/.local/share/playwright-deps-jammy/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-  test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
-  npm --prefix webui test
-  ```
-
-- If the cached browser fails to launch, check missing libraries with `ldd "$PLAYWRIGHT_BROWSER_EXECUTABLE" | grep 'not found'` before downloading another browser.
-
-## GitHub Pull Requests
-
-- Git pushes use SSH. Confirm with `ssh -T git@github.com` and `git remote get-url origin`.
-- GitHub API and PR operations use the persisted `gh` login. Ensure the user-local binary is available and validate it without printing tokens:
-
-  ```bash
-  export PATH="$HOME/.local/bin:$PATH"
-  gh auth status
-  gh api user --jq .login
-  ```
-
-- Create PRs with `gh pr create`, inspect checks with `gh pr view` or `gh pr checks`, and merge only after the current head is `CLEAN` and the latest `verify` check succeeds.
-- Do not use an older successful run from the same branch as evidence for a newer commit. Confirm workflow `head_sha` matches the commit being merged or released.
-- OAuth tokens, credential-bearing proxy URLs and API keys belong in user configuration or ignored files. Never print credentials or commit them. Do not hard-code machine-local paths as runtime dependencies; documentation may record explicitly scoped, replaceable local reference/evidence paths without secrets.
+- Follow the Playwright/Chromium and GitHub PR troubleshooting procedures in `docs/development-guide.md`. Keep credentials out of output and require the current PR head's hosted `verify` result before merge.
 
 ## Issue Collaboration
 
