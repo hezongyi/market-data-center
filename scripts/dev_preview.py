@@ -750,11 +750,12 @@ def validate_mode_args(args) -> None:
     if not args.live_start or not args.live_end:
         raise PreviewError("live mode requires --live-start and --live-end")
     try:
-        from data_center.instants import parse_instant
-
-        start, end = parse_instant(args.live_start), parse_instant(args.live_end)
+        start = datetime.fromisoformat(args.live_start.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(args.live_end.replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
         raise PreviewError("live bounds must be timezone-aware ISO-8601 timestamps") from exc
+    if start.tzinfo is None or end.tzinfo is None:
+        raise PreviewError("live bounds must be timezone-aware ISO-8601 timestamps")
     if end <= start or (end - start).total_seconds() > 86400:
         raise PreviewError("live window must be non-empty and no longer than 24 hours")
     if not 1 <= args.live_request_budget <= 100:
