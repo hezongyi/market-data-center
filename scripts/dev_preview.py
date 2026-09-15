@@ -29,6 +29,8 @@ DEFAULT_PRODUCTION_ROOTS = (
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 BUSINESS_ENV_PREFIXES = ("DATACENTER_", "DUKASCOPY_", "FRED_", "BINANCE_", "YFINANCE_")
 PARENT_ENV_ALLOWLIST = {"DATACENTER_PYTHON", "DATACENTER_PREVIEW_BASE"}
+PROXY_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                   "http_proxy", "https_proxy", "all_proxy", "no_proxy")
 
 
 class PreviewError(RuntimeError):
@@ -359,6 +361,8 @@ def process_environment(root: Path, metadata: dict) -> dict[str, str]:
         "VITE_PREVIEW_DIRTY": str(identity["dirty"]).lower(),
         "NODE_ENV": "development",
     }
+    if metadata.get("inherit_proxy"):
+        env.update({name: os.environ[name] for name in PROXY_ENV_NAMES if name in os.environ})
     if mode == "live":
         limits = metadata["live_limits"]
         env.update({
@@ -617,6 +621,7 @@ def start(args, root: Path, metadata_path: Path) -> int:
         "root": str(root),
         "identity": current,
         "mode": getattr(args, "mode", "fixture"),
+        "inherit_proxy": bool(getattr(args, "inherit_proxy", False)),
         "ports": ports,
         "token": secrets.token_urlsafe(32),
         "created_at": created_at,
@@ -733,6 +738,10 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--live-request-budget", type=int, default=30)
     parser.add_argument("--live-byte-budget-mib", type=int, default=100)
     parser.add_argument(
+        "--inherit-proxy", action="store_true",
+        help="explicitly pass standard proxy variables to a live preview without recording values",
+    )
+    parser.add_argument(
         "--python", help="Python executable with locked backend dependencies"
     )
     parser.add_argument(
@@ -745,6 +754,8 @@ def parse_args(argv: list[str] | None = None):
 
 
 def validate_mode_args(args) -> None:
+    if getattr(args, "inherit_proxy", False) and args.mode != "live":
+        raise PreviewError("--inherit-proxy is only available for live mode")
     if args.command != "start" or args.mode == "fixture":
         return
     if not args.live_start or not args.live_end:

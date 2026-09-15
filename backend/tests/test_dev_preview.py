@@ -64,7 +64,8 @@ def test_preview_environment_is_explicit_and_fixture_only(tmp_path):
 
 def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
     metadata = {
-        "id": "live-one", "mode": "live", "token": "preview-token",
+        "id": "live-one", "mode": "live", "inherit_proxy": True,
+        "token": "preview-token",
         "ports": {"api": 21000, "ui": 21001},
         "identity": {"commit": "a" * 40, "dirty": False},
         "live_limits": {
@@ -72,11 +73,20 @@ def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
             "request_budget": 30, "byte_budget": 104857600,
         },
     }
-    env = dev_preview.process_environment(tmp_path / "live-one", metadata)
+    old_proxy = os.environ.get("HTTPS_PROXY")
+    os.environ["HTTPS_PROXY"] = "http://proxy.example.invalid:8080"
+    try:
+        env = dev_preview.process_environment(tmp_path / "live-one", metadata)
+    finally:
+        if old_proxy is None:
+            os.environ.pop("HTTPS_PROXY", None)
+        else:
+            os.environ["HTTPS_PROXY"] = old_proxy
     assert env["DATACENTER_DATA_MODE"] == "live"
     assert env["DATACENTER_PROVIDER_ALLOWLIST"] == "dukascopy"
     assert env["DATACENTER_PREVIEW_LIVE_REQUEST_BUDGET"] == "30"
     assert env["DATACENTER_PREVIEW_LIVE_BUDGET_PATH"].endswith("data/live-budget.json")
+    assert env["HTTPS_PROXY"] == "http://proxy.example.invalid:8080"
 
 
 def test_live_mode_requires_a_bounded_window():
