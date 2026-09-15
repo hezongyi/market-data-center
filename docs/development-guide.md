@@ -53,6 +53,27 @@
 
 代码或行为变更后检查证据必须对应当前版本；UI 体验验收受影响时重给预览，不复用旧行为的批准。网络故障/源延迟和 fixture 结果分别报告；默认 CI 不联网访问真实 provider。
 
+### Playwright、Chromium 与 GitHub 排错
+
+Playwright 以 `webui/package-lock.json` 为准，使用 `npm --prefix webui ci`，不要依赖全局包。Hosted CI 用 `npx --prefix webui playwright install --with-deps chromium` 安装浏览器。本 Ubuntu 主机可复用 Chromium 缓存，但应查找实际 executable，不能假设带版本号的目录：
+
+```bash
+export PLAYWRIGHT_BROWSER_EXECUTABLE="$(find "$HOME/.cache/ms-playwright" -type f -path '*/chrome-linux/chrome' | sort -V | tail -1)"
+export LD_LIBRARY_PATH="$HOME/.local/share/playwright-deps-jammy/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+test -x "$PLAYWRIGHT_BROWSER_EXECUTABLE"
+npm --prefix webui test
+```
+
+缓存浏览器无法启动时，先用 `ldd "$PLAYWRIGHT_BROWSER_EXECUTABLE" | grep 'not found'` 查缺失动态库，再决定是否下载。Git push 使用 SSH，可用 `ssh -T git@github.com` 和 `git remote get-url origin` 核对。GitHub API/PR 使用持久化 `gh` 登录；不要打印 token：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+gh auth status
+gh api user --jq .login
+```
+
+使用 `gh pr create` 创建 PR，使用 `gh pr view` 或 `gh pr checks` 查看状态。合并前确认当前 head 为 clean、最新 `verify` 成功且 workflow `head_sha` 与待合入 commit 一致，不能复用同分支旧提交的成功记录。OAuth token、含凭据的代理 URL 和 API key 只放用户配置或 ignored 文件；机器本地路径不能成为运行依赖，文档可记录不含秘密且可替换的本地参考或证据路径。
+
 ## 4. 预览操作与交接
 
 P0 已提供 `scripts/dev-preview.sh` 管理独立本机预览。先按 Python 3.11 约束安装后端，并显式安装 Web 开发依赖；`--include=dev` 即使调用 shell 带有 `NODE_ENV=production` 也不会漏装 Vite、TypeScript 或 Playwright：
@@ -67,6 +88,8 @@ bash scripts/dev-preview.sh stop --id <preview-id>
 ```
 
 `start` 返回 UI、API docs、checkout/commit/dirty、fixture 模式、scheduler 有效派发状态、数据根和日志。默认只绑定 loopback；远程操作使用 `ssh -L <ui-port>:127.0.0.1:<ui-port> -L <api-port>:127.0.0.1:<api-port> <host>`。`stop` 保留 `.preview/<id>/data` 和日志；代码身份变化后须用 `start --update` 明确接受新身份。同一 id 不会静默换端口或代码。
+
+默认 `.preview/<id>/` 在 worktree 内且被 Git 忽略：提交/推送只保存管理脚本，不保存 auth、数据或日志；删除整个 worktree 也会删除这些运行数据。需要让运行数据独立于 worktree 生命周期时，启动时传 `--base /home/quant/repos/market-data-center-previews`（或另一受控的非生产目录），并在删除 worktree 前停止预览和备份该目录。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 

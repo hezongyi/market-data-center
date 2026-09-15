@@ -1,13 +1,13 @@
 # P0 独立预览阶段验收
 
 日期：2026-09-15
-状态：用户阶段验收通过；完整本地 gate 通过，等待独立评审与 hosted CI
+状态：用户阶段验收通过；评审修正完成，等待当前 PR head 的完整 gate 与 hosted CI
 
 ## 当前验收卡
 
 - 阶段：P0 / E01；PV01、PV02、PV04、PV05、PV07，PV03/PV06/PV08 基础范围。
 - 预览：`http://127.0.0.1:25345`；远程访问时转发 UI 25345 与 API 25344。
-- 身份：`codex/p0-isolated-preview` / 开发中 dirty checkout；最终 commit 在提交后更新。
+- 身份：`codex/p0-isolated-preview` / clean implementation commit `a573675`；observed_at `2026-09-15T08:29:25Z`（阶段验收记录，精确运行身份以 `status` 为准）。
 - 环境：分支预览，fixture；数据与日志保留在 ignored `.preview/p0-eurusd/`。
 - 操作：打开 UI；核对顶部环境条；初始化至少 12 位密码并登录/退出；观察顶部 scheduler 心跳；打开 `http://127.0.0.1:25344/docs`。
 - 预期：明确显示“预览 · 模拟数据”、id/commit/dirty/mode；登录写入独立 cookie/auth 库；调度显示有效派发且心跳变化；API 文档独立可用。
@@ -32,6 +32,7 @@
 - 2026-09-15：首次密码设置返回 `origin not allowed`；已修正 Vite 代理 Origin/Host 语义，并在第二预览实测初始化、登录、退出通过，等待维护者复验。
 - 2026-09-15：维护者复验初始化、登录、改密和退出通过。auth 数据库隔离属于技术证据：两个预览使用不同 auth/ledger 路径和 cookie 名，跨预览 cookie 返回 401，重启保留认证状态；页面不暴露数据库文件。
 - 2026-09-15：维护者未在“Operations”找到 scheduler 心跳；原提示位置有误，既有 scheduler 面板位于“生产计划”。为降低发现成本，预览顶部改为每 5 秒显示有效派发与实际心跳；维护者复验持续心跳通过。
+- 2026-09-15：维护者询问预览持久化边界；已说明默认 `.preview/p0-eurusd` 不进 Git，删除 worktree 会删除运行数据，交接前保留现有环境；跨 worktree 保留可改用外置 `--base` 或备份。
 
 ## 合并前验证
 
