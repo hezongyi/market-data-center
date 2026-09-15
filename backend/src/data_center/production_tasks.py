@@ -1867,6 +1867,23 @@ def scheduled_end(now: datetime, *, lag_minutes: int) -> datetime:
     return bounded.replace(second=0, microsecond=0)
 
 
+def floor_to_timeframe(value: datetime, timeframe: timedelta) -> datetime:
+    """Floor an instant onto the grid the raw bars are written on.
+
+    A coverage scan steps from its start on the timeframe grid, so a start that
+    is off the grid makes every published bar look missing: the scan then reports
+    a full-window gap, and the next rounds refetch history that is already
+    canonical.  Boundaries that come from a plan definition (an import clock, an
+    operator, a form) carry seconds that mean nothing to the grid, so they are
+    floored instead of trusted.
+    """
+    seconds = int(timeframe.total_seconds())
+    if seconds <= 0:
+        raise ValueError("timeframe must be positive")
+    stamp = int(_as_utc(value, "value").timestamp())
+    return datetime.fromtimestamp((stamp // seconds) * seconds, tz=timezone.utc)
+
+
 def coverage_scan_window(*, definition: dict, now: datetime) -> tuple[datetime, datetime] | None:
     """The range a plan's coverage scan covers, or ``None`` for fixed windows.
 
@@ -1881,7 +1898,9 @@ def coverage_scan_window(*, definition: dict, now: datetime) -> tuple[datetime, 
     end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
     history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
     scan_start = max(history_start, end - timedelta(days=policy.tail_days + COVERAGE_SCAN_MARGIN_DAYS))
-    return None if scan_start >= end else (scan_start, end)
+    if scan_start >= end:
+        return None
+    return floor_to_timeframe(scan_start, timeframe_delta(definition["raw_timeframe"])), end
 
 
 def _raw_job(*, task: dict, definition: dict, execution: dict, start: datetime, end: datetime,

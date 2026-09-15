@@ -16,6 +16,7 @@ from data_center.control_plane import evaluate_coverage, timeframe_delta
 from data_center.instants import parse_instant
 from data_center.production_tasks import (
     DEFAULT_RAW_TIMEFRAME,
+    coverage_scan_window,
     plan_execution,
     scheduled_end,
 )
@@ -70,6 +71,27 @@ def test_the_scheduler_reuses_the_maintenance_runner_window_rules():
     assert window_planner.exclude_planned_windows(
         candidates=[{"start": "2026-09-14T00:00:00+00:00", "end": "2026-09-14T06:00:00+00:00"}],
         planned=[{"start": "2026-09-14T00:00:00+00:00", "end": "2026-09-14T06:00:00+00:00"}]) == []
+
+
+def test_an_unaligned_history_start_cannot_hide_published_bars():
+    """The coverage scan floors its own start, so a plan boundary cannot fake a gap.
+
+    A seconds-aligned ``history_start`` (an import clock, an operator form) used
+    to make every published bar look missing: coverage reported a full-window gap
+    and the first enabled round would refetch history that is already canonical.
+    """
+    odd = definition(window_policy={"mode": "continuous",
+                                    "history_start": "2026-09-11T11:59:59+00:00"})
+    scan = coverage_scan_window(definition=odd, now=NOW)
+    assert scan is not None
+    start, end = scan
+    assert (start.second, start.microsecond) == (0, 0)
+    assert int(start.timestamp()) % 60 == 0
+
+    coverage = coverage_at(bars=covered_bars(start=start, end=end), start=start, end=end)
+    assert coverage.missing_timestamps == ()
+    assert coverage.gap_count == 0
+    assert coverage.readiness_status == "ready"
 
 
 def test_the_observed_tail_is_planned_before_gaps_and_backlog():
