@@ -354,6 +354,44 @@ def test_fixed_window_execution_continues_until_the_whole_window_is_dispatched(t
     assert service.read("p1")["progress"]["backlog"] is False
 
 
+def test_fixed_window_with_more_than_one_read_page_cannot_close_early(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger, canonical_root=tmp_path / "lake")
+    fixed = {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m",
+        "price_basis": "bid", "bar_timeframes": [],
+        "window_policy": {
+            "mode": "fixed", "start": "2026-06-01T00:00:00+00:00",
+            "end": "2026-06-08T00:00:00+00:00",
+        },
+        "schedule": {"schedule": "manual"},
+    }
+    service.create(definition=fixed, name="EURUSD", task_id="p1",
+                   desired_state="enabled", now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True,
+                          planner=service, step_budget=8)
+    scheduler.tick(now=NOW)
+
+    for tick in range(30):
+        while (claim := ledger.claim_next_job()) is not None:
+            ledger.finish_job(claim["job_id"], claim["run_id"],
+                              {"status": "pass", "run_id": claim["run_id"]})
+        scheduler.tick(now=NOW + timedelta(minutes=tick + 1))
+        progress = service.read("p1")["progress"]
+        current = ledger.get_production_execution(execution["execution_id"])
+        if not progress["backlog"] and current["state"] == "completed":
+            break
+        if progress["backlog"]:
+            assert current["state"] == "running"
+    else:
+        pytest.fail("fixed window did not exhaust its bounded backlog")
+
+    assert len(ledger.list_production_steps(execution["execution_id"], limit=None)) > 100
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "completed"
+    assert ledger.production_progress("p1")["frontier"] == fixed["window_policy"]["end"]
+
+
 def test_scheduled_end_respects_the_provider_availability_lag():
     assert scheduled_end(NOW, lag_minutes=180) == NOW - timedelta(hours=3)
     # The lag is subtracted first, then the boundary is closed to the minute.
