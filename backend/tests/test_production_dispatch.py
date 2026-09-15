@@ -538,6 +538,38 @@ def derived_definition(**overrides) -> dict:
     return base
 
 
+def test_derived_planning_skips_published_history_before_snapshot_reads(tmp_path, monkeypatch):
+    ledger, service, task = build(tmp_path)
+    definition_doc = {
+        **task["payload"], "provider": "dukascopy", "symbol": "EURUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+    }
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    windows = [((start + timedelta(hours=index)).isoformat(),
+                (start + timedelta(hours=index + 1)).isoformat())
+               for index in range(200)]
+    monkeypatch.setattr(ledger, "completed_derived_windows", lambda _task_id: set(windows[:120]))
+    monkeypatch.setattr(ledger, "list_production_steps", lambda _execution_id: [])
+    reads = []
+
+    def derive_runs(**kwargs):
+        reads.append((kwargs["window_start"], kwargs["window_end"]))
+        return [(kwargs["window_start"], kwargs["window_end"])], []
+
+    monkeypatch.setattr(service, "_derive_runs", derive_runs)
+    monkeypatch.setattr(service, "_derive_step", lambda **kwargs: {
+        "dedupe_key": kwargs["identity"], "window_start": kwargs["run_start"],
+        "window_end": kwargs["run_end"],
+    })
+
+    planned, deferred, not_ready = service._plan_derived_windows(
+        task=task, definition=definition_doc, execution_id="e1", windows=windows,
+        step_budget=8, skip_completed=True)
+
+    assert len(planned) == 8 and reads == windows[120:128]
+    assert deferred == [] and not_ready == []
+
+
 def publish_raw(root, *, start, minutes=60, run_id="raw-part",
                 provider="fixture", symbol="UI_TEST", skip_minute: int | None = None):
     """Publish a valid raw 1m part for the fixture instrument.

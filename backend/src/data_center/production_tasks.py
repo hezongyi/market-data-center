@@ -1094,6 +1094,8 @@ class ProductionTasks:
         published = (self.ledger.completed_derived_windows(task["task_id"]) if skip_completed
                      else set())
         for window_start, window_end in windows:
+            if len(planned) >= budget:
+                break
             chain_documents = []
             for target in targets:
                 try:
@@ -1107,38 +1109,45 @@ class ProductionTasks:
                     if item not in chain_documents:
                         chain_documents.append(item)
             for recipe_document in chain_documents:
+                if len(planned) >= budget:
+                    break
                 window_identity = (f"derive:{recipe_document['recipe_id']}:"
                                    f"{_as_utc(window_start, 'window_start').isoformat()}:"
                                    f"{_as_utc(window_end, 'window_end').isoformat()}")
-                prepared = self._derive_runs(definition=definition, recipe_document=recipe_document,
-                                             window_start=window_start, window_end=window_end)
-                if prepared is None:
-                    deferred.append(window_identity)
-                    continue
-                runs, blocked = prepared
-                for run_start, run_end in blocked:
-                    identity = f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}"
-                    deferred.append(identity)
-                    not_ready.append(identity)
-                for run_start, run_end in runs:
-                    # A run that now covers ground an earlier round already
-                    # published is split around it, so a repair derives the
-                    # missing buckets and neither less nor more.
-                    pieces = exclude_planned_windows(
-                        candidates=[{"start": run_start, "end": run_end}],
-                        planned=[{"start": start, "end": end} for start, end in sorted(published)])
-                    for piece in pieces:
+                # Exclude already published ranges before resolving and reading
+                # their snapshots.  On a long fixed window, doing this after
+                # the read made every tick rescan all prior history and kept
+                # getting slower even after the step budget was exhausted.
+                pending_inputs = exclude_planned_windows(
+                    candidates=[{"start": _as_utc(window_start, "window_start").isoformat(),
+                                 "end": _as_utc(window_end, "window_end").isoformat()}],
+                    planned=[{"start": start, "end": end} for start, end in sorted(published)])
+                for pending_input in pending_inputs:
+                    if len(planned) >= budget:
+                        break
+                    prepared = self._derive_runs(
+                        definition=definition, recipe_document=recipe_document,
+                        window_start=pending_input["start"], window_end=pending_input["end"])
+                    if prepared is None:
+                        deferred.append(window_identity)
+                        continue
+                    runs, blocked = prepared
+                    for run_start, run_end in blocked:
+                        identity = f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}"
+                        deferred.append(identity)
+                        not_ready.append(identity)
+                    for run_start, run_end in runs:
                         if len(planned) >= budget:
                             break
                         identity = (f"derive:{recipe_document['recipe_id']}:"
-                                    f"{piece['start']}:{piece['end']}")
+                                    f"{run_start}:{run_end}")
                         if identity in existing or any(item["dedupe_key"] == identity
                                                        for item in planned):
                             continue
                         step = self._derive_step(task=task, definition=definition,
                                                  execution_id=execution_id,
                                                  recipe_document=recipe_document,
-                                                 run_start=piece["start"], run_end=piece["end"],
+                                                 run_start=run_start, run_end=run_end,
                                                  identity=identity)
                         if step is not None:
                             planned.append(step)
