@@ -89,7 +89,7 @@ bash scripts/dev-preview.sh stop --id <preview-id>
 
 `start` 返回 UI、API docs、checkout/commit/dirty、fixture 模式、scheduler 有效派发状态、数据根和日志。默认只绑定 loopback；远程操作使用 `ssh -L <ui-port>:127.0.0.1:<ui-port> -L <api-port>:127.0.0.1:<api-port> <host>`。`stop` 保留 `.preview/<id>/data` 和日志；代码身份变化后须用 `start --update` 明确接受新身份。同一 id 不会静默换端口或代码。
 
-默认 `.preview/<id>/` 在 worktree 内且被 Git 忽略：提交/推送只保存管理脚本，不保存 auth、数据或日志；删除整个 worktree 也会删除这些运行数据。需要让运行数据独立于 worktree 生命周期时，启动时传 `--base /home/quant/repos/market-data-center-previews`（或另一受控的非生产目录），并在删除 worktree 前停止预览和备份该目录。
+默认 `.preview/<id>/` 在 worktree 内且被 Git 忽略：提交/推送只保存管理脚本，不保存 auth、数据或日志；删除整个 worktree 也会删除这些运行数据。需要让运行数据独立于 worktree 生命周期时，启动时传一个外置的受控非生产目录，例如 `/home/quant/repos/.preview`，并在删除 worktree 前停止预览和备份该目录。
 
 本开发主机当前保留的集成预览采用外置目录，供后续阶段继续验收：
 
