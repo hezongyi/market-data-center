@@ -845,8 +845,19 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.getByRole("heading", { name: "登录数据中心" }).waitFor();
   await p1Page.getByLabel("用户名").fill("admin");
   await p1Page.getByLabel("密码").fill("browser-p1-password");
+  await p1Page.route("**/api/v1/operations/scheduler", async route => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ errors: [{ code: "acceptance_scheduler_unavailable", message: "injected" }] }),
+    });
+  }, { times: 2 });
   await p1Page.getByRole("button", { name: "登录", exact: true }).click();
   await p1Page.getByRole("heading", { name: "数据任务", exact: true }).waitFor();
+  const schedulerCard = p1Page.getByText("调度派发", { exact: true }).locator("..");
+  await schedulerCard.getByText("载入中…", { exact: true }).waitFor();
+  await schedulerCard.getByText("状态不可用", { exact: true }).waitFor();
   await p1Page.getByText("Acceptance plan", { exact: true }).waitFor();
   await p1Page.getByRole("button", { name: "创建任务", exact: true }).click();
   await p1Page.getByRole("dialog").getByText("选项来自 capabilities API", { exact: false }).waitFor();
@@ -940,7 +951,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle",
       "p1_real_cookie_login", "p1_capabilities_task_sheet", "p1_url_search",
       "p1_direct_detail_refresh", "p1_filter_back", "p1_keyboard_focus",
-      "p1_create_pending_and_save", "p1_mobile_task_sheet", "p1_legacy_css_isolation"],
+      "p1_scheduler_loading_error", "p1_create_pending_and_save",
+      "p1_mobile_task_sheet", "p1_legacy_css_isolation"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

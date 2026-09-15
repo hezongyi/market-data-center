@@ -849,7 +849,8 @@ class RunLedger:
                                  "where lease_key='global'").fetchone()
         if row is None:
             return {"dispatch_enabled": True, "heartbeat_at": None, "instance_id": None,
-                    "last_tick_at": None, "tick_count": 0, "last_error": None, "lease": None}
+                    "last_tick_at": None, "instance_dispatch_enabled": False,
+                    "tick_count": 0, "last_error": None, "lease": None}
         return {"dispatch_enabled": bool(row[4]), "heartbeat_at": row[1], "instance_id": row[2],
                 "last_tick_at": row[3], "instance_dispatch_enabled": bool(row[0]),
                 "tick_count": row[5], "last_error": row[6],

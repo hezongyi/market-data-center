@@ -856,6 +856,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         moment = datetime.now(timezone.utc)
         state = ledger.scheduler_state()
+        heartbeat_age = None
+        if state["heartbeat_at"] is not None:
+            heartbeat_age = max(
+                0.0,
+                (moment - parse_instant(state["heartbeat_at"])).total_seconds(),
+            )
+        heartbeat_freshness_limit = max(60.0, config.scheduler_interval_seconds * 3)
+        heartbeat_status = (
+            "unknown"
+            if heartbeat_age is None
+            else "fresh"
+            if heartbeat_age < heartbeat_freshness_limit
+            else "stale"
+        )
+        effective_dispatch = bool(
+            state["dispatch_enabled"]
+            and state["instance_dispatch_enabled"]
+            and heartbeat_status == "fresh"
+        )
         due = ledger.list_due_production_tasks(now=moment.isoformat(), limit=50)
         counts: dict[str, int] = {}
         blocked: list[dict] = []
@@ -869,6 +888,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope({
             "scheduler": state,
             "dispatch_enabled": state["dispatch_enabled"],
+            "effective_dispatch": effective_dispatch,
+            "heartbeat_status": heartbeat_status,
+            "heartbeat_age_seconds": heartbeat_age,
             "due_now": len(due),
             "due_task_ids": [task["task_id"] for task in due],
             "plans_by_state": counts,

@@ -566,10 +566,14 @@ export type ProductionPreview = {
 export type SchedulerView = {
   scheduler: {
     dispatch_enabled: boolean; heartbeat_at: string | null; instance_id: string | null;
+    instance_dispatch_enabled: boolean;
     last_tick_at: string | null; tick_count: number; last_error: string | null;
     lease: { owner_id: string; fencing_token: number; expires_at: number } | null;
   };
   dispatch_enabled: boolean;
+  effective_dispatch: boolean;
+  heartbeat_status: "fresh" | "stale" | "unknown";
+  heartbeat_age_seconds: number | null;
   due_now: number; due_task_ids: string[]; plans_by_state: Record<string, number>;
   oldest_due_at: string | null; queue: QueueState;
   blocked: Array<{ task_id: string; reason: string; health: string }>;

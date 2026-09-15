@@ -110,11 +110,39 @@ DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
   --id p0-eurusd --base /home/quant/repos/.preview --update
 ```
 
+P1 任务主线阶段验收保留另一套独立 fixture 预览。以下记录观测于
+2026-09-15，功能提交 `5c22c7c` 经 PR #127 合入 main（merge
+`2bd5d7f`）；后续收口版本以 `status` 的实际 commit、dirty 和 API identity
+读回为准：
+
+```text
+preview id: p1-eurusd
+preview base: /home/quant/repos/.preview
+UI: http://127.0.0.1:24239
+API docs: http://127.0.0.1:24238/docs
+mode: fixture；四进程；scheduler 有效派发状态可见
+feedback: 维护者已验收任务列表、健康筛选、创建、详情刷新/返回及兼容控制台
+PV06 recheck: 维护者于 2026-09-15 确认 commit/dirty/clean 与有效派发状态通过
+```
+
+验证包括正确工作目录下的 Ruff、API 契约 10 项、后端完整 gate（489
+passed、5 skipped）、Web build、隔离预览验收、1440×1000 与 390×844
+浏览器流程及 service smoke；PR #127 当前 head 的 hosted `verify` 通过。
+任务只保存为暂停状态，fixture 不访问真实 provider；手动数据闭环、真实
+Dukascopy、自动恢复和第二品种仍分别属于 P2–P4。检查或更新此预览必须保留
+同一外置 base：
+
+```bash
+bash scripts/dev-preview.sh status --id p1-eurusd --base /home/quant/repos/.preview
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p1-eurusd --base /home/quant/repos/.preview --update
+```
+
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
-默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成 P1 的路由/shadcn 页面，也不完成 P2/P3 的完整任务数据闭环或 P4 的第二任务旅程；这些限制必须继续显示在阶段验收卡中。
+默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2/P3 的完整任务数据闭环与 P4 的第二任务旅程仍未完成，这些限制必须继续显示在阶段验收卡中。
 
 ## 5. 文档与发布
 

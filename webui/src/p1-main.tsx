@@ -21,7 +21,7 @@ import {
   Sun,
   TriangleAlert,
 } from "lucide-react";
-import { createDataCenterClient } from "./lib/api";
+import { createDataCenterClient, type SchedulerView } from "./lib/api";
 import { Button } from "./components/shadcn/button";
 import { Badge } from "./components/shadcn/badge";
 import {
@@ -46,6 +46,7 @@ import {
   useSidebar,
 } from "./components/shadcn/sidebar";
 import { TaskDetailPage, TasksPage } from "./p1/tasks";
+import { schedulerBannerLabel } from "./p1/scheduler-status";
 import "./p1.css";
 
 const queryClient = new QueryClient({
@@ -167,12 +168,7 @@ function Shell({
       }
     : null;
   const [scheduler, setScheduler] = useState<
-    | {
-        dispatch_enabled: boolean;
-        scheduler: { heartbeat_at: string | null };
-      }
-    | null
-    | undefined
+    SchedulerView | null | undefined
   >(undefined);
   useEffect(() => {
     if (!preview) return;
@@ -270,16 +266,10 @@ function Shell({
             <span>{preview.id}</span>
             <span>
               {preview.commit?.slice(0, 8)}
-              {preview.dirty ? " · dirty" : ""}
+              {preview.dirty ? " · dirty=true" : " · dirty=false · clean"}
             </span>
             <span>{preview.mode}</span>
-            <span>
-              {scheduler === undefined
-                ? "调度状态载入中"
-                : scheduler === null
-                  ? "调度状态不可用"
-                  : `调度：${scheduler.dispatch_enabled ? "有效派发" : "未派发"} · 心跳 ${scheduler.scheduler.heartbeat_at ?? "等待中"}`}
-            </span>
+            <span>{schedulerBannerLabel(scheduler)}</span>
           </div>
         )}
         <Outlet />

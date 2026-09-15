@@ -23,6 +23,7 @@ import type {
   ProductionPlan,
   ProductionPreview,
 } from "../lib/api";
+import { schedulerCardLabel } from "./scheduler-status";
 import { createServices } from "../services";
 import { Badge } from "../components/shadcn/badge";
 import { Button } from "../components/shadcn/button";
@@ -60,7 +61,8 @@ import {
 } from "../components/shadcn/table";
 
 const services = createServices("");
-const stamp = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const createIdempotencySuffix = () =>
+  `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const datetimeLocal = () => {
   const date = new Date(Date.now() - 7 * 86400_000);
   const offset = date.getTimezoneOffset() * 60_000;
@@ -200,7 +202,9 @@ function CreateTaskSheet({
   const [draft, setDraft] = useState(emptyDraft);
   const [preview, setPreview] = useState<ProductionPreview | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [createKey, setCreateKey] = useState(() => `ui-create-${stamp()}`);
+  const [createKey, setCreateKey] = useState(
+    () => `ui-create-${createIdempotencySuffix()}`,
+  );
   const providers = capabilities?.providers ?? [];
   const selectedProvider =
     providers.find((item) => item.provider === draft.provider) ?? providers[0];
@@ -245,7 +249,7 @@ function CreateTaskSheet({
       await queryClient.invalidateQueries({ queryKey: ["production-plans"] });
       onOpenChange(false);
       setDraft(emptyDraft());
-      setCreateKey(`ui-create-${stamp()}`);
+      setCreateKey(`ui-create-${createIdempotencySuffix()}`);
       setPreview(null);
       void navigate({
         to: "/tasks/$taskId",
@@ -530,7 +534,13 @@ export function TasksPage() {
           <CardHeader className="px-4">
             <CardDescription>调度派发</CardDescription>
             <CardTitle className="text-lg">
-              {scheduler.data?.dispatch_enabled ? "有效" : "未启用"}
+              {schedulerCardLabel(
+                scheduler.isLoading
+                  ? undefined
+                  : scheduler.error
+                    ? null
+                    : scheduler.data,
+              )}
             </CardTitle>
           </CardHeader>
         </Card>
