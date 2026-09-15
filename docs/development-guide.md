@@ -91,6 +91,27 @@ bash scripts/dev-preview.sh stop --id <preview-id>
 
 默认 `.preview/<id>/` 在 worktree 内且被 Git 忽略：提交/推送只保存管理脚本，不保存 auth、数据或日志；删除整个 worktree 也会删除这些运行数据。需要让运行数据独立于 worktree 生命周期时，启动时传 `--base /home/quant/repos/market-data-center-previews`（或另一受控的非生产目录），并在删除 worktree 前停止预览和备份该目录。
 
+本开发主机当前保留的集成预览采用外置目录，供后续阶段继续验收：
+
+```text
+preview id: p0-eurusd
+preview base: /home/quant/repos/.preview
+data/log/auth root: /home/quant/repos/.preview/p0-eurusd
+UI: http://127.0.0.1:25345
+API docs: http://127.0.0.1:25344/docs
+```
+
+后续 agent 必须先读取状态，且每个命令都带同一个 `--base`；省略后会在当前 worktree 的 `.preview/` 新建或操作另一套环境。不得删除或重置外置目录中的 auth、ledger、数据和日志：
+
+```bash
+bash scripts/dev-preview.sh status --id p0-eurusd --base /home/quant/repos/.preview
+bash scripts/dev-preview.sh stop --id p0-eurusd --base /home/quant/repos/.preview
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p0-eurusd --base /home/quant/repos/.preview --update
+```
+
+运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
+
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
 默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成 P1 的路由/shadcn 页面，也不完成 P2/P3 的完整任务数据闭环或 P4 的第二任务旅程；这些限制必须继续显示在阶段验收卡中。
