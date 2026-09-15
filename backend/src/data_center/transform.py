@@ -20,6 +20,7 @@ from data_center.control_plane import (
     TransformRecipe,
     evaluate_coverage,
 )
+from data_center.domain.errors import ProviderGapError, SessionClosedError
 from data_center.domain.models import MarketBar, ProviderBar
 from data_center.domain.schema import validate_market_bars
 from data_center.lineage import compact_source_hashes
@@ -76,6 +77,29 @@ def resolve_session_profile(session_profile: str, *, provider: str, symbol: str,
                 raise
             return REGISTRY.session("utc_24x7")
     return REGISTRY.session(session_profile)
+
+
+def window_opens_session(session: SessionProfile, *, start: datetime, end: datetime,
+                         step: timedelta) -> bool:
+    """True when at least one aligned source instant in the half-open window is open.
+
+    The probe walks the same grid a derivation derives on, so it answers "does
+    this window owe bars at all?" instead of guessing from one sample.  Callers
+    use it to tell an expected closed window (an FX weekend) from a provider gap
+    inside an open session: neither may be filled with synthesized bars, but only
+    one of them is worth reporting as a gap.
+    """
+    if step <= timedelta(0):
+        raise ValueError("session probe requires a positive step")
+    start, end = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+    cursor = _bucket(start, step)
+    if cursor < start:
+        cursor += step
+    while cursor < end:
+        if session.is_open(cursor):
+            return True
+        cursor += step
+    return False
 
 
 def current_rows(*, snapshot: CatalogSnapshot, selector: dict[str, str],
@@ -187,13 +211,26 @@ class TransformExecutor:
             source_selector["recipe_version"] = recipe.input_recipe_version
         source = current_rows(snapshot=input_snapshot, selector=source_selector, start=start, end=end,
                               source_timeframe=recipe.source_timeframe)
+        # The session is resolved from the selector, never from the rows: an
+        # input window with no rows is normal (a weekend, a provider gap) and
+        # must be classified rather than crash while it is being inspected.
         session = resolve_session_profile(
-            recipe.session_profile, provider=source[0].provider, symbol=source[0].symbol,
+            recipe.session_profile, provider=provider, symbol=symbol,
             allow_unregistered=run_scope == "acceptance",
         )
         source = [row for row in source if session.is_open(row.bar_ts)]
         if not source:
-            raise ValueError("recipe input is empty")
+            # Nothing may be synthesized for an empty window, and an expected
+            # empty window is not a defect: a window the session keeps closed
+            # throughout owes no output, while an open window without input rows
+            # is a provider gap that callers already treat as degraded.
+            if not window_opens_session(session, start=start, end=end, step=source_width):
+                raise SessionClosedError(
+                    f"the {session.profile_id} session keeps the whole window closed: "
+                    f"{start.isoformat()} - {end.isoformat()}")
+            raise ProviderGapError(
+                f"no {recipe.source_timeframe} input bars for an open {session.profile_id} window: "
+                f"{start.isoformat()} - {end.isoformat()}")
         identities = {(row.provider, row.symbol, row.asset_class, row.currency) for row in source}
         if len(identities) != 1:
             raise ValueError("recipe selector must resolve exactly one instrument")
@@ -224,8 +261,14 @@ class TransformExecutor:
                 right.bar_ts - left.bar_ts == source_width for left, right in pairwise(rows)
             )
             if not complete:
+                # The recipe refuses to publish a partial bucket (never
+                # synthesize), but a bucket the provider has not filled is a
+                # data-availability condition, not a defect of this run: the raw
+                # layer repairs gaps and a later pass derives the bucket.  The
+                # spec keeps a confirmed gap degraded instead of manufacturing a
+                # failed run, so the caller can defer and retry it.
                 if recipe.missing_input_policy == "fail":
-                    raise ValueError(f"incomplete input bucket: {bucket.isoformat()}")
+                    raise ProviderGapError(f"incomplete input bucket: {bucket.isoformat()}")
                 if recipe.partial_bucket_policy == "drop":
                     continue
             first, last = rows[0], rows[-1]
@@ -244,7 +287,9 @@ class TransformExecutor:
                 source_hash=_hash([row.source_hash for row in rows]),
             ))
         if not derived:
-            raise ValueError("recipe produced no complete output buckets")
+            # Every bucket was partial, so the window holds no complete output
+            # yet.  That is the same missing-input condition as above.
+            raise ProviderGapError("recipe produced no complete output buckets")
         validate_market_bars(derived)
         findings = check_market_bars(derived)
         if findings:
@@ -267,10 +312,13 @@ class TransformExecutor:
             quality_status="pass", session_profile=session,
             requested_start=output_start, requested_end=output_end, calendar_unit=output_calendar,
         )
+        # Coverage still gates publication: an incomplete window is never
+        # published.  It does not decide blame, though, so both checks report the
+        # missing provider data as a gap the caller may defer and retry.
         if input_coverage.readiness_status != "ready":
-            raise ValueError("recipe input coverage is not ready")
+            raise ProviderGapError("recipe input coverage is not ready")
         if output_coverage.readiness_status != "ready":
-            raise ValueError("recipe output coverage is not ready")
+            raise ProviderGapError("recipe output coverage is not ready")
         resolved_run_id = run_id or uuid4().hex
         provider = derived[0].provider
         symbol = derived[0].symbol

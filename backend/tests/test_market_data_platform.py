@@ -16,6 +16,7 @@ from data_center.control_plane import (
     evaluate_coverage,
     plan_maintenance,
 )
+from data_center.domain.errors import ProviderGapError
 from data_center.domain.models import DeriveJob, IngestJob, ProviderBar
 from data_center.instants import parse_instant
 from data_center.maintenance_runner import approved_targets
@@ -397,6 +398,63 @@ def test_transform_rejects_not_ready_canonical_output(tmp_path):
             start=start, end=start + timedelta(minutes=10), root=tmp_path,
             run_scope="acceptance",
         )
+
+
+def test_an_incomplete_input_bucket_is_a_provider_gap_not_a_defect(tmp_path):
+    """A bucket the provider has not filled must not manufacture a failed run.
+
+    The production incident: the canonical 1m layer held 1422 of the 1440
+    Saturday minutes of a 24x7 crypto symbol, and the derivation reported a hard
+    ``ValueError`` for the first partial 5m bucket.  The gap stays visible as a
+    degraded, retryable condition instead, because the raw layer repairs gaps and
+    a later pass derives the bucket (spec 5.4: a confirmed source gap may leave
+    the round degraded and never becomes a failed run).
+    """
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    recipe = TransformRecipe(
+        recipe_id="fail-on-partial", version="1", input_dataset="provider_bars",
+        output_dataset="market_bars", source_timeframe="1m", target_timeframe="5m",
+        allowed_schema_versions=("provider_bars.v1",), missing_input_policy="fail",
+    )
+    rows = _raw_rows("fixture", "SPARSE", start)
+    rows.pop(2)
+    _publish_raw(tmp_path, rows, "sparse-raw")
+    snapshot = Catalog(tmp_path).resolve(
+        "provider_bars", {"provider": "fixture", "symbol": "SPARSE", "timeframe": "1m"},
+    )
+    with pytest.raises(ProviderGapError, match="incomplete input bucket"):
+        TransformExecutor().derive(
+            recipe=recipe, input_snapshot=snapshot,
+            selector={"provider": "fixture", "symbol": "SPARSE"},
+            start=start, end=start + timedelta(minutes=10), root=tmp_path,
+            run_scope="acceptance",
+        )
+    assert not [path for path in tmp_path.rglob("*.parquet") if "market_bars" in path.parts]
+
+
+def test_a_window_without_any_complete_bucket_is_a_provider_gap(tmp_path):
+    """Every bucket partial is still a gap, not a defect of the derivation."""
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    recipe = TransformRecipe(
+        recipe_id="drop-every-bucket", version="1", input_dataset="provider_bars",
+        output_dataset="market_bars", source_timeframe="1m", target_timeframe="5m",
+        allowed_schema_versions=("provider_bars.v1",), missing_input_policy="allow",
+        partial_bucket_policy="drop",
+    )
+    rows = [row for index, row in enumerate(_raw_rows("fixture", "PARTIAL", start))
+            if index not in {2, 7}]
+    _publish_raw(tmp_path, rows, "partial-raw")
+    snapshot = Catalog(tmp_path).resolve(
+        "provider_bars", {"provider": "fixture", "symbol": "PARTIAL", "timeframe": "1m"},
+    )
+    with pytest.raises(ProviderGapError, match="no complete output buckets"):
+        TransformExecutor().derive(
+            recipe=recipe, input_snapshot=snapshot,
+            selector={"provider": "fixture", "symbol": "PARTIAL"},
+            start=start, end=start + timedelta(minutes=10), root=tmp_path,
+            run_scope="acceptance",
+        )
+    assert not [path for path in tmp_path.rglob("*.parquet") if "market_bars" in path.parts]
 
 
 def test_worker_expands_planned_windows_into_independent_runs(tmp_path):

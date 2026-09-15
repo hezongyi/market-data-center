@@ -19,12 +19,20 @@ from pathlib import Path
 import requests
 
 from data_center.catalog.snapshot import Catalog
-from data_center.domain.errors import ProviderGapError
+from data_center.domain.errors import (
+    PROVIDER_GAP_ERROR_TYPES,
+    SESSION_CLOSED_ERROR_TYPES,
+)
 from data_center.evidence import operation_receipt, write_receipt
 from data_center.maintenance_runner import approved_targets
 from data_center.platform_registry import REGISTRY
 from data_center.settings import Settings
-from data_center.transform import recomputation_plan
+from data_center.transform import (
+    TIMEFRAMES,
+    recomputation_plan,
+    resolve_session_profile,
+    window_opens_session,
+)
 
 from .instants import parse_instant
 
@@ -162,6 +170,18 @@ def plan_derived_maintenance(*, root: Path, provider: str, targets: tuple[Derive
             )
             item["window"] = {"start": window_start.isoformat(), "end": window_end.isoformat(),
                               "semantics": "half-open"}
+            session = resolve_session_profile(
+                recipe.session_profile, provider=target.provider, symbol=target.symbol,
+                allow_unregistered=False,
+            )
+            if not window_opens_session(session, start=window_start, end=window_end,
+                                        step=TIMEFRAMES[recipe.source_timeframe]):
+                # A window the session keeps closed throughout owes no derived
+                # bars at all.  Submitting it would spend a run and its retries
+                # to rediscover an expected condition, so the plan records it.
+                item.update(status="skipped", reason="session_closed")
+                planned.append(item)
+                continue
             if _manifest_covers(root=root, provider=target.provider, symbol=target.symbol,
                                 recipe=recipe, input_snapshot_id=snapshot.snapshot_id,
                                 start=window_start, end=window_end):
@@ -243,17 +263,23 @@ def run_derived_maintenance(*, base_url: str, root: Path, evidence_root: Path,
                     item["row_count"] = receipt.get("row_count")
                     item["output_hash"] = receipt.get("output_hash")
                     if receipt.get("status") != "pass":
-                        # Provider-verified gaps and empty session windows are
-                        # expected for sparse historical data.  Keep the
-                        # item visible as degraded (never synthesize bars),
-                        # while allowing independent symbols to complete.
-                        if receipt.get("error_type") == ProviderGapError.__name__:
+                        error_type = receipt.get("error_type")
+                        # Provider-verified gaps, empty session windows and
+                        # closed windows are expected for sparse historical
+                        # data.  Keep the item visible (never synthesize bars)
+                        # while allowing independent symbols to complete: a
+                        # closed window owes nothing, a gap is degraded, and
+                        # only anything else counts as a failure.
+                        if error_type in SESSION_CLOSED_ERROR_TYPES:
+                            item["status"] = "skipped"
+                            item["reason"] = "session_closed"
+                        elif error_type in PROVIDER_GAP_ERROR_TYPES:
                             item["status"] = "degraded"
                             item["reason"] = "provider_gap_or_empty_session"
                         else:
                             failures += 1
                             item["status"] = "failed"
-                            item["reason"] = receipt.get("error_type") or "derive_run_failed"
+                            item["reason"] = error_type or "derive_run_failed"
                 except Exception as exc:  # noqa: BLE001 - continue independent symbols/recipes
                     failures += 1
                     item.update(status="failed", reason=type(exc).__name__)
@@ -266,6 +292,7 @@ def run_derived_maintenance(*, base_url: str, root: Path, evidence_root: Path,
         "planned_count": sum(item["status"] == "planned" for item in plan),
         "already_materialized_count": sum(item["status"] == "already_materialized" for item in plan),
         "not_ready_count": sum(item["status"] == "not_ready" for item in plan),
+        "skipped_count": sum(item["status"] == "skipped" for item in plan),
         "failed_count": failures,
         "degraded_count": sum(item["status"] == "degraded" for item in plan),
         "dependency_graph": REGISTRY.dependency_graph(), "plan": plan,
@@ -309,7 +336,8 @@ def main() -> None:
     print(json.dumps({"result": report["result"], "receipt": report["receipt"],
                       "details": {key: report["details"][key] for key in (
                           "target_count", "recipe_count", "planned_count", "already_materialized_count",
-                          "not_ready_count", "failed_count")}}, sort_keys=True))
+                          "not_ready_count", "skipped_count", "failed_count",
+                          "degraded_count")}}, sort_keys=True))
     raise SystemExit(0 if report["result"] == "pass" else 1)
 
 

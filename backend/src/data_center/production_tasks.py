@@ -22,6 +22,7 @@ from .capacity import CapacityPolicy
 from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
 from .control_plane import timeframe_delta
+from .domain.errors import SESSION_CLOSED_ERROR_TYPES
 from .domain.models import DeriveJob, IngestJob
 from .instants import aware_utc
 from .platform import coverage_from_catalog, ingest_window_payloads
@@ -62,7 +63,7 @@ PROVIDER_BACKOFF_REASON = "provider_transient_failures"
 #: provider being unable to serve us: those keep their own cooldown paths.
 NON_PROVIDER_ERROR_TYPES = frozenset({
     "ProviderGapError", "QualityError", "InputUnavailableError", "DefinitionError",
-    "ValueError", "PublicationError"})
+    "ValueError", "PublicationError"}) | SESSION_CLOSED_ERROR_TYPES
 
 #: Commands accepted by :meth:`ProductionTasks.change` (spec 8).
 CHANGE_COMMANDS = ("update", "pause", "resume", "run_now", "retry", "archive",

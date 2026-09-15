@@ -9,7 +9,11 @@ from data_center.catalog.snapshot import (
     CatalogSnapshot,
     snapshot_from_reference,
 )
-from data_center.domain.errors import InputUnavailableError, ProviderGapError
+from data_center.domain.errors import (
+    InputUnavailableError,
+    ProviderGapError,
+    SessionClosedError,
+)
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.ingest.economic import run_fred_ingest
 from data_center.ingest.service import run_fixture_ingest
@@ -82,6 +86,14 @@ def safe_failure_result(exc: Exception, job: dict | None = None) -> dict:
                 "retryable": retryable_coverage,
                 "quality_summary": {"status": "fail", "finding_count": len(exc.findings),
                                     "findings": exc.findings}}
+    if isinstance(exc, SessionClosedError):
+        # A window the session profile keeps closed owes no output, so retrying
+        # the same window cannot change the answer.  Report it once, as an
+        # expected condition, instead of spending its attempts on the
+        # dead-letter queue.
+        return {"error_type": "SessionClosedError", "failure_stage": "input",
+                "error": "the session profile keeps the requested window closed", "retryable": False,
+                "quality_summary": {"status": "not_run", "finding_count": 0, "findings": []}}
     if isinstance(exc, InputUnavailableError):
         # Stopped and reported, never retried into a different computation.
         return {"error_type": "InputUnavailableError", "failure_stage": "input",

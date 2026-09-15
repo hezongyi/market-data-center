@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from data_center.catalog.manifest import manifest_path
+from data_center.domain.errors import (
+    PROVIDER_GAP_ERROR_TYPES,
+    SESSION_CLOSED_ERROR_TYPES,
+)
 
 from .instants import parse_instant
 
@@ -40,6 +44,13 @@ class RunCursorError(RunValidationError):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _records_error_type(run: dict, types: frozenset[str]) -> bool:
+    """True when the run, or one of its attempts, ended with one of these types."""
+    if run.get("error_type") in types:
+        return True
+    return any(item.get("error_type") in types for item in run.get("attempt_errors") or [])
 
 
 def _timestamp(value: str | None) -> str:
@@ -241,8 +252,13 @@ class RunView:
             code = finding.get("code")
             if code in {"coverage_not_ready", "provider_gap"}:
                 reasons.append({"code": code, "message": finding.get("message") or code, "source": "quality"})
-        if run.get("error_type") == "ProviderGapError" or any(
-                item.get("error_type") == "ProviderGapError" for item in run.get("attempt_errors") or []):
+        if _records_error_type(run, SESSION_CLOSED_ERROR_TYPES):
+            # A window the session keeps closed owes no output: it is an
+            # expected condition, not a provider that failed to answer.
+            reasons.append({"code": "session_closed",
+                            "message": "the session profile keeps this window closed; no output is owed",
+                            "source": "session"})
+        elif _records_error_type(run, PROVIDER_GAP_ERROR_TYPES):
             reasons.append({"code": "provider_gap", "message": "the provider did not return the requested interval",
                             "source": "provider"})
         for error in (run.get("attempt_errors") or [])[-2:]:
