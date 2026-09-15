@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
 from data_center.control_plane import InstrumentMetadata
 from data_center.ingest.worker import LocalWorker
 from data_center.instants import parse_instant

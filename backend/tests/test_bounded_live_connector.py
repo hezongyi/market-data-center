@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
 from data_center.connectors.bounded_live import BoundedLiveConnector
 from data_center.domain.models import IngestJob
 from data_center.settings import Settings

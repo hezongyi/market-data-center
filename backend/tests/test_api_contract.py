@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
+from fastapi.testclient import TestClient
+
 from data_center.api.app import create_app
 from data_center.settings import Settings
-from fastapi.testclient import TestClient
 
 
 def test_runs_and_quality_contract(tmp_path) -> None:
