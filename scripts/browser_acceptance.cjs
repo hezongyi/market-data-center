@@ -230,8 +230,14 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
 
     recordStep("catalog");
     await page.getByRole("button", { name: "datasets", exact: true }).click();
-    await page.getByText("provider_bars", { exact: true }).waitFor();
-    await page.getByText("provider_bars", { exact: true }).click();
+    // "provider_bars" also appears in the lineage list and in every provider
+    // capability row, and those panels render asynchronously: matching page-wide
+    // passed only while they had not rendered yet.  The dataset row inside the
+    // "Data catalog" panel is the one this step means.
+    const datasetCell = page.locator("section[aria-label='Data catalog']")
+      .getByRole("cell", { name: "provider_bars", exact: true });
+    await datasetCell.waitFor();
+    await datasetCell.click();
     await page.getByRole("complementary", { name: "provider_bars" }).waitFor();
     await page.getByRole("button", { name: "Close details", exact: true }).last().click();
     const economicRow = page.locator("tr").filter({ hasText: "economic_observations" });

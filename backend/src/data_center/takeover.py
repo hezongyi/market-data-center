@@ -23,11 +23,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .evidence import operation_receipt, write_receipt
+from .operations_views import GOVERNANCE_UNITS
 from .platform_registry import REGISTRY
-from .production_tasks import DEFAULT_RAW_TIMEFRAME, ProductionConflict, ProductionTasks
+from .production_tasks import (
+    DEFAULT_RAW_TIMEFRAME,
+    DefinitionError,
+    ProductionConflict,
+    ProductionTasks,
+)
 
 #: Runner modules that predate the scheduler and are therefore legacy entries.
 LEGACY_RUNNER_MODULES = ("data_center.maintenance_runner", "data_center.derived_maintenance_runner")
+
+#: The runner that produces *derived* outputs.  An entry that reaches it owns
+#: recipes, not just raw windows, so the distinction decides the imported scope.
+DERIVED_RUNNER_MODULE = "data_center.derived_maintenance_runner"
 #: The cadence the old units used, in seconds, when a timer says "15min".
 _CADENCE_UNITS = {"s": 1, "sec": 1, "min": 60, "h": 3600, "d": 86400}
 
@@ -46,12 +56,21 @@ class LegacyEntry:
     #: A calendar expression when the timer is not a monotonic delay, kept as the
     #: host spelled it instead of being flattened into a made-up interval.
     calendar: str | None = None
+    #: The price basis this entry produced.  One wrapper can carry several
+    #: instruments whose provider publishes a different basis (binance publishes
+    #: ``raw`` where dukascopy publishes ``bid``), so the operator states it.
+    price_basis: str | None = None
+    #: The runner module this entry reaches, when the host knows it.  It decides
+    #: whether the entry owns derived outputs, so it is carried as a field instead
+    #: of being smuggled into the command string for a later re-parse.
+    runner_module: str | None = None
 
     def as_dict(self) -> dict:
         return {"unit": self.unit, "timer": self.timer, "command": self.command,
                 "argv": list(self.argv), "cadence_seconds": self.cadence_seconds,
                 "cadence_source": self.cadence_source, "requires_api": self.requires_api,
-                "calendar": self.calendar}
+                "calendar": self.calendar, "price_basis": self.price_basis,
+                "runner_module": self.runner_module}
 
 
 def _unit_value(text: str, key: str) -> str | None:
@@ -65,6 +84,31 @@ def _duration_seconds(value: str) -> int | None:
         return None
     unit = (match.group(2) or "s").lower()
     return int(match.group(1)) * _CADENCE_UNITS.get(unit, 1)
+
+
+def default_unit_root(*, module_file: Path | None = None,
+                      manifest: Path | None = None) -> Path | None:
+    """Where the repository's unit files are, from a checkout *or* a release.
+
+    ``Path(__file__).parents[3]`` only works while the module lives in a source
+    tree; a release installs the package under ``.venv/lib/...`` where that
+    arithmetic lands inside the virtualenv and silently reports "no declared
+    units", turning every host unit into a host-only one.  The deployment
+    manifest names the release root, so it is consulted as well.
+    """
+    candidates = []
+    source = Path(module_file or __file__).resolve()
+    # Walk every parent instead of a fixed depth: a release installs the package
+    # deeper than a checkout, and a depth tuned to one layout silently reports
+    # "no declared units" for the other.
+    for parent in source.parents:
+        candidates.append(parent / "deploy" / "systemd")
+    if manifest is not None:
+        candidates.insert(0, Path(manifest).resolve().parent / "deploy" / "systemd")
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.glob("*.service")):
+            return candidate
+    return None
 
 
 def declared_entries(unit_root: Path) -> list[LegacyEntry]:
@@ -142,6 +186,119 @@ def host_inventory(*, systemctl: tuple[str, ...] = ("systemctl", "--user"),
     return {"status": "known", "units": units, "entries": entries}
 
 
+#: Scripts that wrap the Data Center runners (the macro-market-lab entry).  The
+#: hints are the module names' last segment, so they cannot drift from the list
+#: of modules that actually are legacy runners.
+RUNNER_SCRIPT_HINTS = tuple(module.rsplit(".", 1)[-1] for module in LEGACY_RUNNER_MODULES)
+
+
+def _script_paths(command: str) -> list[Path]:
+    """Existing shell or Python files a command line names, in order."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return []
+    paths = []
+    for token in argv:
+        if token.startswith("-"):
+            continue
+        path = Path(token)
+        if path.suffix in {".sh", ".bash", ".py"} and path.is_file():
+            paths.append(path)
+    return paths
+
+
+def _shell_defaults(body: str) -> dict[str, str]:
+    """Literal values a wrapper assigns to its own variables, best effort.
+
+    A wrapper writes ``REPO_ROOT="${MARKETLAB_REPO_ROOT:-/home/quant/repos/...}"``
+    and then hands control to ``${REPO_ROOT}/scripts/...``.  Only the literal or
+    the ``:-default`` half of such an assignment is read: an unresolved variable
+    simply means the next level cannot be followed, which is reported by the
+    caller instead of guessed.
+    """
+    values: dict[str, str] = {}
+    for line in body.splitlines():
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if not match:
+            continue
+        name, raw = match.group(1), match.group(2).strip().rstrip(";")
+        default = re.fullmatch(r"[\"']?\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}[\"']?", raw)
+        literal = re.fullmatch(r"[\"']([^\"'$]*)[\"']", raw)
+        if default and "$(" not in default.group(1):
+            # A command substitution is not a literal, so it stays unresolved.
+            values[name] = default.group(1)
+        elif literal:
+            values[name] = literal.group(1)
+    return values
+
+
+def _expand(text: str, values: dict[str, str]) -> str:
+    """Substitute the wrappers' own literal variables; leave the rest untouched."""
+    def replace(match: re.Match) -> str:
+        return values.get(match.group(1) or match.group(2), match.group(0))
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace, text)
+
+
+def _runner_command(body: str) -> str | None:
+    """The command line inside a script that runs a Data Center runner.
+
+    Backslash continuations are joined so the runner's own arguments (provider,
+    symbols, recipes) stay readable instead of being lost to line wrapping.
+    """
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        if not any(hint in line for hint in RUNNER_SCRIPT_HINTS):
+            continue
+        command = line.strip()
+        while command.endswith("\\") and index + 1 < len(lines):
+            index += 1
+            command = f"{command[:-1].rstrip()} {lines[index].strip()}"
+        return re.sub(r"^exec\s+", "", command)
+    return None
+
+
+def _script_command(exec_start: str, *, depth: int = 3) -> tuple[str, str | None]:
+    """Follow a wrapper chain to the command that reaches a Data Center runner.
+
+    The macro-market-lab entry goes through two scripts before the runner appears
+    (the unit runs ``marketlab-maintain-market-bars.sh``, which execs
+    ``marketlab-maintain-market-bars-data-center.sh``).  Reading one level misses
+    the runner *and* its arguments, which left the operator to supply the derived
+    scope from outside the tool.  Returns the runner's own command line and the
+    module it names; an unresolved level returns nothing rather than a guess.
+    """
+    if depth <= 0:
+        return "", None
+    for path in _script_paths(exec_start):
+        try:
+            body = path.read_text()
+        except OSError:
+            continue
+        command = _runner_command(body)
+        if command is not None:
+            module = next((item for item in LEGACY_RUNNER_MODULES if item in command), None)
+            return _expand(command, _shell_defaults(body)), module
+        values = _shell_defaults(body)
+        for line in body.splitlines():
+            nested = re.match(r"\s*(?:exec|source|\.)\s+(.+)$", line)
+            if nested is None:
+                continue
+            command, module = _script_command(_expand(nested.group(1), values), depth=depth - 1)
+            if command:
+                return command, module
+    return "", None
+
+
+#: A wrapper that points the other repo at the Data Center backend produces data
+#: through this platform's runners, so it belongs in the takeover inventory.  The
+#: marker names *derived* maintenance explicitly, because that is the entry the
+#: integration routes to this platform (`docs/integration/macro-market-lab.md`).
+DATA_CENTER_BACKEND_MARKERS = ("MARKETLAB_MARKET_BARS_BACKEND=data_center",)
+DATA_CENTER_BACKEND_RUNNER = "data_center.derived_maintenance_runner"
+
+
 def _host_entry(unit: str, *, systemctl: tuple[str, ...]) -> list[dict]:
     """One host unit as an importable entry, or nothing when it is not a runner."""
 
@@ -156,8 +313,25 @@ def _host_entry(unit: str, *, systemctl: tuple[str, ...]) -> list[dict]:
     text = show("-p", "ExecStart", "--value")
     argv = _systemd_argv(text)
     command = " ".join(argv)
-    if not any(module in command for module in LEGACY_RUNNER_MODULES):
-        return []
+    # The macro-market-lab wrapper selects this platform's backend through its
+    # unit environment, not through its command line, so that is read too.
+    environment = show("-p", "Environment", "--value")
+    module = next((item for item in LEGACY_RUNNER_MODULES if item in command), None)
+    if module is None:
+        followed, module = _script_command(command)
+        if module is None:
+            if not any(marker in command or marker in followed or marker in environment
+                       for marker in DATA_CENTER_BACKEND_MARKERS):
+                return []
+            # The wrapper names no runner but says it uses this platform's
+            # backend: that integration is the derived maintenance entry.
+            module = DATA_CENTER_BACKEND_RUNNER
+        if followed:
+            # Report the command that actually produces data, so the runner's own
+            # arguments (provider, symbols, recipes) are readable.  The runner
+            # itself is a field, never a comment smuggled into the command where
+            # argument parsing would read it back.
+            command = followed
     timer_unit = unit[: -len(".service")] + ".timer"
     timer_properties = show("-p", "TimersMonotonic", "-p", "TimersCalendar", "--value",
                             target=timer_unit)
@@ -165,13 +339,14 @@ def _host_entry(unit: str, *, systemctl: tuple[str, ...]) -> list[dict]:
     match = re.search(r"OnUnitInactiveUSec=(\S+?)[,}\s]", timer_properties + " ")
     if match:
         cadence = _systemd_duration(match.group(1))
-    match = re.search(r"OnCalendar=([^,}]+)", timer_properties)
+    # systemd prints the calendar plus a "next_elapse" hint: keep the calendar.
+    match = re.search(r"OnCalendar=([^,;}]+)", timer_properties)
     if match:
         calendar = match.group(1).strip()
     requires_api = "market-data-center-api.service" in show("-p", "Requires", "--value")
     return [{"unit": unit,
              "timer": timer_unit if "Timers" in timer_properties else None,
-             "exec_start": command, "cadence_seconds": cadence,
+             "exec_start": command, "runner_module": module, "cadence_seconds": cadence,
              "cadence_source": "OnUnitInactiveSec" if cadence else ("OnCalendar" if calendar else None),
              "calendar": calendar, "requires_api": requires_api}]
 
@@ -186,7 +361,9 @@ def entries_from_inventory(inventory: dict | None) -> list[LegacyEntry]:
     entries: list[LegacyEntry] = []
     for item in (inventory or {}).get("entries") or []:
         command = str(item.get("exec_start") or item.get("command") or "")
-        if not any(module in command for module in LEGACY_RUNNER_MODULES):
+        module = str(item.get("runner_module") or "") or next(
+            (name for name in LEGACY_RUNNER_MODULES if name in command), "")
+        if not module:
             continue
         cadence = item.get("cadence_seconds")
         calendar = item.get("calendar")
@@ -199,6 +376,8 @@ def entries_from_inventory(inventory: dict | None) -> list[LegacyEntry]:
             cadence_source=item.get("cadence_source") or ("host_inventory" if cadence else None),
             requires_api=bool(item.get("requires_api", False)),
             calendar=str(calendar) if calendar else None,
+            price_basis=str(item["price_basis"]) if item.get("price_basis") else None,
+            runner_module=module,
         ))
     return entries
 
@@ -210,9 +389,22 @@ def planned_entries(unit_root: Path, inventory: dict | None = None) -> list[Lega
     return entries + [entry for entry in entries_from_inventory(inventory) if entry.unit not in seen]
 
 
+def declared_unit_files(unit_root: Path) -> set[str]:
+    """Every unit file the repository ships, runner or not (spec 3.4).
+
+    ``installed_not_declared`` is a governance report about the repository's own
+    unit files, so it has to compare against all of them: a declared API, worker
+    or monitor unit is declared, even though it is not a legacy runner entry.
+    """
+    return {path.name for pattern in ("*.service", "*.timer")
+            for path in Path(unit_root).glob(pattern)}
+
+
 def compare_entries(entries: list[LegacyEntry], inventory: dict | None = None, *,
                     declared_units: set[str] | None = None,
-                    maintenance_symbols: tuple[str, ...] = ()) -> dict:
+                    declared_unit_files: set[str] | None = None,
+                    maintenance_symbols: tuple[str, ...] = (),
+                    price_basis: str = "bid") -> dict:
     """Old vs new: cadence, scope and unit presence, before anything is imported."""
     rows = []
     installed = set((inventory or {}).get("units") or [])
@@ -220,21 +412,32 @@ def compare_entries(entries: list[LegacyEntry], inventory: dict | None = None, *
         argv = entry.argv
         provider = _argument(argv, "--provider") or "dukascopy"
         symbols = legacy_symbols(entry, maintenance_symbols=maintenance_symbols) or []
+        scope = provider_symbols(provider, symbols)
         recipe_ids, recipe_versions = _recipe_arguments(argv)
         recipes = sorted(f"{identifier}@{version}" for identifier in recipe_ids
                          for version in (recipe_versions or {""}))
         rows.append({
             "unit": entry.unit,
             "timer": entry.timer,
-            "runner": next((module for module in LEGACY_RUNNER_MODULES if module in entry.command), None),
             "provider": provider,
             "symbols": sorted(symbols),
+            # The allowlist is provider-agnostic, so the entry is reported with
+            # both what this provider will produce and what it will not: dropping
+            # the difference silently is how a narrowed scope becomes invisible.
+            **scope.as_dict(),
             "recipes": sorted(recipes),
             "raw_timeframe": DEFAULT_RAW_TIMEFRAME,
             "cadence_seconds": entry.cadence_seconds,
             "cadence_source": entry.cadence_source,
             "calendar": entry.calendar,
-            "mappable": schedule_for(entry) is not None and bool(symbols),
+            "calendar_zone_assumed": bool(entry.calendar) and not _calendar_zone(entry.calendar),
+            "runner": entry.runner_module or next(
+                (module for module in LEGACY_RUNNER_MODULES if module in entry.command), None),
+            "derived": not raw_only(entry),
+            # One predicate, shared with the import: a unit is mappable exactly
+            # when a definition can be built for it.
+            "mappable": bool(plan_definitions(entry, price_basis=price_basis,
+                                              maintenance_symbols=maintenance_symbols)),
             "scope_source": ("argv" if _arguments(argv, "--symbols")
                              else "DATACENTER_MAINTENANCE_SYMBOLS" if maintenance_symbols else None),
             "installed": None if (inventory or {}).get("status") != "known"
@@ -243,13 +446,34 @@ def compare_entries(entries: list[LegacyEntry], inventory: dict | None = None, *
             # repository is not the authority on what the machine runs.
             "host_only": None if declared_units is None else entry.unit not in declared_units,
         })
+    governed_prefixes = ("market-data-center", "marketlab")
+    # Governance timers are known platform units even when this repository does
+    # not ship them, so they are not an undeclared finding (spec 3.4).
+    known = {name for name, _kind in GOVERNANCE_UNITS}
+    known |= declared_unit_files or set()
+    known |= {name for entry in entries for name in (entry.unit, entry.timer) if name}
+    undeclared = sorted(name for name in installed - known
+                        if name.startswith(governed_prefixes))
+    unmappable = [row["unit"] for row in rows if row["mappable"] is False]
     return {"entries": rows,
-            "unmappable": [row["unit"] for row in rows if row["mappable"] is False],
+            "unmappable": unmappable,
+            # Reported separately from "unmappable": the entry imports, but not
+            # everything its own allowlist named.
+            "partially_served": [row["unit"] for row in rows
+                                 if row["unserved_symbols"] or row["unapproved_symbols"]],
             "host_status": (inventory or {}).get("status", "not_checked"),
             "declared_units": sorted(declared_units) if declared_units is not None else None,
-            "installed_not_declared": sorted(installed - {name for entry in entries
-                                                          for name in (entry.unit, entry.timer) if name})
+            # Only units this platform could own: the raw systemd list is not a
+            # governance finding, and burying the real gap in it hides it.
+            "installed_not_declared": undeclared
             if (inventory or {}).get("status") == "known" else []}
+
+
+def _calendar_zone(calendar: str) -> str | None:
+    """The zone a systemd calendar states, if it states one at all."""
+    match = re.fullmatch(
+        r"\*-\*-\*\s+(\d{2}):(\d{2})(?::\d{2})?(?:\s+([A-Za-z_/]+))?", calendar.strip())
+    return match.group(3) if match else None
 
 
 def _recipe_arguments(argv: tuple[str, ...]) -> tuple[set[str], set[str]]:
@@ -307,6 +531,46 @@ def _arguments(argv: tuple[str, ...], flag: str) -> list[str]:
     return values
 
 
+@dataclass(frozen=True)
+class SymbolScope:
+    """One legacy allowlist, split by what this provider can actually produce.
+
+    The machine allowlist is provider-agnostic (it lists every maintained
+    instrument), so a dukascopy entry legitimately carries a symbol only binance
+    serves.  Narrowing that silently would import a scope nobody asked for and
+    destroy the evidence for it, so every part is kept and reported.
+    """
+
+    served: tuple[str, ...] = ()
+    unapproved: tuple[str, ...] = ()
+    unserved: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {"importable_symbols": list(self.served),
+                "unapproved_symbols": list(self.unapproved),
+                "unserved_symbols": list(self.unserved)}
+
+
+def provider_symbols(provider: str, symbols: list[str]) -> SymbolScope:
+    """Split a legacy allowlist by what this provider publishes and approves.
+
+    ``instruments`` is read unapproved as well: "this provider does not serve the
+    symbol" and "the registry has it but has not approved it" are different
+    findings, and only the first one means the allowlist named another provider.
+    """
+    instruments = {item.symbol: item for item in REGISTRY.instruments(provider, approved_only=False)}
+    served, unapproved, unserved = [], [], []
+    for symbol in symbols:
+        instrument = instruments.get(symbol)
+        if instrument is None:
+            unserved.append(symbol)
+        elif instrument.approved:
+            served.append(symbol)
+        else:
+            unapproved.append(symbol)
+    return SymbolScope(tuple(served), tuple(unapproved), tuple(unserved))
+
+
 def legacy_symbols(entry: LegacyEntry, *, maintenance_symbols: tuple[str, ...] = ()) -> list[str] | None:
     """The instruments one legacy entry really covered.
 
@@ -333,9 +597,13 @@ def schedule_for(entry: LegacyEntry) -> dict | None:
     if entry.cadence_seconds:
         return {"schedule": "fixed_delay", "interval_seconds": int(entry.cadence_seconds)}
     if entry.calendar:
-        match = re.fullmatch(r"\*-\*-\*\s+(\d{2}):(\d{2})(?::\d{2})?", entry.calendar.strip())
+        # A systemd calendar may carry its zone ("*-*-* 06:30:00 UTC"); that is a
+        # wall-clock time, which the new model expresses as a daily schedule.
+        match = re.fullmatch(
+            r"\*-\*-\*\s+(\d{2}):(\d{2})(?::\d{2})?(?:\s+([A-Za-z_/]+))?",
+            entry.calendar.strip())
         if match:
-            return {"schedule": "daily", "timezone": "UTC",
+            return {"schedule": "daily", "timezone": match.group(3) or "UTC",
                     "local_time": f"{match.group(1)}:{match.group(2)}"}
     return None
 
@@ -351,15 +619,28 @@ def plan_definitions(entry: LegacyEntry, *, price_basis: str = "bid",
     """
     argv = entry.argv
     provider = _argument(argv, "--provider") or "dukascopy"
+    price_basis = entry.price_basis or price_basis
     symbols = legacy_symbols(entry, maintenance_symbols=maintenance_symbols) or []
     recipe_ids, recipe_versions = _recipe_arguments(argv)
     recipes = sorted(recipe_ids | {f"{identifier}@{version}"
                                    for identifier in recipe_ids for version in recipe_versions})
-    raw_only = "data_center.derived_maintenance_runner" not in entry.command
+    scope = provider_symbols(provider, symbols)
+    symbols = list(scope.served)
     schedule = schedule_for(entry)
     if schedule is None or not symbols:
         # No guess: an entry whose trigger or scope cannot be established is
         # reported by the comparison instead of being imported with invented data.
+        return []
+    if not raw_only(entry) and not recipes:
+        # A derived producer that names no recipes would import either every
+        # derivable target (a widening) or no derived output at all (a silent
+        # drop), so its output scope has to be supplied explicitly.
+        return []
+    targets = [] if raw_only(entry) else _derivable_targets(
+        provider=provider, price_basis=price_basis, recipes=recipes)
+    if not raw_only(entry) and not targets:
+        # A derived entry whose recipes resolve to no output for this provider
+        # would import a raw-only plan and silently drop what it produced.
         return []
     definitions = []
     for symbol in sorted(symbols):
@@ -368,14 +649,29 @@ def plan_definitions(entry: LegacyEntry, *, price_basis: str = "bid",
             "raw_timeframe": DEFAULT_RAW_TIMEFRAME, "price_basis": price_basis,
             # Only targets whose chain actually resolves for this provider: an
             # imported plan must not promise a derivation the registry cannot do.
-            "bar_timeframes": [] if raw_only else _derivable_targets(
-                provider=provider, price_basis=price_basis, recipes=recipes),
+            "bar_timeframes": list(targets),
             "window_policy": {"mode": "continuous",
                               "history_start": _history_start(
                                   provider, DEFAULT_RAW_TIMEFRAME, now=now).isoformat()},
             "schedule": dict(schedule),
         })
     return definitions
+
+
+def runner_module_of(entry: LegacyEntry) -> str | None:
+    """The runner an entry reaches: its recorded field, else its own command.
+
+    The field is what a host inventory reports; a unit file or a hand-written
+    inventory names the module in the command instead, so both are read.
+    """
+    if entry.runner_module:
+        return entry.runner_module
+    return next((module for module in LEGACY_RUNNER_MODULES if module in entry.command), None)
+
+
+def raw_only(entry: LegacyEntry) -> bool:
+    """Whether an entry produced raw bars only, from the runner it reaches."""
+    return runner_module_of(entry) != DERIVED_RUNNER_MODULE
 
 
 def _history_start(provider: str, raw_timeframe: str, *, now: datetime | None = None) -> datetime:
@@ -391,6 +687,37 @@ def _history_start(provider: str, raw_timeframe: str, *, now: datetime | None = 
     policy = maintenance_policy_for(provider, raw_timeframe)
     moment = now or datetime.now(timezone.utc)
     return (moment - timedelta(days=max(1, policy.tail_days))).replace(microsecond=0)
+
+
+def schedule_seconds(schedule: dict) -> float:
+    """How often a schedule fires, for comparing two legacy cadences.
+
+    A daily calendar is once a day; a plan with no automatic trigger (manual or
+    one-shot) is least frequent.  Comparing the schedules directly used to raise
+    ``KeyError`` as soon as a delay entry and a calendar entry covered the same
+    instrument.
+    """
+    if "interval_seconds" in schedule:
+        return float(schedule["interval_seconds"])
+    if schedule.get("schedule") == "daily":
+        return 86400.0
+    return float("inf")
+
+
+def schedule_shape(schedule: dict | None) -> tuple:
+    """The part of a schedule an import has to preserve, as a comparable tuple.
+
+    Comparing only the kind and the interval let a daily plan drift its wall-clock
+    time or zone and still verify, which is exactly the drift the handover must
+    not accept.  Volatile fields (a fixed-rate anchor) are deliberately excluded.
+    """
+    document = schedule or {}
+    kind = document.get("schedule")
+    if kind == "daily":
+        return kind, document.get("timezone") or "UTC", document.get("local_time")
+    if kind in {"fixed_rate", "fixed_delay"}:
+        return kind, int(document.get("interval_seconds") or 0)
+    return (kind,)
 
 
 def merged_definitions(entries: list[LegacyEntry], *, price_basis: str = "bid",
@@ -411,17 +738,19 @@ def merged_definitions(entries: list[LegacyEntry], *, price_basis: str = "bid",
                                            maintenance_symbols=maintenance_symbols, now=now):
             key = (definition["provider"], definition["symbol"])
             current = grouped.get(key)
-            cadence = definition["schedule"]["interval_seconds"]
             if current is None:
                 grouped[key] = {**definition, "sources": [entry.unit],
-                                "cadences": {entry.unit: cadence}}
+                                "cadences": {entry.unit: dict(definition["schedule"])}}
                 continue
             current["bar_timeframes"] = sorted(set(current["bar_timeframes"])
                                                | set(definition["bar_timeframes"]))
             current["sources"].append(entry.unit)
-            current["cadences"][entry.unit] = cadence
-            if cadence < current["schedule"]["interval_seconds"]:
-                current["schedule"] = {**definition["schedule"]}
+            current["cadences"][entry.unit] = dict(definition["schedule"])
+            # The more frequent cadence wins: a slower schedule would stop
+            # producing what the faster entry used to produce.  Both are kept in
+            # the comparison receipt so the operator can see the difference.
+            if schedule_seconds(definition["schedule"]) < schedule_seconds(current["schedule"]):
+                current["schedule"] = dict(definition["schedule"])
     return [grouped[key] for key in sorted(grouped)]
 
 
@@ -440,7 +769,8 @@ def import_entries(service: ProductionTasks, *, entries: list[LegacyEntry], acto
                "sources": definition["sources"], "cadences": definition["cadences"],
                "bar_timeframes": definition["bar_timeframes"],
                "schedule": definition["schedule"]["schedule"],
-               "interval_seconds": definition["schedule"]["interval_seconds"]}
+               # A daily plan has no interval: the schedule object is the truth.
+               "interval_seconds": definition["schedule"].get("interval_seconds")}
         import_rows.append(row)
         if task_id in existing:
             skipped.append({**row, "reason": "already_imported"})
@@ -458,6 +788,11 @@ def import_entries(service: ProductionTasks, *, entries: list[LegacyEntry], acto
         except ProductionConflict as exc:
             skipped.append({**row, "reason": exc.code})
             continue
+        except DefinitionError as exc:
+            # One definition the registry refuses (an unapproved instrument, a
+            # recipe that no longer exists) must not lose the other plans.
+            skipped.append({**row, "reason": "invalid_definition", "errors": exc.errors})
+            continue
         created.append({**row, "definition_version": plan["definition_version"]})
     return {"apply": apply, "created": created, "skipped": skipped,
             "rows": import_rows, "at": moment.isoformat()}
@@ -466,6 +801,8 @@ def import_entries(service: ProductionTasks, *, entries: list[LegacyEntry], acto
 def verify_takeover(service: ProductionTasks, *, entries: list[LegacyEntry],
                     inventory: dict | None = None,
                     maintenance_symbols: tuple[str, ...] = (),
+                    price_basis: str = "bid",
+                    declared_unit_files: set[str] | None = None,
                     now: datetime | None = None) -> dict:
     """Post-conditions an operator must be able to show after a handover."""
     problems: list[str] = []
@@ -475,20 +812,21 @@ def verify_takeover(service: ProductionTasks, *, entries: list[LegacyEntry],
             problems.append(
                 f"{entry.unit}: the instrument scope is unknown — pass --symbols or "
                 f"DATACENTER_MAINTENANCE_SYMBOLS before trusting the comparison")
-    for definition in merged_definitions(entries, maintenance_symbols=maintenance_symbols, now=now):
+    for definition in merged_definitions(entries, price_basis=price_basis,
+                                         maintenance_symbols=maintenance_symbols, now=now):
         task_id = f"legacy-{definition['provider']}-{definition['symbol']}-{definition['raw_timeframe']}"
         task = service.ledger.get_production_task(task_id)
         if task is None:
             problems.append(f"{task_id} was never imported")
             continue
         document = service.read(task_id)
-        expected = definition["schedule"]["interval_seconds"]
-        actual = (task["payload"].get("schedule") or {}).get("interval_seconds")
-        if actual != expected:
-            problems.append(f"{task_id} cadence {actual} does not match the legacy {expected}")
+        expected = definition["schedule"]
+        actual = task["payload"].get("schedule") or {}
+        if schedule_shape(actual) != schedule_shape(expected):
+            problems.append(f"{task_id} schedule {actual} does not match the legacy {expected}")
         rows.append({"task_id": task_id, "desired_state": task["desired_state"],
                      "health": document["health"], "block_reason": document["block_reason"],
-                     "interval_seconds": actual})
+                     "schedule": actual})
     # Two writers for one output is the failure this whole handover exists to avoid.
     for task in service.ledger.list_production_tasks():
         if task["desired_state"] != "enabled":
@@ -498,7 +836,8 @@ def verify_takeover(service: ProductionTasks, *, entries: list[LegacyEntry],
             if holder.get("task_id") not in (None, task["task_id"]):
                 problems.append(
                     f"{holder['ownership_key']} is held by {holder['task_id']} and {task['task_id']}")
-    comparison = compare_entries(entries, inventory, maintenance_symbols=maintenance_symbols)
+    comparison = compare_entries(entries, inventory, maintenance_symbols=maintenance_symbols,
+                                 price_basis=price_basis, declared_unit_files=declared_unit_files)
     if comparison["host_status"] == "known":
         still_installed = [row["unit"] for row in comparison["entries"] if row["installed"]]
         if still_installed:
@@ -530,7 +869,14 @@ def main(argv: list[str] | None = None) -> int:
     from .settings import Settings
 
     settings = Settings()
-    unit_root = Path(args.unit_root) if args.unit_root else Path(__file__).resolve().parents[3] / "deploy" / "systemd"
+    unit_root = Path(args.unit_root) if args.unit_root else default_unit_root(
+        manifest=settings.deployment_manifest)
+    if unit_root is None:
+        # Say so instead of reporting every host unit as host-only.
+        print(json.dumps({"event": f"takeover_{args.command}",
+                          "error": "declared_unit_root_not_found",
+                          "hint": "pass --unit-root <release>/deploy/systemd"}, indent=2))
+        return 2
     inventory = json.loads(Path(args.inventory).read_text()) if args.inventory else host_inventory()
     entries = planned_entries(unit_root, inventory)
     # The old runner's allowlist lived in the machine-level env file; the tool
@@ -540,10 +886,15 @@ def main(argv: list[str] | None = None) -> int:
     started = moment.isoformat()
     evidence_root = Path(args.evidence_root) if args.evidence_root else settings.evidence_root
 
+    # The comparison needs to know which units the repository declares so a
+    # host-only unit is visible as such (and not as a missing declaration).
     declared_units = {entry.unit for entry in declared_entries(unit_root)}
+    declared_files = declared_unit_files(unit_root)
     if args.command == "plan":
         details = compare_entries(entries, inventory, declared_units=declared_units,
-                                  maintenance_symbols=maintenance_symbols)
+                                  declared_unit_files=declared_files,
+                                  maintenance_symbols=maintenance_symbols,
+                                  price_basis=args.price_basis)
         print(json.dumps({"event": "takeover_plan", **details}, indent=2, sort_keys=True))
         return 0
 
@@ -555,7 +906,10 @@ def main(argv: list[str] | None = None) -> int:
                                 price_basis=args.price_basis,
                                 maintenance_symbols=maintenance_symbols, now=moment)
         result["comparison"] = compare_entries(entries, inventory,
-                                               maintenance_symbols=maintenance_symbols)
+                                               declared_units=declared_units,
+                                               declared_unit_files=declared_files,
+                                               maintenance_symbols=maintenance_symbols,
+                                               price_basis=args.price_basis)
         path = _receipt(evidence_root, action="production_takeover_import",
                         result="pass", details=result, started_at=started)
         print(json.dumps({"event": "takeover_import", "applied": args.apply,
@@ -564,7 +918,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     report = verify_takeover(service, entries=entries, inventory=inventory,
-                             maintenance_symbols=maintenance_symbols, now=moment)
+                             maintenance_symbols=maintenance_symbols,
+                             price_basis=args.price_basis,
+                             declared_unit_files=declared_files, now=moment)
     path = _receipt(evidence_root, action="production_takeover_verify",
                     result="failed" if report["problems"] else "pass",
                     details=report, started_at=started)
