@@ -11,6 +11,7 @@ import {
   CalendarClock,
   ChevronRight,
   CircleAlert,
+  CircleCheckBig,
   CirclePlay,
   Copy,
   Database,
@@ -852,7 +853,10 @@ export function TaskDetailPage() {
     queryKey: ["capabilities"],
     queryFn: () => services.catalog.capabilities(),
   });
-  const latestExecution = executions.data?.items[0];
+  const latestExecution =
+    plan.data?.current_execution ??
+    executions.data?.items[0] ??
+    plan.data?.executions?.[0];
   const steps = useQuery({
     queryKey: ["production-steps", latestExecution?.execution_id],
     queryFn: () => services.production.steps(latestExecution!.execution_id),
@@ -968,6 +972,14 @@ export function TaskDetailPage() {
     );
   const item = plan.data;
   const payload = taskPayload;
+  const runIsComplete =
+    latestExecution?.state === "completed" &&
+    latestExecution.outcome === "pass" &&
+    item.progress?.backlog === false &&
+    (item.progress?.deferred_derived?.length ?? 0) === 0;
+  const runIsActive = ["pending", "queued", "running"].includes(
+    latestExecution?.state ?? "",
+  );
   return (
     <>
       <header className="mb-6">
@@ -1030,6 +1042,70 @@ export function TaskDetailPage() {
         </div>
       </header>
       {runMutation.error && <div className="mb-6"><ErrorNotice error={runMutation.error} /></div>}
+      <Card className="mb-6" aria-label="运行结论">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 gap-3">
+              {runIsComplete ? (
+                <CircleCheckBig className="mt-0.5 shrink-0 text-primary" />
+              ) : (
+                <CircleAlert className="mt-0.5 shrink-0 text-muted-foreground" />
+              )}
+              <div className="min-w-0">
+                <CardTitle>
+                  {runIsComplete
+                    ? "本次运行已完成，数据已就绪"
+                    : runIsActive
+                      ? "任务正在运行"
+                      : latestExecution
+                        ? "本次运行需要检查"
+                        : "任务尚未运行"}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {runIsComplete
+                    ? `最新执行已通过，处理边界为 ${formatTime(item.progress?.raw_frontier)}，当前无积压。`
+                    : runIsActive
+                      ? "执行状态会自动刷新；完成后这里会明确显示通过结果和处理边界。"
+                      : latestExecution
+                        ? `最新执行状态为 ${latestExecution.state}，结果为 ${latestExecution.outcome ?? "尚无结论"}。`
+                        : "点击“立即运行”后，这里会显示本轮是否完成以及数据处理边界。"}
+                </CardDescription>
+              </div>
+            </div>
+            <Badge variant={runIsComplete ? "default" : "outline"}>
+              {runIsComplete
+                ? "已完成 · 通过"
+                : latestExecution?.outcome ?? latestExecution?.state ?? "未运行"}
+            </Badge>
+          </div>
+        </CardHeader>
+        {latestExecution && (
+          <CardContent>
+            <dl className="grid gap-4 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-xs text-muted-foreground">最新执行</dt>
+                <dd className="mt-1">
+                  <CopyValueButton value={latestExecution.execution_id} label="运行 ID" />
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">完成时间</dt>
+                <dd className="mt-1 font-medium">{formatTime(latestExecution.finished_at)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">积压</dt>
+                <dd className="mt-1 font-medium">
+                  {item.progress?.backlog === false
+                    ? "无"
+                    : item.progress?.backlog
+                      ? "有"
+                      : "尚未记录"}
+                </dd>
+              </div>
+            </dl>
+          </CardContent>
+        )}
+      </Card>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(18rem,.7fr)]">
         <div className="grid gap-6">
           <Card>
@@ -1192,6 +1268,7 @@ export function TaskDetailPage() {
                       <TableHead>运行 ID</TableHead>
                       <TableHead>触发</TableHead>
                       <TableHead>状态</TableHead>
+                      <TableHead>结果</TableHead>
                       <TableHead>创建时间</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1204,6 +1281,11 @@ export function TaskDetailPage() {
                         <TableCell>{run.trigger_source}</TableCell>
                         <TableCell>
                           <Badge variant="outline">{run.state}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={run.outcome === "pass" ? "default" : "outline"}>
+                            {run.outcome ?? "—"}
+                          </Badge>
                         </TableCell>
                         <TableCell>{formatTime(run.created_at)}</TableCell>
                       </TableRow>

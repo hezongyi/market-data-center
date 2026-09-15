@@ -894,9 +894,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.waitForURL(/\/tasks\//);
   const detailUrl = p1Page.url();
   await p1Page.getByRole("heading", { name: "Acceptance plan", exact: true }).waitFor();
+  await p1Page.getByLabel("运行结论", { exact: true }).waitFor();
   await p1Page.reload();
   assert.equal(p1Page.url(), detailUrl, "direct detail refresh must preserve the task URL");
   await p1Page.getByRole("heading", { name: "Acceptance plan", exact: true }).waitFor();
+  await p1Page.getByLabel("运行结论", { exact: true }).waitFor();
   await p1Page.screenshot({ path: path.join(output, "p1-tasks-1440.png"), fullPage: true });
   await p1Page.getByRole("link", { name: "返回任务列表", exact: true }).click();
   assert.equal(await p1Page.getByLabel("搜索任务").inputValue(), "Acceptance",
