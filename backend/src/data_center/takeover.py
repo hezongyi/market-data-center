@@ -30,6 +30,7 @@ from .production_tasks import (
     DefinitionError,
     ProductionConflict,
     ProductionTasks,
+    floor_to_timeframe,
 )
 
 #: Runner modules that predate the scheduler and are therefore legacy entries.
@@ -681,12 +682,18 @@ def _history_start(provider: str, raw_timeframe: str, *, now: datetime | None = 
     the imported plan starts where the old entry effectively started instead of
     asking for history the previous entry never fetched.  The clock is injectable
     so a dry run and the write it describes agree on the range (spec 5.1).
+
+    The boundary is floored onto the raw timeframe grid: a coverage scan steps
+    from it, and a seconds-aligned value would make every published bar look
+    missing on the plan's first enabled round.
     """
+    from .control_plane import timeframe_delta
     from .platform_registry import maintenance_policy_for
 
     policy = maintenance_policy_for(provider, raw_timeframe)
     moment = now or datetime.now(timezone.utc)
-    return (moment - timedelta(days=max(1, policy.tail_days))).replace(microsecond=0)
+    start = (moment - timedelta(days=max(1, policy.tail_days))).replace(microsecond=0)
+    return floor_to_timeframe(start, timeframe_delta(raw_timeframe))
 
 
 def schedule_seconds(schedule: dict) -> float:

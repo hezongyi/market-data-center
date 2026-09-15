@@ -288,6 +288,21 @@ def test_a_daily_plan_that_drifted_its_wall_clock_time_does_not_verify(tmp_path)
                  expected_version=tasks.ledger.get_production_task(task_id)["definition_version"])
     drifted = verify_takeover(tasks, entries=[entry], inventory={"status": "unknown"}, now=NOW)
     assert any("does not match the legacy" in problem for problem in drifted["problems"])
+def test_an_imported_history_start_lands_on_the_bar_grid():
+    """The plan's own boundary is floored onto the grid coverage steps on.
+
+    A seconds-aligned ``history_start`` (the import clock) made the first
+    coverage scan report every published bar as missing, so the first enabled
+    round would refetch the whole scan window instead of the observed tail.
+    """
+    raw, _derived = planned_entries(UNIT_ROOT, host_inventory_payload())
+    definition = plan_definitions(raw, maintenance_symbols=LEGACY_SYMBOLS,
+                                  now=datetime(2026, 9, 14, 12, 0, 30, 123456, tzinfo=timezone.utc))[0]
+    start = parse_instant(definition["window_policy"]["history_start"])
+
+    assert (start.second, start.microsecond) == (0, 0)
+    assert int(start.timestamp()) % 60 == 0
+    assert start == datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
 
 def test_import_is_dry_by_default_and_paused_when_applied(tmp_path):
