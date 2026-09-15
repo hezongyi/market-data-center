@@ -212,7 +212,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.addInitScript(() => localStorage.setItem("mdc.locale", "zh-CN"));
-    await page.goto(base);
+    await page.goto(base + "/legacy.html");
     await page.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
     await page.locator(".sidebar").getByText("Snapshot fresh", { exact: true }).waitFor();
     await page.getByText("development", { exact: false }).first().waitFor();
@@ -806,7 +806,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     await new Promise(resolve => setTimeout(resolve, 500));
     await route.continue();
   });
-  await loadingPage.goto(base);
+  await loadingPage.goto(base + "/legacy.html");
   await loadingPage.getByLabel("Loading").first().waitFor();
   await loadingPage.locator(".sidebar").getByText("API ready", { exact: true }).waitFor();
   await loadingPage.close();
@@ -817,10 +817,107 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
     contentType: "application/json",
     body: JSON.stringify({ data: null, meta: { request_id: "browser-error-state" }, errors: [{ code: "injected", message: "Injected metrics failure" }] }),
   }));
-  await errorPage.goto(base);
+  await errorPage.goto(base + "/legacy.html");
   await errorPage.locator(".error-state").waitFor();
   await errorPage.getByText("Injected metrics failure", { exact: false }).waitFor();
   await errorPage.close();
+
+  // P1 mainline: authenticate through the real HttpOnly-cookie API, then
+  // verify URL-backed task search, the capabilities-backed sheet, and a detail
+  // route that survives direct refresh. The legacy suite above runs in its own
+  // document so its global CSS cannot override this shell.
+  recordStep("p1_task_mainline");
+  await call("POST", "/auth/initialize", {
+    username: "admin", password: "browser-p1-password",
+  });
+  const p1Page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  await p1Page.addInitScript((apiKey) => {
+    const original = window.fetch;
+    window.fetch = (input, init = {}) => {
+      const headers = new Headers(init.headers || {});
+      if (!headers.has("X-API-Key")) headers.set("X-API-Key", apiKey);
+      return original(input, { ...init, headers });
+    };
+  }, key);
+  const p1Errors = [];
+  p1Page.on("pageerror", error => p1Errors.push(error.message));
+  await p1Page.goto(base + "/tasks");
+  await p1Page.getByRole("heading", { name: "登录数据中心" }).waitFor();
+  await p1Page.getByLabel("用户名").fill("admin");
+  await p1Page.getByLabel("密码").fill("browser-p1-password");
+  await p1Page.getByRole("button", { name: "登录", exact: true }).click();
+  await p1Page.getByRole("heading", { name: "数据任务", exact: true }).waitFor();
+  await p1Page.getByText("Acceptance plan", { exact: true }).waitFor();
+  await p1Page.getByRole("button", { name: "创建任务", exact: true }).click();
+  await p1Page.getByRole("dialog").getByText("选项来自 capabilities API", { exact: false }).waitFor();
+  assert.ok((await p1Page.getByLabel("数据源").textContent()).trim(), "P1 form must use a provider from capabilities");
+  assert.ok((await p1Page.getByLabel("品种").textContent()).trim(), "P1 form must use an instrument from capabilities");
+  if ((await p1Page.getByLabel("数据源").textContent()).trim() !== "dukascopy") {
+    await p1Page.getByLabel("数据源").click();
+    await p1Page.getByRole("option", { name: "dukascopy", exact: true }).click();
+  }
+  await p1Page.getByLabel("品种").click();
+  await p1Page.getByRole("option", { name: "GBPUSD", exact: true }).click();
+  await p1Page.getByLabel("任务名称").fill("P1 browser plan");
+  await p1Page.route("**/api/v1/production/plans", async route => {
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await route.continue();
+  }, { times: 1 });
+  await p1Page.getByRole("button", { name: "校验任务", exact: true }).click();
+  await p1Page.getByRole("button", { name: "校验中…", exact: true }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "校验中…", exact: true }).isDisabled(), true);
+  await p1Page.getByText("校验通过，可以保存", { exact: true }).waitFor();
+  await p1Page.route("**/api/v1/production/tasks", async route => {
+    if (route.request().method() !== "POST") return route.continue();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await route.continue();
+  }, { times: 1 });
+  await p1Page.getByRole("button", { name: "保存为暂停", exact: true }).click();
+  await p1Page.getByRole("button", { name: "保存中…", exact: true }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "保存中…", exact: true }).isDisabled(), true);
+  await p1Page.getByRole("heading", { name: "P1 browser plan", exact: true }).waitFor();
+  await p1Page.getByRole("link", { name: "返回任务列表", exact: true }).click();
+  await p1Page.getByLabel("搜索任务").fill("Acceptance");
+  await p1Page.waitForURL(/\/tasks\?q=Acceptance/);
+  await p1Page.getByRole("link", { name: "Acceptance plan", exact: true }).click();
+  await p1Page.waitForURL(/\/tasks\//);
+  const detailUrl = p1Page.url();
+  await p1Page.getByRole("heading", { name: "Acceptance plan", exact: true }).waitFor();
+  await p1Page.reload();
+  assert.equal(p1Page.url(), detailUrl, "direct detail refresh must preserve the task URL");
+  await p1Page.getByRole("heading", { name: "Acceptance plan", exact: true }).waitFor();
+  await p1Page.screenshot({ path: path.join(output, "p1-tasks-1440.png"), fullPage: true });
+  await p1Page.getByRole("link", { name: "返回任务列表", exact: true }).click();
+  assert.equal(await p1Page.getByLabel("搜索任务").inputValue(), "Acceptance",
+    "returning from detail must preserve the task filter");
+  await p1Page.getByRole("button", { name: "创建任务", exact: true }).focus();
+  await p1Page.keyboard.press("Enter");
+  await p1Page.getByRole("dialog").waitFor();
+  await p1Page.keyboard.press("Escape");
+  await p1Page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.deepEqual(p1Errors, []);
+  await p1Page.close();
+
+  const p1Mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const p1MobileErrors = [];
+  p1Mobile.on("pageerror", error => p1MobileErrors.push(error.message));
+  await p1Mobile.goto(base + "/tasks");
+  await p1Mobile.getByLabel("用户名").fill("admin");
+  await p1Mobile.getByLabel("密码").fill("browser-p1-password");
+  await p1Mobile.getByRole("button", { name: "登录", exact: true }).click();
+  await p1Mobile.getByRole("heading", { name: "数据任务", exact: true }).waitFor();
+  await p1Mobile.getByRole("button", { name: "创建任务", exact: true }).click();
+  await p1Mobile.getByRole("dialog").getByText("选项来自 capabilities API", { exact: false }).waitFor();
+  await p1Mobile.screenshot({ path: path.join(output, "p1-tasks-390.png"), fullPage: true });
+  await p1Mobile.getByRole("button", { name: "取消", exact: true }).click();
+  await p1Mobile.getByRole("link", { name: "Acceptance plan", exact: true }).click();
+  await p1Mobile.getByRole("heading", { name: "Acceptance plan", exact: true }).waitFor();
+  await p1Mobile.getByRole("link", { name: "返回任务列表", exact: true }).click();
+  await p1Mobile.getByRole("heading", { name: "数据任务", exact: true }).waitFor();
+  const mobileWidth = await p1Mobile.evaluate(() => ({ body:document.body.scrollWidth, inner:innerWidth }));
+  assert.ok(mobileWidth.body <= mobileWidth.inner, JSON.stringify(mobileWidth));
+  assert.deepEqual(p1MobileErrors, []);
+  await p1Mobile.close();
   const report = writeReceipt("pass", {
     checks: ["readiness", "capacity_warning", "dataset_list", "dataset_detail", "run_filter",
       "retry_confirmation", "failed_retry", "original_immutable", "acknowledge_confirmation",
@@ -840,7 +937,10 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "operations_write_audit", "maintenance_run_kind_matrix", "operations_receipt_actions",
       "production_plans_workspace", "production_plan_wizard", "production_catalog_matrix",
       "governance_unit_list", "production_plan_progress", "production_plan_health_filter",
-      "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle"],
+      "production_capacity_gate", "production_plan_edit", "production_plan_lifecycle",
+      "p1_real_cookie_login", "p1_capabilities_task_sheet", "p1_url_search",
+      "p1_direct_detail_refresh", "p1_filter_back", "p1_keyboard_focus",
+      "p1_create_pending_and_save", "p1_mobile_task_sheet", "p1_legacy_css_isolation"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

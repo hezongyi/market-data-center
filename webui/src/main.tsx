@@ -1,6 +1,5 @@
 import { PreferencesProvider } from "./preferences";
 import { useEffect, useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
 import "./style.css";
 import "./modernization.css";
 import "./preview.css";
@@ -17,7 +16,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { QualityPage } from "./pages/QualityPage";
 import { RunsPage } from "./pages/RunsPage";
 
-function App() {
+export function LegacyApp() {
   const preview = import.meta.env.VITE_PREVIEW_ID
     ? { id: import.meta.env.VITE_PREVIEW_ID, mode: import.meta.env.VITE_PREVIEW_DATA_MODE,
         commit: import.meta.env.VITE_PREVIEW_COMMIT, dirty: import.meta.env.VITE_PREVIEW_DIRTY === "true" }
@@ -66,4 +65,6 @@ function App() {
   </div>;
 }
 
-createRoot(document.getElementById("root")!).render(<PreferencesProvider><App /></PreferencesProvider>);
+export function LegacyConsole() {
+  return <PreferencesProvider><LegacyApp /></PreferencesProvider>;
+}

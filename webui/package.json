@@ -1,6 +1,7 @@
 {
   "name": "market-data-center-webui",
   "private": true,
+  "type": "module",
   "version": "0.6.2",
   "scripts": {
     "dev": "vite",
@@ -9,17 +10,30 @@
     "test:e2e": "node ../scripts/browser_acceptance.cjs"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-label": "2.1.8",
+    "@radix-ui/react-select": "2.2.6",
+    "@radix-ui/react-slot": "1.2.4",
+    "@tailwindcss/vite": "4.1.13",
+    "@tanstack/react-query": "5.87.4",
+    "@tanstack/react-router": "1.131.35",
     "@tanstack/react-table": "8.21.3",
     "@vitejs/plugin-react": "4.4.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
     "lucide-react": "1.44.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "tailwind-merge": "3.3.1",
+    "tailwindcss": "4.1.13",
+    "tw-animate-css": "1.3.8",
     "typescript": "5.8.3",
     "vite": "6.4.3"
   },
   "devDependencies": {
     "@types/react": "19.1.2",
     "@types/react-dom": "19.1.2",
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "prettier": "3.6.2"
   }
 }

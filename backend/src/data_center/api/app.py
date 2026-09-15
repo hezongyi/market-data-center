@@ -20,6 +20,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StaticHttpException
 
 from data_center import __version__
 from data_center.auth import AuthError, AuthStore
@@ -72,6 +73,22 @@ from data_center.storage.query import (
 )
 
 from ..instants import parse_instant
+
+
+class WebUiStaticFiles(StaticFiles):
+    """Serve client routes without turning missing API/assets into HTML."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StaticHttpException as exc:
+            if exc.status_code != 404:
+                raise
+            first_segment = path.lstrip("/").split("/", 1)[0]
+            leaf = Path(path).name
+            if first_segment in {"api", "assets"} or "." in leaf:
+                raise
+            return await super().get_response("index.html", scope)
 
 _request_id = ContextVar("request_id", default="")
 _session_id = ContextVar("session_id", default=None)
@@ -1253,7 +1270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return api_envelope(payload)
 
     if config.webui_dist is not None and config.webui_dist.is_dir():
-        app.mount("/", StaticFiles(directory=config.webui_dist, html=True), name="webui")
+        app.mount("/", WebUiStaticFiles(directory=config.webui_dist, html=True), name="webui")
 
     return app
 
