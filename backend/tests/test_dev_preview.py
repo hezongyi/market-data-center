@@ -1,5 +1,9 @@
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +28,16 @@ def test_preview_root_rejects_workspace_and_production_roots():
         dev_preview.preview_root("alpha", str(dev_preview.REPO))
     with pytest.raises(dev_preview.PreviewError, match="production data root"):
         dev_preview.preview_root("alpha", "/home/quant/market_lake")
+
+
+def test_preview_directories_reject_a_symlinked_child(tmp_path):
+    root = tmp_path / "preview"
+    (root / "data").mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.mkdir()
+    (root / "data/canonical").symlink_to(target, target_is_directory=True)
+    with pytest.raises(dev_preview.PreviewError, match="symbolic link"):
+        dev_preview.prepare_preview_directories(root)
 
 
 def test_unexpected_business_environment_is_rejected(monkeypatch):
@@ -51,3 +65,67 @@ def test_preview_metadata_is_private(tmp_path):
     path = tmp_path / "preview.json"
     dev_preview.write_json(path, {"token": "secret"})
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_stop_refuses_a_reused_pid(monkeypatch):
+    metadata = {
+        "token": "not-this-process",
+        "processes": {"api": {"pid": os.getpid(), "start_ticks": -1}},
+    }
+    monkeypatch.setattr(dev_preview, "matching_token_pids", lambda _token: [])
+    with pytest.raises(dev_preview.PreviewError, match="identity changed"):
+        dev_preview.terminate(metadata)
+
+
+def test_start_refuses_identity_change_without_stopping_running_preview(tmp_path, monkeypatch):
+    root = tmp_path / "preview"
+    metadata_path = root / "preview.json"
+    dev_preview.write_json(metadata_path, {
+        "id": "alpha", "identity": {"checkout": "old", "commit": "a", "dirty": False,
+                                         "worktree_fingerprint": "old"},
+        "ports": {"api": 21000, "ui": 21001}, "token": "token", "processes": {},
+    })
+    current = {"checkout": "new", "commit": "b", "dirty": False, "worktree_fingerprint": "new"}
+    monkeypatch.setattr(dev_preview, "validate_parent_environment", lambda: None)
+    monkeypatch.setattr(dev_preview, "python_executable", lambda _value: Path("/python"))
+    monkeypatch.setattr(dev_preview, "vite_executable", lambda: Path("/vite"))
+    monkeypatch.setattr(dev_preview, "checkout_identity", lambda: current)
+    monkeypatch.setattr(dev_preview, "status_payload", lambda *_: {"state": "identity_mismatch"})
+    stopped = []
+    monkeypatch.setattr(dev_preview, "terminate", lambda _metadata: stopped.append(True))
+    args = SimpleNamespace(id="alpha", python=None, update=False, json=False)
+    with pytest.raises(dev_preview.PreviewError, match="identity changed"):
+        dev_preview.start(args, root, metadata_path)
+    assert stopped == []
+
+
+def test_start_failure_cleans_up_a_started_child(tmp_path, monkeypatch):
+    root = tmp_path / "preview"
+    metadata_path = root / "preview.json"
+    identity = {"checkout": str(dev_preview.REPO), "branch": "test", "commit": "a" * 40,
+                "dirty": False, "worktree_fingerprint": "clean"}
+    monkeypatch.setattr(dev_preview, "validate_parent_environment", lambda: None)
+    monkeypatch.setattr(dev_preview, "python_executable", lambda _value: Path(sys.executable))
+    monkeypatch.setattr(dev_preview, "vite_executable", lambda: Path("/vite"))
+    monkeypatch.setattr(dev_preview, "checkout_identity", lambda: identity)
+    monkeypatch.setattr(dev_preview, "allocate_ports", lambda _id: {"api": 21000, "ui": 21001})
+    child = None
+
+    def spawn(name, _command, _root, env):
+        nonlocal child
+        if name != "api":
+            raise dev_preview.PreviewError("injected startup failure")
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], cwd=dev_preview.REPO,
+            env=env, start_new_session=True,
+        )
+        return child, {"pid": child.pid, "start_ticks": dev_preview.proc_start_ticks(child.pid),
+                       "log": str(root / "logs/api.log"), "command": [sys.executable]}
+
+    monkeypatch.setattr(dev_preview, "spawn_component", spawn)
+    args = SimpleNamespace(id="alpha", python=None, update=False, json=False)
+    with pytest.raises(dev_preview.PreviewError, match="injected startup failure"):
+        dev_preview.start(args, root, metadata_path)
+    assert child is not None
+    child.wait(timeout=10)
+    assert child.returncode is not None

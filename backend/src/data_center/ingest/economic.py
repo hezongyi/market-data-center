@@ -23,13 +23,10 @@ def default_fred_connector() -> FredConnector:
     same settings path production uses, so a test never needs a credential or a
     real provider call.
     """
-    import os
-
     from data_center.settings import Settings
 
     settings = Settings()
-    allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",") if item.strip()}
-    if allowed and "fred" not in allowed:
+    if not settings.provider_allowed("fred"):
         raise ValueError("provider disabled in this environment: fred")
     overrides = {}
     if settings.fred_endpoint:

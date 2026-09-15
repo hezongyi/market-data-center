@@ -104,3 +104,16 @@ class Settings(BaseSettings):
             for symbol in re.split(r"[\s,]+", self.maintenance_symbols or "")
             if symbol.strip()
         )
+
+    def provider_allowlist(self) -> frozenset[str]:
+        """Providers this explicitly restricted runtime may contact; empty means unrestricted."""
+        import os
+
+        return frozenset(
+            item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
+            if item.strip()
+        )
+
+    def provider_allowed(self, provider: str | None) -> bool:
+        allowed = self.provider_allowlist()
+        return not allowed or provider in allowed

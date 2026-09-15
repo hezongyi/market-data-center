@@ -105,6 +105,24 @@ def preview_root(preview_id: str, base: str | None) -> Path:
     return resolved
 
 
+def prepare_preview_directories(root: Path) -> None:
+    paths = (
+        root / "data/canonical",
+        root / "data/ledger",
+        root / "data/evidence",
+        root / "data/backup",
+        root / "data/auth",
+        root / "logs",
+    )
+    for path in paths:
+        reject_symlink_components(path)
+        path.mkdir(parents=True, exist_ok=True)
+        reject_symlink_components(path)
+        resolved = path.resolve()
+        if not (resolved == root or root in resolved.parents):
+            raise PreviewError(f"preview data path escapes its root: {path}")
+
+
 def validate_parent_environment() -> None:
     unexpected = sorted(
         name
@@ -493,15 +511,15 @@ def start(args, root: Path, metadata_path: Path) -> int:
         if old_status["state"] == "running":
             print_status(old_status, as_json=args.json)
             return 0
-        terminate(old)
         changed = any(
             current.get(key) != old.get("identity", {}).get(key)
             for key in ("checkout", "commit", "dirty", "worktree_fingerprint")
         )
         if changed and not args.update:
             raise PreviewError(
-                "preview identity changed while stopped; inspect status, then restart explicitly with --update"
+                "preview identity changed; existing processes were left untouched. Inspect status, then restart with --update"
             )
+        terminate(old)
         ports = old["ports"]
         if not port_available(ports["api"]) or not port_available(ports["ui"]):
             raise PreviewError(
@@ -523,16 +541,7 @@ def start(args, root: Path, metadata_path: Path) -> int:
         "stopped_at": None,
         "processes": {},
     }
-    for path in (
-        root / "data/canonical",
-        root / "data/ledger",
-        root / "data/evidence",
-        root / "data/backup",
-        root / "data/auth",
-        root / "logs",
-    ):
-        path.mkdir(parents=True, exist_ok=True)
-    reject_symlink_components(root)
+    prepare_preview_directories(root)
     if root.resolve() != Path(metadata["root"]):
         raise PreviewError("preview root changed while it was being prepared")
     env = process_environment(root, metadata)

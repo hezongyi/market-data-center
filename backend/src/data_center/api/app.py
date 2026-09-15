@@ -559,9 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         canonical_root=config.canonical_root, capacity_policy=capacity_policy)
 
     def require_allowed_provider(provider: str | None) -> None:
-        allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
-                   if item.strip()}
-        if allowed and provider not in allowed:
+        if not config.provider_allowed(provider):
             raise HTTPException(status_code=422, detail={
                 "code": "provider_disabled",
                 "message": f"provider disabled in this environment: {provider}",
@@ -569,9 +567,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def preview_provider_boundary(request: Request, call_next):
-        allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",")
-                   if item.strip()}
-        if allowed and request.method in {"POST", "PUT", "PATCH"}:
+        if config.provider_allowlist() and request.method in {"POST", "PUT", "PATCH"}:
             content_type = request.headers.get("content-type", "")
             if content_type.startswith("application/json"):
                 body = await request.body()
@@ -581,7 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     payload = {}
                 definition = payload.get("definition") if isinstance(payload, dict) else None
                 provider = (definition or payload).get("provider") if isinstance(definition or payload, dict) else None
-                if provider and provider not in allowed:
+                if provider and not config.provider_allowed(provider):
                     return JSONResponse(status_code=422, content={
                         "data": None,
                         "meta": {"request_id": request.headers.get("x-request-id"), "schema_version": "v1"},

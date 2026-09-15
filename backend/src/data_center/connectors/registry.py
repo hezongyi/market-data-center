@@ -1,5 +1,3 @@
-import os
-
 from data_center.connectors.base import MarketConnector
 from data_center.connectors.binance import BinanceConnector
 from data_center.connectors.dukascopy import DukascopyConnector
@@ -25,8 +23,9 @@ ECONOMIC_CONNECTORS = {"fred": FredConnector()}
 
 
 def get_connector(provider: str) -> MarketConnector:
-    allowed = {item.strip() for item in os.getenv("DATACENTER_PROVIDER_ALLOWLIST", "").split(",") if item.strip()}
-    if allowed and provider not in allowed:
+    from data_center.settings import Settings
+
+    if not Settings().provider_allowed(provider):
         raise ValueError(f"provider disabled in this environment: {provider}")
     try:
         return CONNECTORS[provider]
