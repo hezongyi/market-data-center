@@ -53,8 +53,8 @@ env -u NODE_ENV DATACENTER_PYTHON=<venv>/bin/python bash scripts/ci.sh all
 
 ## 候选工作树验证
 
-- UTC：2026-09-15 03:06–03:10；分支 `docs/scheduler-takeover-acceptance-20260915`，基于
-  `aca73a045275908b4fd710df777f563fef673b90`；候选提交尚待创建，因此本记录不冒充 hosted commit evidence。
+- UTC：2026-09-15 03:06–03:10；分支 `docs/scheduler-takeover-acceptance-20260915`；工作树随后固化为
+  候选提交 `7c1c39e`（基于 `aca73a045275908b4fd710df777f563fef673b90`）。本地结果不冒充 hosted commit evidence。
 - `env -u NODE_ENV DATACENTER_PYTHON=<venv>/bin/python bash scripts/ci.sh all`：exit 0；backend
   `475 passed, 5 skipped`；Ruff、依赖/兼容、secret、operations/capacity、Web build、隔离 browser
   acceptance（desktop/mobile）和 service restart acceptance 全部 pass。
