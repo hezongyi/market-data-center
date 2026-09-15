@@ -70,7 +70,7 @@ def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
         "identity": {"commit": "a" * 40, "dirty": False},
         "live_limits": {
             "start": "2026-09-14T00:00:00Z", "end": "2026-09-15T00:00:00Z",
-            "request_budget": 30, "byte_budget": 104857600,
+            "request_budget": 30, "byte_budget": 104857600, "runtime_budget_seconds": 600,
         },
     }
     old_proxy = os.environ.get("HTTPS_PROXY")
@@ -85,6 +85,7 @@ def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
     assert env["DATACENTER_DATA_MODE"] == "live"
     assert env["DATACENTER_PROVIDER_ALLOWLIST"] == "dukascopy"
     assert env["DATACENTER_PREVIEW_LIVE_REQUEST_BUDGET"] == "30"
+    assert env["DATACENTER_PREVIEW_LIVE_RUNTIME_BUDGET_SECONDS"] == "600"
     assert env["DATACENTER_PREVIEW_LIVE_BUDGET_PATH"].endswith("data/live-budget.json")
     assert env["HTTPS_PROXY"] == "http://proxy.example.invalid:8080"
 
@@ -93,7 +94,7 @@ def test_live_mode_requires_a_bounded_window():
     args = SimpleNamespace(
         command="start", mode="live", live_start="2026-09-14T00:00:00Z",
         live_end="2026-09-16T00:00:00Z", live_request_budget=30,
-        live_byte_budget_mib=100,
+        live_byte_budget_mib=100, live_runtime_budget_seconds=600,
     )
     with pytest.raises(dev_preview.PreviewError, match="no longer than 24 hours"):
         dev_preview.validate_mode_args(args)

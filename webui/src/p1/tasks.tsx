@@ -180,6 +180,24 @@ function CopyRequestButton({ request }: { request: string }) {
   );
 }
 
+function CopyValueButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      title={value}
+      className="mono inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      onClick={() =>
+        void navigator.clipboard.writeText(value).then(() => setCopied(true))
+      }
+    >
+      {value.slice(0, 12)}
+      <Copy className="size-3" />
+      <span className="sr-only">{copied ? "已复制" : `复制${label}`}</span>
+    </button>
+  );
+}
+
 function BarsTable({ rows }: { rows: Bar[] }) {
   if (!rows.length)
     return <p className="m-0 text-sm text-muted-foreground">尚未发布数据。</p>;
@@ -282,10 +300,19 @@ function CreateTaskSheet({
   const providers = capabilities?.providers ?? [];
   const selectedProvider =
     providers.find((item) => item.provider === draft.provider) ?? providers[0];
+  const provider = draft.provider || selectedProvider?.provider || "";
+  const rawTimeframe =
+    draft.rawTimeframe || selectedProvider?.maintenance_timeframes?.[0] || "";
+  const priceBasis = draft.priceBasis || selectedProvider?.price_bases?.[0] || "";
   const canDerive5m =
-    capabilities?.production?.outputs?.some(
-      (output) =>
-        output.dataset_id === "market_bars" && output.timeframes.includes("5m"),
+    capabilities?.recipes.some(
+      (recipe) =>
+        recipe.input_dataset === "provider_bars" &&
+        recipe.output_dataset === "market_bars" &&
+        recipe.source_timeframe === rawTimeframe &&
+        recipe.target_timeframe === "5m" &&
+        (!recipe.providers.length || recipe.providers.includes(provider)) &&
+        (!recipe.price_bases.length || recipe.price_bases.includes(priceBasis)),
     ) ?? false;
   const effectiveDraft = (): Draft => ({
     ...draft,
@@ -333,7 +360,6 @@ function CreateTaskSheet({
     },
     onError: setError,
   });
-  const provider = draft.provider || selectedProvider?.provider || "";
   const instruments = selectedProvider?.instruments ?? [];
   return (
     <Sheet
@@ -1082,7 +1108,13 @@ export function TaskDetailPage() {
                           {formatTime(step.window_start)} → {formatTime(step.window_end)}
                         </TableCell>
                         <TableCell><Badge variant="outline">{step.state}</Badge></TableCell>
-                        <TableCell className="mono text-xs">{step.run_id?.slice(0, 12) ?? "—"}</TableCell>
+                        <TableCell>
+                          {step.run_id ? (
+                            <CopyValueButton value={step.run_id} label="run ID" />
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -1106,7 +1138,13 @@ export function TaskDetailPage() {
               <div className="px-6">
                 {rawRequest && <CopyRequestButton request={`curl -sS '${window.location.origin}${rawRequest}'`} />}
               </div>
-              {readback.error ? <div className="px-6"><ErrorNotice error={readback.error} /></div> : <BarsTable rows={readback.data?.raw.items ?? []} />}
+              {readback.isLoading ? (
+                <div className="px-6 text-sm text-muted-foreground">正在载入原始数据…</div>
+              ) : readback.error ? (
+                <div className="px-6"><ErrorNotice error={readback.error} /></div>
+              ) : (
+                <BarsTable rows={readback.data?.raw.items ?? []} />
+              )}
             </CardContent>
           </Card>
           {payload.bar_timeframes?.includes("5m") && (
@@ -1121,7 +1159,13 @@ export function TaskDetailPage() {
                 <div className="px-6">
                   {derivedRequest && <CopyRequestButton request={`curl -sS '${window.location.origin}${derivedRequest}'`} />}
                 </div>
-                <BarsTable rows={readback.data?.derived?.items ?? []} />
+                {readback.isLoading ? (
+                  <div className="px-6 text-sm text-muted-foreground">正在载入派生数据…</div>
+                ) : readback.error ? (
+                  <div className="px-6"><ErrorNotice error={readback.error} /></div>
+                ) : (
+                  <BarsTable rows={readback.data?.derived?.items ?? []} />
+                )}
               </CardContent>
             </Card>
           )}

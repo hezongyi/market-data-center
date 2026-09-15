@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from data_center.instants import parse_instant
@@ -34,10 +35,15 @@ class BoundedLiveConnector:
                 state = json.load(handle)
             except (json.JSONDecodeError, ValueError):
                 state = {"requests_used": 0}
+            now = datetime.now(timezone.utc)
+            started_at = parse_instant(state.get("started_at")) if state.get("started_at") else now
+            if (now - started_at).total_seconds() >= self.settings.preview_live_runtime_budget_seconds:
+                raise ValueError("live preview runtime budget exhausted")
             used = int(state.get("requests_used") or 0)
             if used >= self.settings.preview_live_request_budget:
                 raise ValueError("live preview request budget exhausted")
             state["requests_used"] = used + 1
+            state["started_at"] = started_at.isoformat()
             handle.seek(0)
             handle.truncate()
             json.dump(state, handle, sort_keys=True)

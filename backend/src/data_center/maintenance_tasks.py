@@ -203,6 +203,7 @@ def _recipe_document(recipe) -> dict:
         "output_dataset": recipe.output_dataset,
         "source_timeframe": recipe.source_timeframe,
         "target_timeframe": recipe.target_timeframe,
+        "providers": list(recipe.allowed_providers),
         "price_bases": list(recipe.allowed_price_bases),
         "session_profile": recipe.session_profile,
         "materialization": recipe.materialization,

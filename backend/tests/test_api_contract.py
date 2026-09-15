@@ -199,6 +199,7 @@ def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path
         preview_live_start="2026-09-14T00:00:00Z",
         preview_live_end="2026-09-15T00:00:00Z",
         preview_live_request_budget=30, preview_live_byte_budget=104857600,
+        preview_live_runtime_budget_seconds=600,
         preview_live_budget_path=tmp_path / "live-budget.json",
     )))
     definition = {
@@ -209,9 +210,19 @@ def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path
         "schedule": {"schedule": "manual"},
     }
     assert client.post("/api/v1/production/plans", json={"definition": definition}).status_code == 200
+    created = client.post("/api/v1/production/tasks", json={
+        "task_id": "live-p1", "name": "live EURUSD", "desired_state": "paused",
+        "definition": definition,
+    })
+    assert created.status_code == 201
     definition["window_policy"] = {
         "mode": "continuous", "history_start": "2026-09-14T00:00:00Z",
     }
     refused = client.post("/api/v1/production/plans", json={"definition": definition})
     assert refused.status_code == 422
     assert refused.json()["errors"][0]["code"] == "live_scope_required"
+    refused_update = client.patch("/api/v1/production/tasks/live-p1", json={
+        "definition": definition, "expected_version": 1,
+    })
+    assert refused_update.status_code == 422
+    assert refused_update.json()["errors"][0]["code"] == "live_scope_required"

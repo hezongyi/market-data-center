@@ -27,6 +27,7 @@ def settings(tmp_path, *, budget=1):
         preview_live_end="2026-09-15T00:00:00Z",
         preview_live_request_budget=budget,
         preview_live_byte_budget=1024,
+        preview_live_runtime_budget_seconds=600,
         preview_live_budget_path=tmp_path / "live-budget.json",
     )
 
@@ -58,3 +59,20 @@ def test_live_connector_spends_each_request_once_and_stops_at_budget(tmp_path):
     with pytest.raises(ValueError, match="request budget exhausted"):
         connector.fetch_bars(job())
     assert len(real.jobs) == 1
+
+
+def test_live_connector_persists_and_enforces_its_runtime_budget(tmp_path):
+    import json
+
+    configured = settings(tmp_path)
+    configured.preview_live_runtime_budget_seconds = 1
+    configured.preview_live_budget_path.write_text(json.dumps({
+        "requests_used": 0,
+        "started_at": "2026-09-14T00:00:00+00:00",
+    }))
+    real = RecordingConnector()
+
+    with pytest.raises(ValueError, match="runtime budget exhausted"):
+        BoundedLiveConnector(real, configured).fetch_bars(job())
+
+    assert real.jobs == []

@@ -85,7 +85,7 @@ curl -sS 'http://127.0.0.1:20070/api/v1/market-bars/coverage?provider=dukascopy&
 
 fixture 模式保留 Dukascopy 业务身份，但 receipt 的 connector version 为
 `isolated-preview-fixture-v1`，不访问真实源。live 模式必须使用独立 preview id，
-固定 EURUSD 与不超过 24 小时的 UTC 窗口，并设置请求数和磁盘预算；fixture 与
+固定 EURUSD 与不超过 24 小时的 UTC 窗口，并设置请求数、磁盘和运行时预算；fixture 与
 live 数据根不能混用。
 
 ---

@@ -370,6 +370,8 @@ def process_environment(root: Path, metadata: dict) -> dict[str, str]:
             "DATACENTER_PREVIEW_LIVE_END": limits["end"],
             "DATACENTER_PREVIEW_LIVE_REQUEST_BUDGET": str(limits["request_budget"]),
             "DATACENTER_PREVIEW_LIVE_BYTE_BUDGET": str(limits["byte_budget"]),
+            "DATACENTER_PREVIEW_LIVE_RUNTIME_BUDGET_SECONDS": str(
+                limits["runtime_budget_seconds"]),
             "DATACENTER_PREVIEW_LIVE_BUDGET_PATH": str(root / "data/live-budget.json"),
             "DATACENTER_SCHEDULER_STEP_BUDGET": "32",
         })
@@ -575,7 +577,8 @@ def print_status(payload: dict, *, as_json: bool = False) -> None:
         limits = payload["live_limits"]
         print(
             f"Live limits: EURUSD {limits['start']} -> {limits['end']}; "
-            f"requests={limits['request_budget']}; bytes={limits['byte_budget']}"
+            f"requests={limits['request_budget']}; bytes={limits['byte_budget']}; "
+            f"runtime_seconds={limits['runtime_budget_seconds']}"
         )
     print(f"Logs: {payload['logs']}")
     for name, record in payload["processes"].items():
@@ -635,6 +638,7 @@ def start(args, root: Path, metadata_path: Path) -> int:
             "end": args.live_end,
             "request_budget": args.live_request_budget,
             "byte_budget": args.live_byte_budget_mib * 1024 * 1024,
+            "runtime_budget_seconds": args.live_runtime_budget_seconds,
         }
     prepare_preview_directories(root)
     if root.resolve() != Path(metadata["root"]):
@@ -737,6 +741,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--live-end", help="live Dukascopy UTC window end (ISO-8601)")
     parser.add_argument("--live-request-budget", type=int, default=30)
     parser.add_argument("--live-byte-budget-mib", type=int, default=100)
+    parser.add_argument("--live-runtime-budget-seconds", type=int, default=600)
     parser.add_argument(
         "--inherit-proxy", action="store_true",
         help="explicitly pass standard proxy variables to a live preview without recording values",
@@ -773,6 +778,8 @@ def validate_mode_args(args) -> None:
         raise PreviewError("live request budget must be between 1 and 100")
     if not 1 <= args.live_byte_budget_mib <= 1024:
         raise PreviewError("live disk budget must be between 1 and 1024 MiB")
+    if not 1 <= getattr(args, "live_runtime_budget_seconds", 600) <= 3600:
+        raise PreviewError("live runtime budget must be between 1 and 3600 seconds")
 
 
 def main(argv: list[str] | None = None) -> int:

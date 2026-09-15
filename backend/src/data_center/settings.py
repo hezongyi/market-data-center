@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     preview_live_end: str | None = None
     preview_live_request_budget: int = 0
     preview_live_byte_budget: int = 0
+    preview_live_runtime_budget_seconds: int = 0
     preview_live_budget_path: Path | None = None
     source_commit: str | None = None
     source_dirty: bool = False
@@ -86,16 +87,18 @@ class Settings(BaseSettings):
             raise ValueError("preview_symbols is not allowed with a deployment manifest")
         live_controls = (
             self.preview_live_start, self.preview_live_end, self.preview_live_request_budget,
-            self.preview_live_byte_budget, self.preview_live_budget_path,
+            self.preview_live_byte_budget, self.preview_live_runtime_budget_seconds,
+            self.preview_live_budget_path,
         )
         if self.deployment_manifest and any(live_controls):
             raise ValueError("preview live controls are not allowed with a deployment manifest")
         if self.data_mode == "live" and (
             not self.preview_live_start or not self.preview_live_end
             or self.preview_live_request_budget < 1 or self.preview_live_byte_budget < 1
+            or self.preview_live_runtime_budget_seconds < 1
             or self.preview_live_budget_path is None
         ):
-            raise ValueError("live preview requires UTC bounds and positive request/disk budgets")
+            raise ValueError("live preview requires UTC bounds and positive request/disk/runtime budgets")
         return self
 
     def capacity_policy(self):

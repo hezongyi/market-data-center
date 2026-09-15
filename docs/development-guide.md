@@ -150,11 +150,13 @@ DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
 DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
   --id p2-eurusd-live --base /home/quant/repos/.preview --mode live \
   --live-start 2026-09-14T00:00:00Z --live-end 2026-09-15T00:00:00Z \
-  --live-request-budget 30 --live-byte-budget-mib 100 --inherit-proxy
+  --live-request-budget 30 --live-byte-budget-mib 100 \
+  --live-runtime-budget-seconds 600 --inherit-proxy
 ```
 
-live connector 在发出请求前核对 provider、EURUSD、窗口、累计请求数和 canonical
-字节数；超限立即拒绝。API 同时只接受窗口范围内的 fixed/manual 任务。默认
+live connector 在发出请求前核对 provider、EURUSD、窗口、累计请求数、持久化运行时
+预算和 canonical 字节数；超限立即拒绝。磁盘检查发生在请求前，因此最多可能超出
+单个已限制请求的落盘量，下一次拉取会停止。API 同时只接受窗口范围内的 fixed/manual 任务。默认
 fixture 与 live 都关闭告警外发、使用独立 auth/ledger/canonical/evidence/backup；
 不得省略 `--base` 操作上述保留预览。`--inherit-proxy` 仅在 live 显式选择时
 传入标准代理环境变量，代理值不写 preview metadata、状态输出或文档。

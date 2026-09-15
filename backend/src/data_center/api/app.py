@@ -718,7 +718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             command = "update"
         if command == "update":
-            require_allowed_provider((payload.get("definition") or {}).get("provider"))
+            require_preview_definition(payload.get("definition") or {})
         try:
             task = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
