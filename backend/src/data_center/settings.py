@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "mdc_session"
     environment_name: str = "development"
     data_mode: str | None = None
+    # Optional scope guard for isolated previews. Production deployments must
+    # express rollout scope through their governed plan registry instead.
+    preview_symbols: str | None = None
+    preview_live_start: str | None = None
+    preview_live_end: str | None = None
+    preview_live_request_budget: int = 0
+    preview_live_byte_budget: int = 0
+    preview_live_budget_path: Path | None = None
     source_commit: str | None = None
     source_dirty: bool = False
     webui_dist: Path | None = None
@@ -74,6 +82,20 @@ class Settings(BaseSettings):
             raise ValueError("capacity_fixed_free_ratio must be between 0 and 1")
         if not self.auth_cookie_name or not self.auth_cookie_name.replace("_", "").replace("-", "").isalnum():
             raise ValueError("auth_cookie_name must contain only letters, numbers, underscores or hyphens")
+        if self.deployment_manifest and self.preview_symbols:
+            raise ValueError("preview_symbols is not allowed with a deployment manifest")
+        live_controls = (
+            self.preview_live_start, self.preview_live_end, self.preview_live_request_budget,
+            self.preview_live_byte_budget, self.preview_live_budget_path,
+        )
+        if self.deployment_manifest and any(live_controls):
+            raise ValueError("preview live controls are not allowed with a deployment manifest")
+        if self.data_mode == "live" and (
+            not self.preview_live_start or not self.preview_live_end
+            or self.preview_live_request_budget < 1 or self.preview_live_byte_budget < 1
+            or self.preview_live_budget_path is None
+        ):
+            raise ValueError("live preview requires UTC bounds and positive request/disk budgets")
         return self
 
     def capacity_policy(self):
@@ -117,3 +139,16 @@ class Settings(BaseSettings):
     def provider_allowed(self, provider: str | None) -> bool:
         allowed = self.provider_allowlist()
         return not allowed or provider in allowed
+
+    def preview_symbol_list(self) -> tuple[str, ...]:
+        import re
+
+        return tuple(
+            symbol.upper()
+            for symbol in re.split(r"[\s,]+", self.preview_symbols or "")
+            if symbol.strip()
+        )
+
+    def preview_symbol_allowed(self, symbol: str | None) -> bool:
+        allowed = self.preview_symbol_list()
+        return not allowed or bool(symbol and symbol.upper() in allowed)

@@ -582,6 +582,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "message": f"provider disabled in this environment: {provider}",
             })
 
+    def require_allowed_symbol(symbol: str | None) -> None:
+        if not config.preview_symbol_allowed(symbol):
+            raise HTTPException(status_code=422, detail={
+                "code": "symbol_disabled",
+                "message": f"symbol disabled in this preview: {symbol}",
+            })
+
+    def require_preview_definition(definition: dict) -> None:
+        require_allowed_provider(definition.get("provider"))
+        require_allowed_symbol(definition.get("symbol"))
+        if config.data_mode != "live":
+            return
+        window = definition.get("window_policy") or {}
+        schedule = definition.get("schedule") or {}
+        if window.get("mode") != "fixed" or schedule.get("schedule") != "manual":
+            raise HTTPException(status_code=422, detail={
+                "code": "live_scope_required",
+                "message": "live preview tasks require a fixed window and manual schedule",
+            })
+        try:
+            start, end = parse_instant(window.get("start")), parse_instant(window.get("end"))
+            lower = parse_instant(config.preview_live_start)
+            upper = parse_instant(config.preview_live_end)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={
+                "code": "live_scope_required", "message": "live preview bounds are invalid",
+            }) from exc
+        if start < lower or end > upper:
+            raise HTTPException(status_code=422, detail={
+                "code": "live_scope_required",
+                "message": "task window is outside this live preview's approved UTC bounds",
+            })
+
     @app.middleware("http")
     async def preview_provider_boundary(request: Request, call_next):
         if config.provider_allowlist() and request.method in {"POST", "PUT", "PATCH"}:
@@ -594,12 +627,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     payload = {}
                 definition = payload.get("definition") if isinstance(payload, dict) else None
                 provider = (definition or payload).get("provider") if isinstance(definition or payload, dict) else None
+                symbol = (definition or payload).get("symbol") if isinstance(definition or payload, dict) else None
                 if provider and not config.provider_allowed(provider):
                     return JSONResponse(status_code=422, content={
                         "data": None,
                         "meta": {"request_id": request.headers.get("x-request-id"), "schema_version": "v1"},
                         "errors": [{"code": "provider_disabled",
                                     "message": f"provider disabled in this environment: {provider}"}],
+                    })
+                if symbol and not config.preview_symbol_allowed(symbol):
+                    return JSONResponse(status_code=422, content={
+                        "data": None,
+                        "meta": {"request_id": request.headers.get("x-request-id"), "schema_version": "v1"},
+                        "errors": [{"code": "symbol_disabled",
+                                    "message": f"symbol disabled in this preview: {symbol}"}],
                     })
         return await call_next(request)
 
@@ -629,7 +670,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def production_task_create(payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        require_allowed_provider((payload.get("definition") or {}).get("provider"))
+        require_preview_definition(payload.get("definition") or {})
         actor = operator_identity(request, config)
         try:
             task = production_tasks_service.create(
@@ -654,7 +695,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def production_plan_preview(payload: dict) -> dict:
         """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
         definition = payload.get("definition") or payload
-        require_allowed_provider(definition.get("provider"))
+        require_preview_definition(definition)
         return api_envelope(production_tasks_service.preview(definition))
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")

@@ -321,6 +321,7 @@ def terminate(metadata: dict) -> list[str]:
 def process_environment(root: Path, metadata: dict) -> dict[str, str]:
     identity = metadata["identity"]
     ports = metadata["ports"]
+    mode = metadata.get("mode", "fixture")
     cookie_digest = hashlib.sha256(
         f"{REPO.resolve()}:{metadata['id']}".encode()
     ).hexdigest()[:16]
@@ -341,20 +342,33 @@ def process_environment(root: Path, metadata: dict) -> dict[str, str]:
         "DATACENTER_AUTH_COOKIE_SECURE": "false",
         "DATACENTER_AUTH_COOKIE_NAME": f"mdc_preview_{cookie_digest}",
         "DATACENTER_ALERTS_ENABLED": "false",
-        "DATACENTER_PROVIDER_ALLOWLIST": "fixture",
+        # Fixture keeps the business identity without network access; live is
+        # narrowed to the bounded Dukascopy wrapper below.
+        "DATACENTER_PROVIDER_ALLOWLIST": "dukascopy,fixture" if mode == "fixture" else "dukascopy",
         "DATACENTER_ENVIRONMENT_NAME": f"preview:{metadata['id']}",
-        "DATACENTER_DATA_MODE": "fixture",
+        "DATACENTER_DATA_MODE": mode,
+        "DATACENTER_PREVIEW_SYMBOLS": "EURUSD",
         "DATACENTER_SOURCE_COMMIT": identity["commit"],
         "DATACENTER_SOURCE_DIRTY": str(identity["dirty"]).lower(),
         "DATACENTER_SCHEDULER_DISPATCH_ENABLED": "true",
         "DATACENTER_SCHEDULER_INSTANCE_ID": f"preview-{metadata['id']}",
         "VITE_API_PROXY_TARGET": f"http://127.0.0.1:{ports['api']}",
         "VITE_PREVIEW_ID": metadata["id"],
-        "VITE_PREVIEW_DATA_MODE": "fixture",
+        "VITE_PREVIEW_DATA_MODE": mode,
         "VITE_PREVIEW_COMMIT": identity["commit"],
         "VITE_PREVIEW_DIRTY": str(identity["dirty"]).lower(),
         "NODE_ENV": "development",
     }
+    if mode == "live":
+        limits = metadata["live_limits"]
+        env.update({
+            "DATACENTER_PREVIEW_LIVE_START": limits["start"],
+            "DATACENTER_PREVIEW_LIVE_END": limits["end"],
+            "DATACENTER_PREVIEW_LIVE_REQUEST_BUDGET": str(limits["request_budget"]),
+            "DATACENTER_PREVIEW_LIVE_BYTE_BUDGET": str(limits["byte_budget"]),
+            "DATACENTER_PREVIEW_LIVE_BUDGET_PATH": str(root / "data/live-budget.json"),
+            "DATACENTER_SCHEDULER_STEP_BUDGET": "32",
+        })
     return env
 
 
@@ -452,7 +466,7 @@ def api_identity_matches(payload: dict | None, metadata: dict) -> bool:
         data.get("source_commit") == identity.get("commit")
         and data.get("source_dirty") is identity.get("dirty")
         and data.get("environment") == f"preview:{metadata.get('id')}"
-        and data.get("data_mode") == "fixture"
+        and data.get("data_mode") == metadata.get("mode", "fixture")
     )
 
 
@@ -517,7 +531,8 @@ def status_payload(root: Path, metadata: dict) -> dict:
         "api_identity": (api_identity or {}).get("data"),
         "recorded_identity": metadata.get("identity"),
         "actual_identity": actual,
-        "mode": "fixture",
+        "mode": metadata.get("mode", "fixture"),
+        "live_limits": metadata.get("live_limits"),
         "scheduler": dispatch,
         "ui_url": f"http://127.0.0.1:{metadata['ports']['ui']}",
         "api_docs_url": f"http://127.0.0.1:{metadata['ports']['api']}/docs",
@@ -552,6 +567,12 @@ def print_status(payload: dict, *, as_json: bool = False) -> None:
         + ("on" if dispatch["effective_dispatch"] else "off")
     )
     print(f"Data: {payload['data_root']} (preserved by stop)")
+    if payload.get("live_limits"):
+        limits = payload["live_limits"]
+        print(
+            f"Live limits: EURUSD {limits['start']} -> {limits['end']}; "
+            f"requests={limits['request_budget']}; bytes={limits['byte_budget']}"
+        )
     print(f"Logs: {payload['logs']}")
     for name, record in payload["processes"].items():
         print(f"  {name}: pid={record['pid']} running={str(record['running']).lower()}")
@@ -564,6 +585,10 @@ def start(args, root: Path, metadata_path: Path) -> int:
     old = read_json(metadata_path)
     current = checkout_identity()
     if old:
+        if old.get("mode", "fixture") != getattr(args, "mode", "fixture"):
+            raise PreviewError(
+                "preview data mode is immutable; use a new preview id to avoid mixing fixture and live data"
+            )
         old_status = status_payload(root, old)
         if old_status["state"] == "running":
             print_status(old_status, as_json=args.json)
@@ -591,6 +616,7 @@ def start(args, root: Path, metadata_path: Path) -> int:
         "id": args.id,
         "root": str(root),
         "identity": current,
+        "mode": getattr(args, "mode", "fixture"),
         "ports": ports,
         "token": secrets.token_urlsafe(32),
         "created_at": created_at,
@@ -598,6 +624,13 @@ def start(args, root: Path, metadata_path: Path) -> int:
         "stopped_at": None,
         "processes": {},
     }
+    if getattr(args, "mode", "fixture") == "live":
+        metadata["live_limits"] = {
+            "start": args.live_start,
+            "end": args.live_end,
+            "request_budget": args.live_request_budget,
+            "byte_budget": args.live_byte_budget_mib * 1024 * 1024,
+        }
     prepare_preview_directories(root)
     if root.resolve() != Path(metadata["root"]):
         raise PreviewError("preview root changed while it was being prepared")
@@ -694,6 +727,11 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("command", choices=("start", "status", "stop"))
     parser.add_argument("--id", required=True)
     parser.add_argument("--base", help="controlled parent directory for preview state")
+    parser.add_argument("--mode", choices=("fixture", "live"), default="fixture")
+    parser.add_argument("--live-start", help="live Dukascopy UTC window start (ISO-8601)")
+    parser.add_argument("--live-end", help="live Dukascopy UTC window end (ISO-8601)")
+    parser.add_argument("--live-request-budget", type=int, default=30)
+    parser.add_argument("--live-byte-budget-mib", type=int, default=100)
     parser.add_argument(
         "--python", help="Python executable with locked backend dependencies"
     )
@@ -706,8 +744,28 @@ def parse_args(argv: list[str] | None = None):
     return parser.parse_args(argv)
 
 
+def validate_mode_args(args) -> None:
+    if args.command != "start" or args.mode == "fixture":
+        return
+    if not args.live_start or not args.live_end:
+        raise PreviewError("live mode requires --live-start and --live-end")
+    try:
+        from data_center.instants import parse_instant
+
+        start, end = parse_instant(args.live_start), parse_instant(args.live_end)
+    except (TypeError, ValueError) as exc:
+        raise PreviewError("live bounds must be timezone-aware ISO-8601 timestamps") from exc
+    if end <= start or (end - start).total_seconds() > 86400:
+        raise PreviewError("live window must be non-empty and no longer than 24 hours")
+    if not 1 <= args.live_request_budget <= 100:
+        raise PreviewError("live request budget must be between 1 and 100")
+    if not 1 <= args.live_byte_budget_mib <= 1024:
+        raise PreviewError("live disk budget must be between 1 and 1024 MiB")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    validate_mode_args(args)
     validate_id(args.id)
     root = preview_root(args.id, args.base)
     root.parent.mkdir(parents=True, exist_ok=True)

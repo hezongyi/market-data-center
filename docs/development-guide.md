@@ -138,6 +138,26 @@ DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
   --id p1-eurusd --base /home/quant/repos/.preview --update
 ```
 
+P2 开发预览使用独立 id `p2-eurusd`，不覆盖 P0/P1 数据。fixture 模式把
+Dukascopy/EURUSD 业务身份路由到确定性的本地分钟 adapter，receipt 明确记录
+`isolated-preview-fixture-v1`；它不访问 provider。P2 live 验收另用新 id，模式
+一经创建不可切换，且命令必须显式给出不超过 24 小时的 UTC 窗口和预算：
+
+```bash
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p2-eurusd --base /home/quant/repos/.preview
+
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p2-eurusd-live --base /home/quant/repos/.preview --mode live \
+  --live-start 2026-09-14T00:00:00Z --live-end 2026-09-15T00:00:00Z \
+  --live-request-budget 30 --live-byte-budget-mib 100
+```
+
+live connector 在发出请求前核对 provider、EURUSD、窗口、累计请求数和 canonical
+字节数；超限立即拒绝。API 同时只接受窗口范围内的 fixed/manual 任务。默认
+fixture 与 live 都关闭告警外发、使用独立 auth/ledger/canonical/evidence/backup；
+不得省略 `--base` 操作上述保留预览。
+
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。

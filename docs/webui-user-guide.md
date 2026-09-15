@@ -4,6 +4,11 @@
 编写依据：`webui/src` 源码、`docs/api-and-webui-contract.md`，以及 2026-09-13 对生产实例的实测调用。
 本文只描述界面上真实存在的按钮、字段和状态；凡未在代码中出现的功能，本文不会声称存在。
 
+> 开发预览补充（P2，尚未生产发布）：新主线入口的“数据任务”页支持从
+> capabilities 创建 EURUSD/BID/1m→5m 计划、固定窗口预览、启用并立即运行、
+> execution/step 跟踪以及 raw/derived 同页读回。以下 §1.4 只适用于明确标识为
+> fixture 或 live 的隔离预览，不改变本文记录的生产版本事实。
+
 ---
 
 ## 0. 先回答三个最常见的问题
@@ -52,6 +57,36 @@
 1. 左侧栏底部：`API ready`（不是 unavailable）、`Snapshot fresh`、以及 **版本号 · deployment id**（应为 `0.4.1 · 49ddbc55361d-bd11ad0e`）。
 2. 顶部右侧容量徽章：`ok` / `warning` / `critical`。
 3. 首页 `Capacity …` 横幅与四个指标卡是否出现异常红色。
+
+### 1.4 P2 隔离预览：EURUSD 手动闭环
+
+1. 打开预览卡给出的 UI URL，首次使用以 `admin` 设置至少 12 位密码并登录。
+2. 进入“数据任务”→“创建任务”。数据源、品种、原始周期和价格基准全部来自
+   `GET /api/v1/capabilities`；P2 预览只开放 Dukascopy/EURUSD/1m/BID。
+3. 保持“固定窗口”，选择最近一个完整交易日，勾选“派生 5m 数据”，先“校验
+   任务”，确认无冲突和字段错误后保存。
+4. 在详情页点击“启用并立即运行”。页面每 2.5 秒刷新 execution、raw/derive
+   steps 和数据样本；只有 execution 终态及数据读回才代表闭环完成。
+5. raw 和 5m 卡片各有“复制 HTTP 请求”。同源只读例子如下（URL、任务和时间
+   范围以实际预览为准）：
+
+```bash
+curl -sS 'http://127.0.0.1:20070/api/v1/capabilities'
+curl -sS 'http://127.0.0.1:20070/api/v1/production/tasks/<task-id>'
+curl -sS 'http://127.0.0.1:20070/api/v1/production/tasks/<task-id>/executions?page_size=10'
+curl -sS 'http://127.0.0.1:20070/api/v1/production/executions/<execution-id>/steps'
+curl -sS 'http://127.0.0.1:20070/api/v1/runs/<run-id>/detail'
+curl -sS 'http://127.0.0.1:20070/api/v1/runs/<run-id>/manifest'
+curl -sS 'http://127.0.0.1:20070/api/v1/bars?provider=dukascopy&symbol=EURUSD&timeframe=1m&page_size=100'
+curl -sS 'http://127.0.0.1:20070/api/v1/provider-bars/coverage?provider=dukascopy&symbol=EURUSD&timeframe=1m&start=<UTC>&end=<UTC>'
+curl -sS 'http://127.0.0.1:20070/api/v1/market-bars?provider=dukascopy&symbol=EURUSD&timeframe=5m&price_basis=bid&recipe_id=utc-24x7-1m-to-5m-ohlcv&recipe_version=1&page_size=100'
+curl -sS 'http://127.0.0.1:20070/api/v1/market-bars/coverage?provider=dukascopy&symbol=EURUSD&timeframe=5m&price_basis=bid&recipe_id=utc-24x7-1m-to-5m-ohlcv&recipe_version=1&start=<UTC>&end=<UTC>'
+```
+
+fixture 模式保留 Dukascopy 业务身份，但 receipt 的 connector version 为
+`isolated-preview-fixture-v1`，不访问真实源。live 模式必须使用独立 preview id，
+固定 EURUSD 与不超过 24 小时的 UTC 窗口，并设置请求数和磁盘预算；fixture 与
+live 数据根不能混用。
 
 ---
 

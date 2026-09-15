@@ -1672,7 +1672,15 @@ class RunLedger:
                     payload = {**payload, "plan_id": row[0], "execution_id": execution_id,
                                "step_id": step_id, "owner_plan_id": row[0],
                                "owner_execution_id": execution_id, "owner_step_id": step_id}
-                    run_ids.append(self._insert_run_and_job(tx, payload, stamp))
+                    run_id = self._insert_run_and_job(tx, payload, stamp)
+                    run_ids.append(run_id)
+                    # A production step currently owns one bounded run. Keep
+                    # that relation on the step read model so UI/API consumers
+                    # can follow it to the receipt, manifest and lineage.
+                    tx.execute(
+                        "update production_steps set run_id=coalesce(run_id, ?) where step_id=?",
+                        (run_id, step_id),
+                    )
                 if step.get("state") == "blocked":
                     tx.execute("update production_steps set state='blocked', block_reason=? where step_id=?",
                                (step.get("block_reason"), step_id))

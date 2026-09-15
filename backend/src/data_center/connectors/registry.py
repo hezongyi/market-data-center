@@ -25,8 +25,21 @@ ECONOMIC_CONNECTORS = {"fred": FredConnector()}
 def get_connector(provider: str) -> MarketConnector:
     from data_center.settings import Settings
 
-    if not Settings().provider_allowed(provider):
+    settings = Settings()
+    if not settings.provider_allowed(provider):
         raise ValueError(f"provider disabled in this environment: {provider}")
+    if settings.data_mode == "fixture" and provider != "fixture":
+        if settings.deployment_manifest:
+            raise ValueError("fixture connector substitution is not allowed in a deployment")
+        from data_center.connectors.preview_fixture import PreviewFixtureConnector
+
+        return PreviewFixtureConnector()
+    if settings.data_mode == "live":
+        if settings.deployment_manifest or provider != "dukascopy":
+            raise ValueError("live preview only allows the bounded Dukascopy connector")
+        from data_center.connectors.bounded_live import BoundedLiveConnector
+
+        return BoundedLiveConnector(CONNECTORS[provider], settings)
     try:
         return CONNECTORS[provider]
     except KeyError as exc:

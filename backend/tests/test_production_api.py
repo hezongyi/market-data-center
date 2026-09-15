@@ -10,12 +10,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi.testclient import TestClient
-
 from data_center.api.app import create_app
 from data_center.production_tasks import ProductionTasks
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
+from fastapi.testclient import TestClient
 
 KEY = "production-api-key"
 NOW = "2026-09-14T12:00:00+00:00"
@@ -167,6 +166,32 @@ def test_pause_resume_and_run_now_follow_the_plan_state(client, config):
     assert [item["execution_id"] for item in history.json()["data"]] == [execution_id]
     ledger = RunLedger(config.ledger_path)
     assert ledger.get_production_execution(execution_id)["trigger_source"] == "manual"
+
+
+def test_execution_steps_link_to_their_run_read_model(client, config):
+    create_plan(client, desired_state="enabled")
+    started = client.post(
+        "/api/v1/production/tasks/p1/actions",
+        json={"command": "run_now"},
+        headers=auth(),
+    ).json()["data"]
+    ledger = RunLedger(config.ledger_path)
+    task = ledger.get_production_task("p1")
+    service = ProductionTasks(ledger, canonical_root=config.canonical_root)
+    service.dispatch(
+        task=task,
+        execution=ledger.get_production_execution(started["execution_id"]),
+        now=datetime.fromisoformat(NOW),
+        step_budget=1,
+    )
+    response = client.get(
+        f"/api/v1/production/executions/{started['execution_id']}/steps",
+        headers=auth(),
+    )
+    step = response.json()["data"][0]
+    assert response.status_code == 200
+    assert step["run_id"]
+    assert ledger.get(step["run_id"])["step_id"] == step["step_id"]
 
 
 def test_edit_requires_expected_version_and_rejects_a_stale_one(client):

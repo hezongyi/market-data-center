@@ -1,9 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi.testclient import TestClient
-
 from data_center.api.app import create_app
 from data_center.settings import Settings
+from fastapi.testclient import TestClient
 
 
 def test_runs_and_quality_contract(tmp_path) -> None:
@@ -169,3 +168,49 @@ def test_fixture_preview_hides_and_rejects_real_providers(tmp_path, monkeypatch)
     response = client.post("/api/v1/maintenance/plans", json=request)
     assert response.status_code == 422
     assert response.json()["errors"][0]["code"] == "provider_disabled"
+
+
+def test_preview_symbol_scope_filters_capabilities_and_rejects_writes(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    client = TestClient(create_app(Settings(
+        canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+        evidence_root=tmp_path / "evidence", data_mode="fixture",
+        preview_symbols="EURUSD",
+    )))
+    providers = client.get("/api/v1/capabilities").json()["data"]["providers"]
+    dukascopy = next(item for item in providers if item["provider"] == "dukascopy")
+    assert [item["symbol"] for item in dukascopy["instruments"]] == ["EURUSD"]
+    response = client.post("/api/v1/production/plans", json={"definition": {
+        "provider": "dukascopy", "symbol": "GBPUSD", "raw_timeframe": "1m",
+        "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "continuous", "history_start": "2026-09-14T00:00:00Z"},
+        "schedule": {"schedule": "manual"},
+    }})
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "symbol_disabled"
+
+
+def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy")
+    client = TestClient(create_app(Settings(
+        canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+        evidence_root=tmp_path / "evidence", data_mode="live", preview_symbols="EURUSD",
+        preview_live_start="2026-09-14T00:00:00Z",
+        preview_live_end="2026-09-15T00:00:00Z",
+        preview_live_request_budget=30, preview_live_byte_budget=104857600,
+        preview_live_budget_path=tmp_path / "live-budget.json",
+    )))
+    definition = {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m",
+        "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "fixed", "start": "2026-09-14T00:00:00Z",
+                          "end": "2026-09-15T00:00:00Z"},
+        "schedule": {"schedule": "manual"},
+    }
+    assert client.post("/api/v1/production/plans", json={"definition": definition}).status_code == 200
+    definition["window_policy"] = {
+        "mode": "continuous", "history_start": "2026-09-14T00:00:00Z",
+    }
+    refused = client.post("/api/v1/production/plans", json={"definition": definition})
+    assert refused.status_code == 422
+    assert refused.json()["errors"][0]["code"] == "live_scope_required"

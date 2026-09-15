@@ -54,11 +54,39 @@ def test_preview_environment_is_explicit_and_fixture_only(tmp_path):
         "identity": {"commit": "a" * 40, "dirty": False},
     }
     env = dev_preview.process_environment(tmp_path / "alpha", metadata)
-    assert env["DATACENTER_PROVIDER_ALLOWLIST"] == "fixture"
+    assert env["DATACENTER_PROVIDER_ALLOWLIST"] == "dukascopy,fixture"
+    assert env["DATACENTER_PREVIEW_SYMBOLS"] == "EURUSD"
     assert env["DATACENTER_ALERTS_ENABLED"] == "false"
     assert env["DATACENTER_AUTH_COOKIE_NAME"].startswith("mdc_preview_")
     assert env["VITE_API_PROXY_TARGET"] == "http://127.0.0.1:21000"
     assert "DATACENTER_DEPLOYMENT_MANIFEST" not in env
+
+
+def test_live_preview_environment_records_explicit_bounds_and_budgets(tmp_path):
+    metadata = {
+        "id": "live-one", "mode": "live", "token": "preview-token",
+        "ports": {"api": 21000, "ui": 21001},
+        "identity": {"commit": "a" * 40, "dirty": False},
+        "live_limits": {
+            "start": "2026-09-14T00:00:00Z", "end": "2026-09-15T00:00:00Z",
+            "request_budget": 30, "byte_budget": 104857600,
+        },
+    }
+    env = dev_preview.process_environment(tmp_path / "live-one", metadata)
+    assert env["DATACENTER_DATA_MODE"] == "live"
+    assert env["DATACENTER_PROVIDER_ALLOWLIST"] == "dukascopy"
+    assert env["DATACENTER_PREVIEW_LIVE_REQUEST_BUDGET"] == "30"
+    assert env["DATACENTER_PREVIEW_LIVE_BUDGET_PATH"].endswith("data/live-budget.json")
+
+
+def test_live_mode_requires_a_bounded_window():
+    args = SimpleNamespace(
+        command="start", mode="live", live_start="2026-09-14T00:00:00Z",
+        live_end="2026-09-16T00:00:00Z", live_request_budget=30,
+        live_byte_budget_mib=100,
+    )
+    with pytest.raises(dev_preview.PreviewError, match="no longer than 24 hours"):
+        dev_preview.validate_mode_args(args)
 
 
 def test_preview_api_identity_must_match_recorded_checkout():
