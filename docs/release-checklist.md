@@ -102,6 +102,16 @@ The five delivery layers were merged as protected-main commits `5a64cc1` (#110),
 10/10 checks). The ledger schema moves to 5 in this release; migration, drill and rollback statements are in
 `docs/releases/v0.6.0.md`.
 
+## v0.6.1 protected-main evidence
+
+The three fixes were merged as protected-main commits `bfdac89` (takeover evidence, PR #116), `e25c268` (expected
+empty windows, PR #117) and `7291a75` (grid-aligned coverage scans, PR #118), each with a green hosted `verify`
+(Python 3.10/3.11/3.12 and the Node 22 browser job). Local unified CI on the release branch passed with
+`software_version=0.6.1`: 468 passed / 5 skipped, Ruff, dependency lock and compatibility checks, production-env,
+secret scan, operations acceptance, Web build, browser acceptance (66 checks at 1440×1000 and 390×844) and service
+acceptance. The ledger schema stays at 5, so no migration or restore is involved. Statements, measurements and
+rollback notes are in `docs/releases/v0.6.1.md`.
+
 ## Release procedure
 
 1. Merge through a protected PR; never release an unmerged feature commit.
