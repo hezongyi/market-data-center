@@ -123,7 +123,6 @@ Receipts for every drill stay under the evidence root (`operations/scheduler_tic
 `operations/deployment_runtime_failure` for refused starts). Never repair a scheduler by editing the checkout,
 the ledger, or a unit file. A start that cannot prove its release identity exits 3 *before* the ledger is opened, so a
 refused release leaves the ledger untouched.
-the ledger, or a unit file.
 
 ## Legacy timer takeover (prepared, operator-executed)
 
@@ -142,18 +141,41 @@ systemctl --user disable --now market-data-center-1m-maintenance.timer marketlab
 PYTHONPATH=backend/src python -m data_center.takeover verify --inventory /path/to/host-units.json
 ```
 
+`plan`, `import` and `verify` all take `--price-basis` (default `bid`): an entry whose instruments are published
+on another basis (`raw` for binance) needs it in every step, or the plans a step reports and the plans an import
+writes disagree. `--unit-root` defaults to the repository's units resolved from the deployment manifest or from the
+module location; when neither resolves, the command exits `2` with `declared_unit_root_not_found` instead of
+reporting every host unit as host-only.
+
 What the tool guarantees, and what the operator still has to decide:
 
 - **The host is the authority.** `plan` reads `systemctl --user list-unit-files` (or a JSON inventory) and marks
   entries that exist only on the machine as `host_only`; a unit installed from an older branch is captured
   instead of assumed away. An unreadable host reports `unknown`, never "not installed".
+  `installed_not_declared` lists platform-named units that this repository's own unit files do not declare, and
+  the governance timers (`GOVERNANCE_UNITS`) are never reported as undeclared.
 - **The scope never widens.** A raw entry imports raw output only, a derived entry imports the recipes it names,
   and the cadence comes from the timer (`OnUnitInactiveSec=15min` becomes a `fixed_delay` plan of 900 seconds).
   Two entries for one instrument become **one** plan, because raw and derived share an ownership scope.
+- **A wrapper is followed, not guessed.** When a unit runs a wrapper script (the macro-market-lab entry runs two),
+  the tool follows `exec`/`source` through the chain, resolving only the wrapper's own literal variables, and
+  reports the runner's own command with its provider, symbols and recipes. A level it cannot resolve stays
+  `unmappable` and the operator supplies the entry explicitly in the inventory
+  (`exec_start`, optional `runner_module`, optional `price_basis`).
+- **The provider-agnostic allowlist is reported, never narrowed silently.** Each comparison row carries
+  `symbols` (what the entry's own allowlist named) next to `importable_symbols`, `unapproved_symbols` and
+  `unserved_symbols`; a unit that cannot import everything it named is listed in `partially_served`. A symbol
+  another provider publishes is evidence for the operator, not a silent drop and not a plan of this provider.
+- **A daily plan is verified by its wall clock.** `verify` compares the full schedule shape: kind, interval, and
+  for a `daily` plan the timezone and local time. A zone-less `OnCalendar` is reported with
+  `calendar_zone_assumed: true`, because systemd's default is the machine's local zone.
 - **Import is not enablement.** Every imported plan is created `paused`; enabling is a separate action, and the
   canary should be one or two plans first (§7.2 step 5).
 - **`verify` is the gate for the next step.** It fails while any legacy unit is still installed, while an
-  imported plan's cadence differs from the entry it came from, or when two plans hold one ownership key.
+  imported plan's schedule differs from the entry it came from, or when two plans hold one ownership key.
+- **Operator checks the tool cannot make.** Confirm the wrapper no longer points at a checkout
+  (`MARKETLAB_DATA_CENTER_REPO`, `MARKETLAB_DATA_CENTER_PYTHON` in the other repository) before blocking the old
+  units, and confirm the canary's `scope_source` is the scope that was really produced.
 - Rollback is the reverse order: pause the new plan (or pause global dispatch), re-enable the old units, and keep
   both receipts. The isolated drill for the scheduler process itself is
   `backend/tests/test_scheduler_service_drill.py`; the takeover preparation is covered by

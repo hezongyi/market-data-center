@@ -20,6 +20,7 @@ from data_center.takeover import (
     LegacyEntry,
     compare_entries,
     declared_entries,
+    declared_unit_files,
     default_unit_root,
     entries_from_inventory,
     host_inventory,
@@ -117,6 +118,176 @@ def test_plan_definitions_never_widen_the_legacy_scope():
     assert derived_definition["bar_timeframes"] == ["5m"]
     # ...and it covers exactly the instruments the legacy allowlist named.
     assert len(plan_definitions(raw, maintenance_symbols=LEGACY_SYMBOLS, now=NOW)) == 8
+
+
+def test_a_two_level_wrapper_chain_reveals_the_runner_scope(tmp_path):
+    """The real macro entry execs a second script: following it reads the scope.
+
+    Reading one level found the wrapper but not the runner, so the derived half of
+    the takeover could only be imported by hand-editing an inventory file.
+    """
+    other = tmp_path / "macro-market-lab"
+    (other / "scripts").mkdir(parents=True)
+    outer = other / "scripts" / "marketlab-maintain-market-bars.sh"
+    inner = other / "scripts" / "marketlab-maintain-market-bars-data-center.sh"
+    outer.write_text(f"""#!/usr/bin/env bash
+REPO_ROOT="${{MARKETLAB_REPO_ROOT:-{other}}}"
+if [[ "${{MARKETLAB_MARKET_BARS_BACKEND:-legacy}}" == "data_center" ]]; then
+  exec "${{REPO_ROOT}}/scripts/marketlab-maintain-market-bars-data-center.sh"
+fi
+""")
+    inner.write_text("""#!/usr/bin/env bash
+DATA_CENTER_PYTHON="${MARKETLAB_DATA_CENTER_PYTHON:-/opt/dc/.venv/bin/python}"
+SYMBOLS="${MARKETLAB_DATA_CENTER_SYMBOLS:-XAUUSD BTCUSDT}"
+START="${MARKETLAB_DATA_CENTER_START:-$(date -u -d '2 days ago' +%FT00:00:00Z)}"
+exec "${DATA_CENTER_PYTHON}" -m data_center.derived_maintenance_runner \\
+  --provider dukascopy \\
+  --symbols ${SYMBOLS} \\
+  --recipes utc-24x7-1m-to-5m-ohlcv@1 \\
+  --start "${START}" --run-scope production
+""")
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(f"""#!/bin/sh
+if [ "$1" = "list-unit-files" ]; then
+  echo "marketlab-market-bars-maintenance.service static"
+  exit 0
+fi
+if [ "$1" = "show" ]; then
+  case "$2" in
+    marketlab-market-bars-maintenance.service)
+      case "$4" in
+        Environment) echo "MARKETLAB_REPO_ROOT={other} MARKETLAB_MARKET_BARS_BACKEND=data_center" ;;
+        ExecStart) echo "{{ path=/bin/sh ; argv[]=/bin/sh {outer} ; }}" ;;
+        *) echo "" ;;
+      esac ;;
+    marketlab-market-bars-maintenance.timer)
+      echo "{{ OnCalendar=*-*-* 06:30:00 UTC }}" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+exit 0
+""")
+    systemctl.chmod(0o755)
+    inventory = host_inventory(systemctl=(str(systemctl),))
+    entry = entries_from_inventory(inventory)[0]
+
+    assert entry.runner_module == "data_center.derived_maintenance_runner"
+    # The chain is followed to the runner's own command: its arguments survive, the
+    # literal allowlist default is readable, and the date substitution is left as
+    # it is instead of being invented.
+    assert "utc-24x7-1m-to-5m-ohlcv@1" in entry.command
+    assert legacy_symbols(entry) == ["BTCUSDT", "XAUUSD"]
+    definitions = plan_definitions(entry, now=NOW)
+    # BTCUSDT is binance's, so the dukascopy plan covers XAUUSD with its 5m output
+    # and the mismatch is evidence in the receipt instead of a silent narrowing.
+    assert [(item["symbol"], item["bar_timeframes"]) for item in definitions] == [("XAUUSD", ["5m"])]
+    comparison = compare_entries([entry], inventory, declared_units=set())
+    row = comparison["entries"][0]
+    assert row["importable_symbols"] == ["XAUUSD"] and row["unserved_symbols"] == ["BTCUSDT"]
+    assert comparison["partially_served"] == ["marketlab-market-bars-maintenance.service"]
+    assert comparison["unmappable"] == []
+    assert row["calendar_zone_assumed"] is False
+    assert "wrapper" not in entry.command
+
+
+def test_the_environment_marker_alone_still_captures_the_entry(tmp_path):
+    """A wrapper whose runner cannot be read is captured through its unit environment."""
+    script = tmp_path / "opaque.sh"
+    script.write_text("#!/bin/sh\nmarketlab data-center\n")
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(f"""#!/bin/sh
+if [ "$1" = "list-unit-files" ]; then
+  echo "marketlab-market-bars-maintenance.service static"
+  exit 0
+fi
+if [ "$1" = "show" ]; then
+  case "$2" in
+    marketlab-market-bars-maintenance.service)
+      case "$4" in
+        Environment) echo "MARKETLAB_MARKET_BARS_BACKEND=data_center" ;;
+        ExecStart) echo "{{ path=/bin/sh ; argv[]=/bin/sh {script} ; }}" ;;
+        *) echo "" ;;
+      esac ;;
+    marketlab-market-bars-maintenance.timer)
+      echo "{{ OnCalendar=*-*-* 06:30:00 UTC }}" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+exit 0
+""")
+    systemctl.chmod(0o755)
+    entry = entries_from_inventory(host_inventory(systemctl=(str(systemctl),)))[0]
+    # The unit environment names the integration, so the entry is captured as that
+    # producer — but the wrapper names no scope and no recipes, so the operator
+    # still has to supply them instead of the tool inventing a plan.
+    assert entry.runner_module == "data_center.derived_maintenance_runner"
+    assert entry.command == f"/bin/sh {script}"
+    assert legacy_symbols(entry) is None
+    assert plan_definitions(entry, now=NOW) == []
+    # Without the marker this unit is not this platform's producer at all.
+    assert entries_from_inventory({"status": "known", "units": [], "entries": [
+        {"unit": "opaque.service", "exec_start": f"/bin/sh {script}"}]}) == []
+
+
+def test_a_partially_served_allowlist_keeps_the_mismatch_as_evidence(monkeypatch):
+    """Known, approved and unavailable symbols are three different findings."""
+    from types import SimpleNamespace
+
+    from data_center import takeover as module
+
+    instruments = [SimpleNamespace(symbol="EURUSD", approved=True),
+                   SimpleNamespace(symbol="XAUUSD", approved=False)]
+    monkeypatch.setattr(module.REGISTRY, "instruments",
+                        lambda provider, approved_only=True: tuple(instruments))
+    scope = module.provider_symbols("dukascopy", ["EURUSD", "XAUUSD", "BTCUSDT"])
+    assert scope.served == ("EURUSD",) and scope.unapproved == ("XAUUSD",)
+    assert scope.unserved == ("BTCUSDT",)
+    assert scope.as_dict()["importable_symbols"] == ["EURUSD"]
+
+
+def test_a_declared_unit_is_not_reported_as_undeclared():
+    """The governance list compares against the repository's own unit files."""
+    inventory = {"status": "known",
+                 "units": ["market-data-center-api.service", "market-data-center-worker.service",
+                           "market-data-center-monitor.timer", "dbus.service"],
+                 "entries": []}
+    comparison = compare_entries([], inventory, declared_units=set(),
+                                 declared_unit_files=declared_unit_files(UNIT_ROOT))
+    assert comparison["installed_not_declared"] == []
+    # Without the declared file list, declared units would look undeclared.
+    partial = compare_entries([], inventory, declared_units=set())
+    assert "market-data-center-api.service" in partial["installed_not_declared"]
+
+
+def test_a_daily_plan_that_drifted_its_wall_clock_time_does_not_verify(tmp_path):
+    """The handover must not accept a daily plan that moved its local time."""
+    entry = LegacyEntry(unit="derived.service", timer="derived.timer", command="python -m "
+                        "data_center.derived_maintenance_runner --provider dukascopy --symbols XAUUSD "
+                        "--recipes utc-24x7-1m-to-5m-ohlcv@1",
+                        argv=("python", "-m", "data_center.derived_maintenance_runner", "--provider",
+                              "dukascopy", "--symbols", "XAUUSD", "--recipes",
+                              "utc-24x7-1m-to-5m-ohlcv@1"),
+                        cadence_seconds=None, cadence_source="OnCalendar", requires_api=False,
+                        calendar="*-*-* 06:30:00 UTC")
+    tasks = service(tmp_path)
+    definition = merged_definitions([entry], now=NOW)[0]
+    task_id = f"legacy-{definition['provider']}-{definition['symbol']}-{definition['raw_timeframe']}"
+    tasks.create(definition=definition, name="XAUUSD", task_id=task_id)
+    report = verify_takeover(tasks, entries=[entry], inventory={"status": "unknown"}, now=NOW)
+    assert report["problems"] == []
+    assert report["plans"][0]["schedule"] == {"schedule": "daily", "timezone": "UTC",
+                                              "local_time": "06:30"}
+
+    # The operator moves the wall-clock time: the same cadence, a different plan.
+    tasks.change(task_id, "update",
+                 definition={**definition,
+                             "schedule": {"schedule": "daily", "timezone": "UTC",
+                                          "local_time": "07:00"}},
+                 expected_version=tasks.ledger.get_production_task(task_id)["definition_version"])
+    drifted = verify_takeover(tasks, entries=[entry], inventory={"status": "unknown"}, now=NOW)
+    assert any("does not match the legacy" in problem for problem in drifted["problems"])
 
 
 def test_import_is_dry_by_default_and_paused_when_applied(tmp_path):
@@ -279,9 +450,10 @@ fi
 if [ "$1" = "show" ]; then
   case "$2" in
     marketlab-market-bars-maintenance.service)
-      case "$3" in
+      case "$4" in
         Environment) echo "MARKETLAB_MARKET_BARS_BACKEND=data_center MARKETLAB_DATA_ROOT=/x" ;;
-        *) echo "{{ path=/bin/sh ; argv[]=/bin/sh {script} ; }}" ;;
+        ExecStart) echo "{{ path=/bin/sh ; argv[]=/bin/sh {script} ; }}" ;;
+        *) echo "" ;;
       esac ;;
     marketlab-market-bars-maintenance.timer)
       echo "{{ OnCalendar=*-*-* 06:30:00 UTC }}" ;;
@@ -296,7 +468,12 @@ exit 0
     entries = entries_from_inventory(inventory)
     assert [entry.unit for entry in entries] == ["marketlab-market-bars-maintenance.service"]
     entry = entries[0]
-    assert "wrapper" in entry.command and entry.calendar == "*-*-* 06:30:00 UTC"
+    # The runner is a field and the command is the one that actually produces
+    # data: no marker is smuggled into a command line that parsing reads back.
+    assert entry.runner_module == "data_center.derived_maintenance_runner"
+    assert entry.command == "python -m data_center.derived_maintenance_runner --start x"
+    assert "#" not in entry.command and "wrapper" not in entry.command
+    assert entry.calendar == "*-*-* 06:30:00 UTC"
     # The wrapper names no symbols (the machine allowlist is the scope it really
     # had) and no recipes: the cadence is readable from its timer, the outputs are
     # not, so the entry is captured yet not importable without the operator.
