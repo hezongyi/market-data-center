@@ -181,6 +181,42 @@ def test_dukascopy_bi5_supports_partial_multi_hour_windows(monkeypatch) -> None:
     ]
 
 
+def test_dukascopy_bi5_retries_transient_network_errors_with_counted_cooldown(monkeypatch) -> None:
+    payload = lzma.compress(struct.pack(">IIIff", 1_000, 110_010, 110_000, 1.0, 2.0))
+    attempts = []
+    sleeps = []
+    claims = []
+
+    class Response:
+        content = payload
+
+        def raise_for_status(self):
+            pass
+
+    def get(*_args, **_kwargs):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise dukascopy_python.requests.ConnectionError("transient")
+        return Response()
+
+    monkeypatch.setattr(dukascopy_python.requests, "get", get)
+    connector = DukascopyConnector(
+        fetch=lambda **_: pytest.fail("library endpoint must not be used"),
+        datafeed_retry_delays=(7.0,), sleep_func=sleeps.append,
+    )
+
+    rows = connector.fetch_bars(job(
+        timeframe="1m",
+        start=datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 14, 3, tzinfo=timezone.utc),
+    ), request_guard=lambda: claims.append(True))
+
+    assert len(rows) == 1
+    assert len(attempts) == 2
+    assert len(claims) == 2
+    assert sleeps == [7.0]
+
+
 def test_dukascopy_connector_rejects_unbounded_minute_request() -> None:
     with pytest.raises(ValueError, match="exceeds bounded range"):
         DukascopyConnector(fetch=lambda **_: frame("2026-01-01T00:00:00Z")).fetch_bars(

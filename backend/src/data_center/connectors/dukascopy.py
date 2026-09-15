@@ -5,6 +5,7 @@ import json
 import lzma
 import os
 import struct
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -65,10 +66,14 @@ class DukascopyConnector:
         now_func: Callable[[], datetime] | None = None,
         proxy_url: str | None = None,
         request_timeout_seconds: float | None = None,
+        datafeed_retry_delays: tuple[float, ...] = (10.0, 30.0, 60.0),
+        sleep_func: Callable[[float], None] = time.sleep,
     ) -> None:
         self._fetch = fetch or dukascopy_python.fetch
         self._now_func = now_func or (lambda: datetime.now(timezone.utc))
         self.proxy_url = proxy_url
+        self.datafeed_retry_delays = datafeed_retry_delays
+        self._sleep = sleep_func
         configured_timeout = os.getenv("DUKASCOPY_REQUEST_TIMEOUT_SECONDS")
         self.request_timeout_seconds = (
             float(configured_timeout)
@@ -202,7 +207,15 @@ class DukascopyConnector:
                 day=f"{cursor.day:02d}",
                 hour=f"{cursor.hour:02d}",
             )
-            response = dukascopy_python.requests.get(url)
+            request_error = getattr(dukascopy_python.requests, "RequestException", ())
+            for attempt in range(len(self.datafeed_retry_delays) + 1):
+                try:
+                    response = dukascopy_python.requests.get(url)
+                    break
+                except request_error:
+                    if attempt >= len(self.datafeed_retry_delays):
+                        raise
+                    self._sleep(self.datafeed_retry_delays[attempt])
             frames.append(self._datafeed_frame(response.content, hour=cursor))
             cursor += pd.Timedelta(hours=1)
         if not frames:
