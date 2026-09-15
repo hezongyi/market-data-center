@@ -1,7 +1,7 @@
 # P0 独立预览阶段验收
 
 日期：2026-09-15
-状态：用户阶段验收通过；评审修正完成，等待当前 PR head 的完整 gate 与 hosted CI
+状态：用户阶段验收通过；独立评审修正和完整本地 gate 通过，等待 hosted CI
 
 ## 当前验收卡
 
@@ -36,6 +36,6 @@
 
 ## 合并前验证
 
-- `DATACENTER_PYTHON=.venv/bin/python bash scripts/ci.sh all`：通过；483 passed、5 skipped；Node 22 Web build、桌面/移动浏览器全旅程、服务重启验收通过。
+- `DATACENTER_PYTHON=.venv/bin/python bash scripts/ci.sh all`：在评审修正 commit `db7f7b3` 通过；487 passed、5 skipped；Node 22 Web build、桌面/移动浏览器全旅程、服务重启验收通过。
 - `NODE_ENV=production npm --prefix webui ci --include=dev`：通过；确认 #106 场景仍安装锁定的 Vite/TypeScript/Playwright 开发依赖。
 - `.venv/bin/python scripts/dev_preview_acceptance.py --python .venv/bin/python`：通过；four_process_start、parallel_isolation、same_origin_auth、cookie_isolation、independent_stop、restart_retention。
