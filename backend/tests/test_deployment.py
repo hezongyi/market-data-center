@@ -322,6 +322,45 @@ def test_api_worker_monitor_report_same_deployment_identity(tmp_path, monkeypatc
     assert receipt["details"]["deployment_id"] == identity["deployment_id"]
 
 
+def test_worker_process_survives_a_transient_locked_ledger(tmp_path, monkeypatch, capsys):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from data_center.worker_main import main as worker_main
+
+    class LockThenStopWorker:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_next(self):
+            type(self).calls += 1
+            if type(self).calls == 1:
+                raise sqlite3.OperationalError("database is locked")
+            raise SystemExit(0)
+
+    settings = SimpleNamespace(
+        deployment_manifest=None,
+        canonical_root=tmp_path / "canonical",
+        ledger_path=tmp_path / "ledger.sqlite",
+        worker_timeout_seconds=30,
+        evidence_root=tmp_path / "evidence",
+        alerts_enabled=False,
+        capacity_policy=lambda: None,
+    )
+    monkeypatch.setattr("data_center.worker_main.Settings", lambda: settings)
+    monkeypatch.setattr("data_center.worker_main.LocalWorker", LockThenStopWorker)
+    monkeypatch.setattr("data_center.worker_main.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(SystemExit):
+        worker_main()
+
+    assert LockThenStopWorker.calls == 2
+    events = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert events[-1]["event"] == "worker_ledger_busy"
+
+
 def test_systemd_units_use_immutable_release_and_non_overlapping_monitor_timer():
     repository = Path(__file__).resolve().parents[2]
     unit_root = repository / "deploy" / "systemd"

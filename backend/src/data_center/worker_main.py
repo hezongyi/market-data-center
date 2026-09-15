@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 
 from data_center.ingest.worker import LocalWorker
@@ -20,7 +21,21 @@ def main() -> None:
                          alert_sink=AlertSink(settings.evidence_root / "alerts", settings.alerts_enabled),
                          capacity_policy=settings.capacity_policy())
     while True:
-        if not worker.run_next():
+        try:
+            worked = worker.run_next()
+        except sqlite3.OperationalError as exc:
+            # API, scheduler and worker intentionally share one WAL ledger.  A
+            # write can still lose the busy-timeout race under a large
+            # reconciliation transaction; that is transient contention, not a
+            # reason to abandon the durable queue and strand its jobs.
+            message = str(exc).lower()
+            if "locked" not in message and "busy" not in message:
+                raise
+            print(json.dumps({"event": "worker_ledger_busy", "request_id": None,
+                              "retry_seconds": 1.0}), flush=True)
+            time.sleep(1)
+            continue
+        if not worked:
             time.sleep(1)
 
 
