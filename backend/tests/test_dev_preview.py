@@ -67,6 +67,19 @@ def test_preview_metadata_is_private(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_python_executable_keeps_virtualenv_launcher_symlink(tmp_path, monkeypatch):
+    launcher = tmp_path / "venv/bin/python"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(sys.executable)
+    monkeypatch.setattr(
+        dev_preview.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    assert dev_preview.python_executable(str(launcher)) == launcher.absolute()
+    assert dev_preview.python_executable(str(launcher)) != launcher.resolve()
+
+
 def test_stop_refuses_a_reused_pid(monkeypatch):
     metadata = {
         "token": "not-this-process",

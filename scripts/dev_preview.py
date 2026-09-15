@@ -154,7 +154,9 @@ def python_executable(argument: str | None) -> Path:
     )
     if probe.returncode:
         raise PreviewError(f"Python dependencies are incomplete in {candidate}")
-    return candidate.resolve()
+    # Keep the virtualenv launcher path. Resolving its interpreter symlink can
+    # escape the environment and make child processes lose installed packages.
+    return candidate.absolute()
 
 
 def vite_executable() -> Path:
