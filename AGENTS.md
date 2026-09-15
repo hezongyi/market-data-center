@@ -1,6 +1,14 @@
 # Market Data Center Agent Guide
 
-This file applies to the whole repository. Read the referenced release and operations documents before changing production-facing behavior.
+This file applies to the whole repository. Read release/operations documents when doing release or production operations; development previews follow the development guide.
+
+## Current Delivery Baseline
+
+- The maintainer approved the EURUSD-first direction on 2026-09-15. Read `docs/specs/2026-09-15-eurusd-first-product-baseline.md`, `docs/development-guide.md`, and `docs/plans/2026-09-15-eurusd-first-implementation.md` before selecting work.
+- Prior unfinished development outside this iteration is paused in scheduling, except necessary production maintenance. This does not stop running services or erase history. The product spec maps retained contracts and deferred migration acceptance; old specs must not silently reintroduce legacy parity, multi-hour shadow comparison or crypto rollout as this iteration's gates.
+- For WebUI changes, also read `webui/AGENTS.md`: actual shadcn-admin components/theme/interaction are required, not a handwritten CSS approximation. Use the pinned local reference in `docs/references/shadcn-admin.md`.
+- For previews, follow `docs/specs/2026-09-15-isolated-preview-environment.md`. Deliver a usable URL, commit, data mode, steps and limitations early. Draft PRs and previews do not require prior review, a release tag or production deployment. Never default a trial-write preview to production.
+- Specs define requirements; plans define sequencing; research records evidence; guides describe operating procedures. An approved design is not implemented/accepted/deployed evidence. Preserve historical receipts and record partial supersession explicitly.
 
 ## Worktree Safety
 
@@ -18,8 +26,8 @@ This file applies to the whole repository. Read the referenced release and opera
   .venv/bin/python -m pip install -c backend/constraints/py311.txt -e './backend[dev]'
   ```
 
-- Run the unified gate with `bash scripts/ci.sh all`. It covers backend tests, Ruff, dependency and compatibility checks, secret scanning, operations acceptance, Web build, isolated browser acceptance, and service restart acceptance.
-- Use isolated canonical, ledger, evidence, and backup roots for tests. Browser and acceptance runs must not read production data or contact real providers.
+- During development run relevant checks. Full `bash scripts/ci.sh all` applies to cross-module/high-risk runtime changes and release candidates, not every small local edit. Documentation-only governance changes use documentation/consistency checks plus independent review before merge. Hosted current-commit `verify` remains required before merge; its full matrix has not yet been narrowed. See `docs/development-guide.md`.
+- Use isolated canonical, ledger, auth, evidence, and backup roots for tests and previews. Default CI/browser acceptance must not read production data or contact real providers. Explicit bounded live-sandbox acceptance is separate, follows the preview spec, and never writes production roots.
 
 ## Playwright and Chromium
 
@@ -49,15 +57,17 @@ This file applies to the whole repository. Read the referenced release and opera
 
 - Create PRs with `gh pr create`, inspect checks with `gh pr view` or `gh pr checks`, and merge only after the current head is `CLEAN` and the latest `verify` check succeeds.
 - Do not use an older successful run from the same branch as evidence for a newer commit. Confirm workflow `head_sha` matches the commit being merged or released.
-- OAuth tokens, proxy URLs, API keys, and machine-local paths belong in user configuration or ignored files. Never print credentials or commit them.
+- OAuth tokens, credential-bearing proxy URLs and API keys belong in user configuration or ignored files. Never print credentials or commit them. Do not hard-code machine-local paths as runtime dependencies; documentation may record explicitly scoped, replaceable local reference/evidence paths without secrets.
 
 ## Issue Collaboration
 
-- Issues are the unit of work for multiple agents. Follow `docs/agent-collaboration.md`: it defines the provenance block (`agent-report`), the `status:*` labels, the claim protocol with its 24h lease, and the discussion rules.
-- Claim before working, one owner per issue, and release the claim when you stop. Use `python scripts/agent_claim.py list --claimable`, `claim`, `progress`, `release`, and `annotate` instead of hand-rolling the API calls.
+- Shared issues are the unit of work for multiple agents. Follow `docs/agent-collaboration.md` for provenance, labels and its 24h lease. Directly assigned local tasks/research do not require creating an issue first. External messages still require authorization.
+- When working a shared issue, claim first, one owner per issue, and release the claim when you stop. Use `python scripts/agent_claim.py list --claimable`, `claim`, `progress`, `release`, and `annotate` instead of hand-rolling the API calls.
 - Report issues with evidence: a `file:line` reference or a reproducible command with its output, plus the baseline (version, commit, deployment id). Never present "not found" as "does not exist".
 - An issue reported by an agent is declared as such (label `agent-reported` plus the invisible `agent-report` metadata block). The GitHub author is the credential owner, not the agent.
-- PRs use a two-level merge gate defined in `docs/agent-collaboration.md`. Small, scoped PRs may merge after the required automated gates and review pass. Spec-completion PRs and any change touching authentication, data migration, core contracts, or production behavior require a risk summary and the maintainer's explicit verbal approval before merge. Record that approval in the PR conversation. Production release always requires a separate approval.
+- PR gates follow R0/R1/R2 in `docs/development-guide.md`: low-risk documentation/copy/style may use self-review; ordinary behavior changes require one independent review; identity, aggregation, concurrency/recovery, auth, destructive migrations, release mechanisms and governance changes require deeper review and a risk summary. “Changes production behavior” alone does not make every feature high risk.
+- User-visible new flows get a usable preview and stage feedback before merge. Technical review does not substitute for product acceptance. Complete functionality is accepted on the integration preview; a giant aggregate PR is not required.
+- Check existing authorization before asking again. New uncovered high-risk scope and production activation need explicit authorization; approval of design or a small PR is not implicit approval of production operations. Record actual approval scope, person and time in the delivery record.
 
 ## Release Operations
 

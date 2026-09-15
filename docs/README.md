@@ -1,5 +1,22 @@
 # 文档入口
 
+## 当前交付基线（2026-09-15）
+
+维护者已确认转向独立 EURUSD 维护闭环。当前工作从下列入口开始，旧迁移/扩面未完成项默认暂停排期，必要生产维护保留；这不是停止生产服务的指令。
+
+| 文档 | 用途 |
+| --- | --- |
+| [EURUSD 产品与 UI 规范](specs/2026-09-15-eurusd-first-product-baseline.md) | 当前目标、shadcn-admin 基线、E01–E10 验收和旧工作接续 |
+| [独立预览环境规范](specs/2026-09-15-isolated-preview-environment.md) | 环境隔离、工具契约与 PV01–PV08；尚待 P0 实现 |
+| [开发指南](development-guide.md) | 每阶段如何预览、反馈、评审、验证、合并与交接 |
+| [实施路线图](plans/2026-09-15-eurusd-first-implementation.md) | P0–P5 顺序、实际进展及旧任务排期 |
+| [shadcn-admin 本地来源](references/shadcn-admin.md) | 固定 commit、本地参考路径与更新规则 |
+| [业务与流程分析](research/2026-09-15-eurusd-first-delivery-and-workflow-proposal.md)、[UI 研究](research/2026-09-15-shadcn-admin-adoption-research.md) | 调查证据与决策背景，不作为第二套实施规范 |
+
+specs 写要求与验收，plans 写顺序和任务，research 写证据和取舍；开发流程用 developer guide，实际产品操作用 user guide。AGENTS 负责路由到当前要求，并保留不可省略的执行规则。
+
+## 运维与历史资料
+
 阅读顺序：
 
 1. [当前状态](current-state.md)：生产 deployment、数据 ownership、consumer 迁移矩阵和未完成事项。
@@ -10,10 +27,11 @@
 6. [Agent 协作约定](agent-collaboration.md)：issue 上报身份标注、`status:*` 标签状态机、认领与租约、agent PR 的合并门槛。
 7. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
 
-当前接管补充：[调度器接管修复与验收规范](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)（in_progress）。记录 v0.6.1 canary 失败基线、缺口处理、影子补证、发布和扩面门槛；目标状态不代表当前生产事实。
-对应的实时进度与证据引用见[调度器接管补充验收索引](scheduler-takeover-acceptance-20260915.md)。
+历史接管补充：[调度器接管修复与验收规范](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)。迁移补证/扩面排期已暂停，缺口正确性要求由新基线继承。
+对应历史证据见[调度器接管补充验收索引](scheduler-takeover-acceptance-20260915.md)，每条事实以观测时间为准。
 
 ## 状态规则
 
 Spec 状态统一使用：`draft`、`approved`、`in_progress`、`implemented`、`accepted`、`superseded`、`blocked`。
+排期独立记录 `active` / `paused` / `backlog`。暂停不改写历史实现/验收状态；局部取代在文首链接后继规范并列明范围。
 历史 receipt 不修改；如当前事实变化，只更新 `current-state.md` 和新增 receipt 链接。

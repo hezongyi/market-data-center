@@ -2,6 +2,7 @@
 
 日期：2026-09-15
 状态：approved
+排期：paused（2026-09-15，全站铺开暂停）。新 EURUSD 主线页面的中文、状态和交互随[产品与 UI 基线](2026-09-15-eurusd-first-product-baseline.md)同时交付；其它页面保留兼容，本文不再自动产生全站改造任务。
 前置版本：WebUI v0.5 核心中文界面
 关联文档：`docs/specs/2026-09-13-webui-v0.5-usability-and-access.md`
 
