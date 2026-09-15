@@ -215,6 +215,14 @@ def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path
         "definition": definition,
     })
     assert created.status_code == 201
+    partial = client.patch("/api/v1/production/tasks/live-p1", json={
+        "definition": {"bar_timeframes": []}, "expected_version": 1,
+    })
+    assert partial.status_code == 200
+    renamed = client.patch("/api/v1/production/tasks/live-p1", json={
+        "name": "renamed live EURUSD", "expected_version": 2,
+    })
+    assert renamed.status_code == 200
     definition["window_policy"] = {
         "mode": "continuous", "history_start": "2026-09-14T00:00:00Z",
     }
@@ -222,12 +230,12 @@ def test_live_preview_only_accepts_manual_tasks_inside_its_fixed_window(tmp_path
     assert refused.status_code == 422
     assert refused.json()["errors"][0]["code"] == "live_scope_required"
     refused_update = client.patch("/api/v1/production/tasks/live-p1", json={
-        "definition": definition, "expected_version": 1,
+        "definition": definition, "expected_version": 2,
     })
     assert refused_update.status_code == 422
     assert refused_update.json()["errors"][0]["code"] == "live_scope_required"
     refused_action = client.post("/api/v1/production/tasks/live-p1/actions", json={
-        "command": "update", "definition": definition, "expected_version": 1,
+        "command": "update", "definition": definition, "expected_version": 2,
     })
     assert refused_action.status_code == 422
     assert refused_action.json()["errors"][0]["code"] == "live_scope_required"

@@ -615,6 +615,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "message": "task window is outside this live preview's approved UTC bounds",
             })
 
+    def require_preview_change(task_id: str, override: dict | None) -> None:
+        current = production_tasks_service.read(task_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        require_preview_definition({**(current.get("payload") or {}), **(override or {})})
+
     @app.middleware("http")
     async def preview_provider_boundary(request: Request, call_next):
         if config.provider_allowlist() and request.method in {"POST", "PUT", "PATCH"}:
@@ -717,8 +723,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=422, detail="desired_state must be enabled, paused or archived")
         else:
             command = "update"
-        if command == "update":
-            require_preview_definition(payload.get("definition") or {})
+        if command == "update" and payload.get("definition") is not None:
+            require_preview_change(task_id, payload.get("definition"))
         try:
             task = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
@@ -745,8 +751,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
         command = str(payload.get("command") or "")
-        if command in {"update", "copy"}:
-            require_preview_definition(payload.get("definition") or {})
+        if command == "copy" or (command == "update" and payload.get("definition") is not None):
+            require_preview_change(task_id, payload.get("definition"))
         actor = operator_identity(request, config)
         try:
             result = production_tasks_service.change(
