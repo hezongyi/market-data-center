@@ -10,6 +10,9 @@
 6. [Agent 协作约定](agent-collaboration.md)：issue 上报身份标注、`status:*` 标签状态机、认领与租约、agent PR 的合并门槛。
 7. [integration/macro-market-lab.md](integration/macro-market-lab.md)：macro-market-lab 的读取、维护 ownership 和回滚约定。
 
+当前接管补充：[调度器接管修复与验收规范](specs/2026-09-15-scheduler-takeover-remediation-and-acceptance.md)（in_progress）。记录 v0.6.1 canary 失败基线、缺口处理、影子补证、发布和扩面门槛；目标状态不代表当前生产事实。
+对应的实时进度与证据引用见[调度器接管补充验收索引](scheduler-takeover-acceptance-20260915.md)。
+
 ## 状态规则
 
 Spec 状态统一使用：`draft`、`approved`、`in_progress`、`implemented`、`accepted`、`superseded`、`blocked`。

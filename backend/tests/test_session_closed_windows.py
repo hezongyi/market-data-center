@@ -175,7 +175,7 @@ def test_a_closed_window_is_reported_once_and_is_not_retryable():
     assert closed["failure_stage"] == "input" and closed["retryable"] is False
 
     gap = safe_failure_result(ProviderGapError("no bars"), {"run_scope": "production"})
-    assert gap["error_type"] == "ProviderGapError" and gap["retryable"] is True
+    assert gap["error_type"] == "ProviderGapError" and gap["retryable"] is False
 
 
 def test_the_two_gap_classes_stay_distinguishable_in_evidence():

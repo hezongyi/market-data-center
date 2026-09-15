@@ -20,10 +20,29 @@ from data_center.production_tasks import (
     plan_execution,
     scheduled_end,
 )
+from data_center.window_planner import is_provider_gap_receipt, provider_gap_windows
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 EXECUTION = {"execution_id": "e" * 8}
 TASK = {"task_id": "p1"}
+
+
+def test_due_gap_page_skips_a_cooling_first_page_without_losing_debt(tmp_path):
+    from data_center.runs.ledger import RunLedger
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    gaps = [{"window_start": (NOW + timedelta(minutes=index)).isoformat(),
+             "window_end": (NOW + timedelta(minutes=index + 1)).isoformat(),
+             "state": "cooldown", "attempts": 0,
+             "next_review_at": ((NOW + timedelta(hours=3)).isoformat() if index < 50 else None)}
+            for index in range(75)]
+    ledger.upsert_gap_windows("p1", gaps, now=NOW)
+
+    due = ledger.due_gap_windows("p1", now=NOW, limit=50)
+
+    assert len(due) == 25
+    assert due[0]["window_start"] == gaps[50]["window_start"]
+    assert ledger.production_progress("p1")["gap_count"] == 75
 
 
 def definition(**overrides) -> dict:
@@ -174,6 +193,53 @@ def test_a_gap_inside_its_retry_cooldown_is_reported_not_replanned():
         ("gap_repair", (hole[0] + timedelta(minutes=2)).isoformat())]
 
 
+def test_provider_gap_extraction_uses_ready_intervals_and_rejects_mixed_findings():
+    receipt = {
+        "status": "failed", "error_type": "QualityError",
+        "execution_plan": {"windows": [{
+            "start": "2026-09-14T22:14:00+00:00", "end": "2026-09-14T22:45:00+00:00",
+            "reason": "tail",
+        }]},
+        "quality_summary": {"findings": [{
+            "code": "coverage_not_ready", "coverage": {
+                "timeframe_seconds": 60,
+                "first_missing_ts": "2026-09-14T22:19:00+00:00",
+                "ready_intervals": [
+                    {"start": "2026-09-14T22:14:00+00:00", "end": "2026-09-14T22:19:00+00:00"},
+                    {"start": "2026-09-14T22:20:00+00:00", "end": "2026-09-14T22:29:00+00:00"},
+                    {"start": "2026-09-14T22:30:00+00:00", "end": "2026-09-14T22:45:00+00:00"},
+                ],
+            },
+        }]},
+    }
+    assert provider_gap_windows([receipt]) == [
+        {"window_start": "2026-09-14T22:19:00+00:00", "window_end": "2026-09-14T22:20:00+00:00"},
+        {"window_start": "2026-09-14T22:29:00+00:00", "window_end": "2026-09-14T22:30:00+00:00"},
+    ]
+
+    receipt["quality_summary"]["findings"].append({"code": "negative_volume"})
+    assert is_provider_gap_receipt(receipt) is False
+    assert provider_gap_windows([receipt]) == []
+
+    malformed = {
+        "status": "failed", "error_type": "QualityError",
+        "execution_plan": receipt["execution_plan"],
+        "quality_summary": {"findings": [{"code": "coverage_not_ready"}]},
+    }
+    assert is_provider_gap_receipt(malformed) is False
+    assert provider_gap_windows([malformed]) == []
+
+    legacy_network_failure = {
+        "status": "failed", "error": "timeout",
+        "execution_plan": {"windows": [{
+            "start": "2026-09-14T22:14:00+00:00", "end": "2026-09-14T22:15:00+00:00",
+            "reason": "gap_repair",
+        }]},
+    }
+    assert is_provider_gap_receipt(legacy_network_failure) is False
+    assert provider_gap_windows([legacy_network_failure]) == []
+
+
 def plan_ledger(directory: str):
     """An isolated ledger with one enabled plan, which is what makes jobs claimable."""
     from pathlib import Path
@@ -187,8 +253,8 @@ def plan_ledger(directory: str):
     return ledger
 
 
-def test_a_window_whose_run_failed_is_planned_again_from_the_ledger():
-    """Debt is derived from step state, so the watermark cannot retire a gap."""
+def test_a_structural_failure_is_not_planned_again_as_gap_debt():
+    """Network/structural failures use their own backoff path, never gap repair."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as directory:
@@ -209,34 +275,11 @@ def test_a_window_whose_run_failed_is_planned_again_from_the_ledger():
 
         # Step state is read back from the run outcomes, exactly as dispatch does.
         ledger.refresh_task_steps("p1")
-        owed = ledger.outstanding_gap_windows("p1")
-        assert [(item["window_start"], item["window_end"]) for item in owed] == [window]
-        # ...and the planner fetches it again even though the catalog scan is short.
-        result = plan(progress={"frontier": "2026-09-14T12:02:00+00:00"}, carried_gaps=owed,
-                      step_budget=2)
-        assert [(step["reason"], step["window_start"], step["window_end"])
-                for step in result["steps"]] == [("gap_repair", window[0], window[1])]
-
-        # A later completed run for the same window retires the debt.  The plan
-        # may only hold one non-terminal round, so the failed one closes first.
-        ledger.finish_production_execution("e" * 8, state="failed", outcome="failed")
-        ledger.accept_execution_plan(
-            execution_id="f" * 8, task_id="p1", definition_version=1, trigger_source="manual",
-            steps=[{"stage": "raw", "window_start": window[0], "window_end": window[1],
-                    "dedupe_key": f"raw:{window[0]}:{window[1]}",
-                    "payloads": [{"job_id": "p1:deadbeef:raw:gap_repair",
-                                  "dataset_id": "provider_bars", "provider": "fixture",
-                                  "symbol": "UI_TEST", "asset_class": "crypto", "timeframe": "1m",
-                                  "start": window[0], "end": window[1], "run_scope": "production",
-                                  "run_kind": "gap_repair"}]}])
-        retry = ledger.claim_next_job()
-        ledger.finish_job(retry["job_id"], retry["run_id"], {"status": "pass", "run_id": retry["run_id"]})
-        ledger.refresh_task_steps("p1")
         assert ledger.outstanding_gap_windows("p1") == []
 
 
 @pytest.mark.parametrize("state", ["failed", "dead_letter"])
-def test_gap_debt_keeps_terminal_states_that_are_not_completed(state):
+def test_non_gap_terminal_states_do_not_create_gap_debt(state):
     import tempfile
 
     with tempfile.TemporaryDirectory() as directory:
@@ -255,7 +298,7 @@ def test_gap_debt_keeps_terminal_states_that_are_not_completed(state):
                         retryable=False)
         with ledger._connect() as conn:
             conn.execute("update production_steps set state=? where stage='raw'", (state,))
-        assert len(ledger.outstanding_gap_windows("p1")) == 1
+        assert ledger.outstanding_gap_windows("p1") == []
 
 
 def publish_bars(root, *, start: datetime, minutes: int, run_id: str,
@@ -500,6 +543,6 @@ def test_spent_retry_budgets_back_a_provider_off_without_stopping_others(tmp_pat
     document = service.read("p1")
     assert document["progress"]["provider_backoff"] is None
     assert document["block_reason"] != "provider_backoff"
-    # The windows the provider never produced are still owed, and are still
-    # reported as such: a spent backoff must not look like a repair.
-    assert document["block_reason"] == "input_unavailable"
+    # A transient provider failure stays on the provider-backoff/ordinary tail
+    # path; it must not be mislabeled as durable provider-gap debt.
+    assert document["block_reason"] is None

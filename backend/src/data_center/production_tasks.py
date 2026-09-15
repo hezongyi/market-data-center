@@ -30,7 +30,11 @@ from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
 from .runs.ledger import IdempotencyConflict, ProductionConflict, RunLedger
 from .scheduler import MIN_INTERVAL_SECONDS, next_run_at, validate_schedule
 from .transform import TIMEFRAMES, current_rows, resolve_session_profile
-from .window_planner import exclude_planned_windows, missing_ranges, recent_gap_windows
+from .window_planner import (
+    exclude_planned_windows,
+    missing_ranges,
+    provider_gap_windows,
+)
 
 RAW_DATASET = "provider_bars"
 DERIVED_DATASET = "market_bars"
@@ -531,9 +535,11 @@ class ProductionTasks:
             "gaps": [
                 {"window_start": item.get("window_start"), "window_end": item.get("window_end"),
                  "state": item.get("state"), "attempts": int(item.get("attempts") or 0),
-                 "reason": item.get("reason")}
+                 "reason": item.get("reason"), "next_review_at": item.get("next_review_at")}
                 for item in (progress.get("gaps") or [])
             ],
+            "gap_count": int(progress.get("gap_count") or len(progress.get("gaps") or [])),
+            "gap_overflow": bool(progress.get("gap_overflow")),
             "deferred_derived": [
                 item.get("step") if isinstance(item, dict) else str(item)
                 for item in (progress.get("deferred_derived") or [])
@@ -574,7 +580,7 @@ class ProductionTasks:
             # Outputs are owed but their input cannot be built yet: the plan is
             # blocked on a dependency rather than on its own progress.
             return "blocked"
-        if block_reason in {"input_unavailable", "backlog", "provider_backoff"}:
+        if block_reason in {"input_unavailable", "provider_gap", "backlog", "provider_backoff"}:
             # Provider backoff is transient by construction: the plan is behind
             # and retrying, not stuck.
             return "lagging"
@@ -595,7 +601,7 @@ class ProductionTasks:
         if progress.get("deferred_derived"):
             return "dependency"
         if progress.get("gaps"):
-            return "input_unavailable"
+            return "provider_gap"
         if progress.get("backlog"):
             return "backlog"
         return None
@@ -1569,27 +1575,14 @@ class ProductionTasks:
         policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
         if policy.gap_retry_cooldown_minutes <= 0:
             return []
-        since = now - timedelta(minutes=policy.gap_retry_cooldown_minutes)
-        runs = self.ledger.recent_plan_runs(task["task_id"], since=since)
-        keys = recent_gap_windows(runs=runs, provider=definition["provider"],
-                                  symbol=definition["symbol"], run_scope="production",
-                                  now=now,
-                                  cooldown_minutes=policy.gap_retry_cooldown_minutes)
-        return [{"start": start, "end": end} for start, end in sorted(keys)]
-
-    @staticmethod
-    def _merge_gaps(previous: list[dict], current: list[dict], *, now: datetime) -> list[dict]:
-        """Carry each gap's history forward and bound the plan's gap debt."""
-        seen = {(item["window_start"], item["window_end"]): item for item in previous}
-        merged: list[dict] = []
-        for item in current:
-            key = (item["window_start"], item["window_end"])
-            carried = seen.get(key) or {}
-            attempts = int(carried.get("attempts") or 0) + (1 if item["state"] == "planned" else 0)
-            merged.append({**item, "reason": "gap_repair", "attempts": attempts,
-                           "first_seen_at": carried.get("first_seen_at") or now.isoformat()})
-        merged.sort(key=lambda item: item["window_start"])
-        return merged[:GAP_LIMIT]
+        scan = coverage_scan_window(definition=definition, now=now)
+        if scan is None:
+            return []
+        cadence = timeframe_delta(definition["raw_timeframe"])
+        scan_limit = int((scan[1] - scan[0]) / cadence) + 2
+        return self.ledger.cooling_gap_windows(
+            task["task_id"], now=now, window_start=scan[0], window_end=scan[1],
+            limit=scan_limit)
 
     def dispatch(self, *, task: dict, execution: dict, now: datetime | None = None,
                  step_budget: int = 8) -> dict:
@@ -1623,13 +1616,13 @@ class ProductionTasks:
                     "blocked": gate["block_reason"],
                     "plan": {"steps": [], "reason": "capacity_blocked", "backlog": True,
                              "backlog_blocked": True, "capacity": gate["capacity"]}}
-        progress = self.ledger.production_progress(task["task_id"]) or {}
+        progress = self.ledger.production_progress_core(task["task_id"]) or {}
         # Windows whose run ended terminally are owed regardless of how far back
         # they are: the short coverage scan cannot see them, so the ledger does.
         # Step state is read back from the runs first, or a round that just
         # failed would still look pending and its gap would be forgotten.
         self.ledger.refresh_task_steps(task["task_id"])
-        carried = self.ledger.outstanding_gap_windows(task["task_id"], limit=GAP_LIMIT)
+        carried = self.ledger.due_gap_windows(task["task_id"], now=now, limit=GAP_LIMIT)
         coverage = self._raw_coverage(task=task, definition=definition, now=now)
         plan = plan_execution(task, definition, execution, now=now, step_budget=step_budget,
                               progress=progress, coverage=coverage,
@@ -1641,6 +1634,7 @@ class ProductionTasks:
             execution_id=execution["execution_id"], steps=plan["steps"],
             audit={"action": "production.execution.accept", "actor": "system:scheduler",
                    "request_id": None})
+        self.ledger.upsert_gap_windows(task["task_id"], plan["gaps"], now=now)
         self.ledger.record_progress(task["task_id"], {
             "frontier": plan["frontier"], "effective_end": plan["effective_end"],
             "backlog": plan["backlog"], "last_execution_id": execution["execution_id"],
@@ -1659,7 +1653,6 @@ class ProductionTasks:
             "last_frontier": max([_as_utc(value, "frontier")
                                   for value in (progress.get("last_frontier"), plan["frontier"])
                                   if value is not None]).isoformat(),
-            "gaps": self._merge_gaps(progress.get("gaps") or [], plan["gaps"], now=now),
         })
         return {**accepted, "plan": {key: value for key, value in plan.items() if key != "steps"},
                 "planned_steps": len(plan["steps"])}
@@ -1716,7 +1709,7 @@ class ProductionTasks:
             if entry is not None:
                 recorded.append({"task_id": task["task_id"], **entry})
                 continue
-            progress = self.ledger.production_progress(task["task_id"]) or {}
+            progress = self.ledger.production_progress_core(task["task_id"]) or {}
             stale = (progress.get("provider_backoff") or {}).get("until")
             if stale and stale <= now.isoformat():
                 # The copy a refusing round left is stale; the governed row is
@@ -1735,8 +1728,12 @@ class ProductionTasks:
         # is still owed its derived outputs (spec 6.2, AC10).
         publications = self.reconcile_publications(limit=limit, step_budget=8)
         closed = self.ledger.close_finished_executions(limit=limit)
+        candidates = {item["execution_id"]: item for item in
+                      self.ledger.unreconciled_terminal_executions(limit=max(1, limit))}
+        candidates.update({item["execution_id"]: item for item in closed})
         advanced = []
-        for execution in closed:
+        for execution in sorted(candidates.values(),
+                                key=lambda item: (item.get("finished_at") or "", item["execution_id"])):
             task = self.ledger.get_production_task(execution["task_id"])
             if task is None:
                 continue
@@ -1749,11 +1746,25 @@ class ProductionTasks:
                 self.ledger.set_task_next_run_at(task_id=task["task_id"],
                                                  next_run_at=following.isoformat())
                 advanced.append({"task_id": task["task_id"], "next_run_at": following.isoformat()})
+            steps = self.ledger.list_production_steps(execution["execution_id"])
+            completed_windows = [
+                {"window_start": step["window_start"], "window_end": step["window_end"]}
+                for step in steps if (step.get("stage") == "raw" and step.get("state") == "completed"
+                                      and step.get("window_start") and step.get("window_end"))]
+            self.ledger.resolve_gap_windows(task["task_id"], completed_windows)
+            observed_gaps = provider_gap_windows(
+                self.ledger.production_execution_runs(execution["execution_id"]))
+            policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
+            self.ledger.upsert_gap_windows(
+                task["task_id"], [{**gap, "state": "cooldown"} for gap in observed_gaps],
+                now=finished_at or now,
+                cooldown_minutes=policy.gap_retry_cooldown_minutes, policy_id=policy.policy_id)
             self.ledger.record_progress(task["task_id"], {
                 "last_outcome": execution.get("outcome"),
                 "last_finished_at": execution.get("finished_at"),
                 "last_execution_id": execution["execution_id"],
             })
+            self.ledger.mark_execution_progress_reconciled(execution["execution_id"])
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],

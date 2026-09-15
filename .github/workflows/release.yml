@@ -57,11 +57,24 @@ jobs:
         shell: bash
         run: |
           commit="${{ steps.release.outputs.commit }}"
-          check_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$commit/check-runs" \
-            --jq '.check_runs | map(select(.name == "verify" and .conclusion == "success")) | sort_by(.completed_at) | last')
+          check_json=""
+          for attempt in {1..30}; do
+            check_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/$commit/check-runs" \
+              --jq '.check_runs | map(select(.name == "verify" and .conclusion == "success")) | sort_by(.completed_at) | last' || true)
+            if [[ -n "$check_json" && "$check_json" != "null" ]]; then
+              break
+            fi
+            echo "waiting for commit-scoped verify ($attempt/30)"
+            sleep 10
+          done
+          test -n "$check_json"
           test "$check_json" != "null"
-          echo "run_id=$(printf '%s' "$check_json" | jq -r '.details_url | capture("/runs/(?<id>[0-9]+)").id')" >> "$GITHUB_OUTPUT"
-          echo "url=$(printf '%s' "$check_json" | jq -r .details_url)" >> "$GITHUB_OUTPUT"
+          run_id=$(printf '%s' "$check_json" | jq -er '.details_url | capture("/runs/(?<id>[0-9]+)").id')
+          url=$(printf '%s' "$check_json" | jq -er .details_url)
+          test -n "$run_id"
+          test "$run_id" != "null"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Generate release receipt
         run: |
           python scripts/write_release_receipt.py \

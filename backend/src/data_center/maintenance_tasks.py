@@ -563,7 +563,7 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
         "plan_health": sorted(PLAN_HEALTH),
         "plan_phases": sorted(PLAN_PHASES),
         "block_reasons": ["provider_backoff", "capacity", "dependency", "backlog", "input_unavailable",
-                          "paused", "global_pause", "execution_in_progress", "config_drift"],
+                          "provider_gap", "paused", "global_pause", "execution_in_progress", "config_drift"],
         "outputs": [{"dataset_id": "provider_bars", "timeframes": sorted({
             timeframe for item in providers for timeframe in item["maintenance_timeframes"]})},
             {"dataset_id": "market_bars", "timeframes": sorted({

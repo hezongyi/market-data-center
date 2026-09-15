@@ -7,6 +7,7 @@ execution from the run outcomes it can read back (AC05, AC06, AC09, AC13).
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -120,6 +121,138 @@ def test_a_failed_run_makes_the_round_failed_and_keeps_the_receipt(tmp_path):
     failed_step = next(step for step in ledger.list_production_steps(execution["execution_id"])
                        if step["step_id"] == failed["step_id"])
     assert failed_step["state"] == "failed"
+
+
+def test_a_provider_coverage_gap_closes_the_round_degraded_and_persists_exact_debt(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    claim = ledger.claim_next_job()
+    failed = ledger.get(claim["run_id"])
+    missing_at = parse_instant(failed["execution_plan"]["windows"][0]["start"])
+    missing = missing_at.isoformat()
+    missing_end = (missing_at + timedelta(days=1)).isoformat()
+    coverage = {
+        "dataset_id": "provider_bars",
+        "selector": {"provider": "fixture", "symbol": "UI_TEST", "timeframe": "1d"},
+        "readiness_status": "degraded", "quality_status": "pass",
+        "timeframe_seconds": 86400, "first_missing_ts": missing,
+    }
+    ledger.fail_job(
+        claim["job_id"], claim["run_id"], "quality checks failed",
+        error_type="QualityError", failure_stage="quality", retryable=False,
+        quality_summary={"status": "fail", "finding_count": 1, "findings": [
+            {"severity": "error", "code": "coverage_not_ready", "coverage": coverage},
+        ]},
+    )
+    while (rest := ledger.claim_next_job()) is not None:
+        ledger.finish_job(rest["job_id"], rest["run_id"],
+                          {"status": "pass", "run_id": rest["run_id"]})
+
+    result = scheduler.tick(now=NOW + timedelta(minutes=1))
+    closed = ledger.get_production_execution(execution["execution_id"])
+    assert closed["state"] == "completed" and closed["outcome"] == "degraded"
+    assert ledger.get(failed["run_id"])["status"] == "failed"
+    gap_step = next(step for step in ledger.list_production_steps(execution["execution_id"])
+                    if step["step_id"] == failed["step_id"])
+    assert gap_step["state"] == "skipped" and gap_step["block_reason"] == "provider_gap"
+    assert [(item["window_start"], item["window_end"])
+            for item in ledger.outstanding_gap_windows("p1")] == [
+                (missing, missing_end)]
+    assert result["reconcile"]["closed"][0]["outcome"] == "degraded"
+    assert service.read("p1")["progress"]["gaps"] == [{
+        "window_start": missing,
+        "window_end": missing_end,
+        "state": "cooldown", "attempts": 0, "reason": "gap_repair",
+        "next_review_at": closed["finished_at"],
+    }]
+
+
+def test_real_worker_records_14_expected_13_returned_as_one_exact_gap(
+        tmp_path, monkeypatch):
+    """TA01 regression: the production worker path must not dead-letter a pure gap."""
+    ledger, _service, _ = build(tmp_path)
+    execution_id = "ta01-gap"
+    start = "2026-09-14T22:14:00+00:00"
+    end = "2026-09-14T22:28:00+00:00"
+    missing = "2026-09-14T22:19:00+00:00"
+    missing_end = "2026-09-14T22:20:00+00:00"
+    ledger.create_production_execution(
+        execution_id=execution_id, task_id="p1", definition_version=1,
+        trigger_source="manual")
+    accepted = ledger.accept_execution_plan(
+        execution_id=execution_id,
+        steps=[{"stage": "raw", "window_start": start, "window_end": end,
+                "dedupe_key": f"raw:{start}:{end}", "payloads": [{
+                    "job_id": "ta01-14-of-13", "dataset_id": "provider_bars",
+                    "provider": "fixture", "symbol": "UI_TEST", "asset_class": "crypto",
+                    "timeframe": "1m", "start": start, "end": end,
+                    "run_scope": "production", "run_kind": "ingest",
+                    "execution_plan": {"windows": [{"start": start, "end": end,
+                                                        "reason": "tail"}]},
+                }]}])
+
+    worker = LocalWorker(tmp_path / "lake", ledger)
+    child = """
+import json, sys
+from pathlib import Path
+directory = Path(sys.argv[1])
+coverage = {
+    "dataset_id": "provider_bars", "selector": {"provider": "fixture", "symbol": "UI_TEST", "timeframe": "1m"},
+    "readiness_status": "degraded", "quality_status": "pass", "timeframe_seconds": 60,
+    "expected_count": 14, "actual_count": 13, "first_missing_ts": "2026-09-14T22:19:00+00:00",
+}
+result = {"error_type": "QualityError", "failure_stage": "quality", "error": "quality checks failed",
+          "retryable": False, "quality_summary": {"status": "fail", "finding_count": 1,
+          "findings": [{"severity": "error", "code": "coverage_not_ready", "coverage": coverage}]}}
+(directory / "result.json").write_text(json.dumps(result))
+"""
+    monkeypatch.setattr(worker, "_command", lambda directory: [sys.executable, "-c", child, str(directory)])
+    assert worker.run_next() is True
+    assert worker.run_next() is False
+
+    run = ledger.get(accepted["run_ids"][0])
+    assert run["status"] == "failed" and run["attempt_count"] == 1
+    assert not any(item["status"] == "dead_letter" for item in ledger.list())
+    # Simulate a process exit in the old transaction gap: execution closure is
+    # durable, but TaskProgress has not yet received the observed debt.
+    assert ledger.close_finished_executions()[0]["execution_id"] == execution_id
+    assert ledger.outstanding_gap_windows("p1") == []
+    reopened = RunLedger(tmp_path / "ledger.sqlite")
+    reopened_service = ProductionTasks(reopened, canonical_root=tmp_path / "lake")
+    reopened_service.reconcile(now=NOW + timedelta(minutes=1))
+    step = ledger.list_production_steps(execution_id)[0]
+    assert step["state"] == "skipped" and step["block_reason"] == "provider_gap"
+    execution = ledger.get_production_execution(execution_id)
+    assert execution["state"] == "completed" and execution["outcome"] == "degraded"
+    assert [(item["window_start"], item["window_end"])
+            for item in ledger.outstanding_gap_windows("p1")] == [(missing, missing_end)]
+    assert [(item["window_start"], item["window_end"])
+            for item in reopened.outstanding_gap_windows("p1")] == [(missing, missing_end)]
+
+    # A later successful publication of the exact window retires the debt, and
+    # refreshing the older failed step cannot resurrect it.
+    reopened.create_production_execution(
+        execution_id="ta01-repair", task_id="p1", definition_version=1,
+        trigger_source="scheduled")
+    repair = reopened.accept_execution_plan(
+        execution_id="ta01-repair",
+        steps=[{"stage": "raw", "window_start": missing, "window_end": missing_end,
+                "dedupe_key": f"raw:{missing}:{missing_end}", "payloads": [{
+                    "job_id": "ta01-repair", "dataset_id": "provider_bars", "provider": "fixture",
+                    "symbol": "UI_TEST", "asset_class": "crypto", "timeframe": "1m",
+                    "start": missing, "end": missing_end, "run_scope": "production",
+                    "run_kind": "gap_repair",
+                }]}])
+    claim = reopened.claim_next_job()
+    reopened.finish_job(claim["job_id"], repair["run_ids"][0],
+                        {"status": "pass", "run_id": repair["run_ids"][0]})
+    reopened_service.reconcile(now=NOW + timedelta(minutes=2))
+    reopened.refresh_task_steps("p1")
+    assert reopened.outstanding_gap_windows("p1") == []
+    reopened_service.reconcile(now=NOW + timedelta(minutes=3), limit=100)
+    assert reopened.outstanding_gap_windows("p1") == []
 
 
 def test_pause_lets_the_in_flight_round_finish_then_stops(tmp_path):

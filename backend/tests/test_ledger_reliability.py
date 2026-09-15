@@ -2,6 +2,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from data_center.domain.models import IngestJob
 from data_center.ingest.worker import LocalWorker
 from data_center.runs.ledger import RunLedger
@@ -26,15 +28,16 @@ def test_paused_maintenance_task_is_not_claimed(tmp_path: Path):
     assert ledger.claim_next_job() is not None
 
 
-def test_coverage_quality_failure_is_retryable_for_maintenance():
+@pytest.mark.parametrize("run_scope", ["maintenance", "production"])
+def test_provider_coverage_gap_does_not_consume_the_worker_retry_budget(run_scope):
     from data_center.ingest.process import safe_failure_result
     from data_center.quality.errors import QualityError
 
     result = safe_failure_result(
         QualityError("coverage", [{"code": "coverage_not_ready"}]),
-        {"run_scope": "maintenance"},
+        {"run_scope": run_scope},
     )
-    assert result["retryable"] is True
+    assert result["retryable"] is False
 
 
 def test_structural_quality_failure_is_not_retryable_for_maintenance():
