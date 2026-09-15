@@ -1723,6 +1723,8 @@ class ProductionTasks:
         now = now or datetime.now(timezone.utc)
         drift = self.reconcile_config_digest(limit=limit)
         backoffs = self._record_provider_backoffs(now=now, limit=limit)
+        fixed_continuations = self._advance_fixed_window_backlog(
+            now=now, limit=limit, step_budget=8)
         closure = self._advance_dependency_closure(limit=limit, step_budget=8)
         # A round that died after publishing, or raw published outside a round,
         # is still owed its derived outputs (spec 6.2, AC10).
@@ -1768,9 +1770,45 @@ class ProductionTasks:
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],
+                "fixed_continuations": fixed_continuations,
                 "provider_backoff_recorded": backoffs["recorded"],
                 "provider_backoff_cleared": backoffs["cleared"],
                 "reconciled_at": now.isoformat()}
+
+    def _advance_fixed_window_backlog(self, *, now: datetime, limit: int,
+                                      step_budget: int) -> builtins.list[dict]:
+        """Append the next bounded raw batch before a fixed execution can close.
+
+        A fixed manual request represents its entire half-open window, even when
+        provider policy shards that window into more steps than one scheduler
+        tick may accept.  Keeping those batches on the original execution makes
+        its terminal receipt truthful: ``pass`` means the complete requested
+        window was dispatched, not merely the first bounded batch.
+        """
+        continued: list[dict] = []
+        for execution in self.ledger.list_running_executions(limit=limit):
+            task = self.ledger.get_production_task(execution["task_id"])
+            if task is None or task["desired_state"] != "enabled":
+                continue
+            definition = task.get("payload") or {}
+            if (definition.get("window_policy") or {}).get("mode") != "fixed":
+                continue
+            progress = self.ledger.production_progress_core(task["task_id"]) or {}
+            if not progress.get("backlog"):
+                continue
+            steps = self.ledger.refresh_execution_steps(execution["execution_id"])
+            if not steps or any(step["state"] not in self.ledger.STEP_TERMINAL_STATES
+                                for step in steps):
+                continue
+            if any(step["state"] in {"failed", "blocked"} for step in steps):
+                continue
+            result = self.dispatch(task=task, execution=execution, now=now,
+                                   step_budget=step_budget)
+            if result["planned_steps"]:
+                continued.append({"execution_id": execution["execution_id"],
+                                  "planned_steps": result["planned_steps"],
+                                  "backlog": result["plan"]["backlog"]})
+        return continued
 
     def _record_repaired_windows(self, *, task: dict, steps: builtins.list[dict]) -> None:
         """Send raw windows that were republished after derivation back for recompute."""
@@ -1991,10 +2029,12 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
     if mode == "fixed":
         start = _as_utc(window_policy["start"], "window_policy.start")
         end = _as_utc(window_policy["end"], "window_policy.end")
-        frontier_end = start
+        recorded_frontier = _optional_utc((progress or {}).get("frontier"))
+        frontier_end = max(start, min(end, recorded_frontier)) if recorded_frontier else start
         if end > start:
-            planned, _ = expand("backfill", "ingest", [(start, end)])
-            frontier_end = max([_as_utc(item["end"], "window_end") for item in planned], default=start)
+            planned, _ = expand("backfill", "ingest", [(frontier_end, end)])
+            frontier_end = max([_as_utc(item["end"], "window_end") for item in planned],
+                               default=frontier_end)
     else:
         history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
         end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)
