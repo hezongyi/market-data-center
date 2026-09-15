@@ -61,6 +61,49 @@ def test_preview_environment_is_explicit_and_fixture_only(tmp_path):
     assert "DATACENTER_DEPLOYMENT_MANIFEST" not in env
 
 
+def test_preview_api_identity_must_match_recorded_checkout():
+    metadata = {
+        "id": "alpha",
+        "identity": {"commit": "a" * 40, "dirty": False},
+    }
+    matching = {"data": {
+        "source_commit": "a" * 40,
+        "source_dirty": False,
+        "environment": "preview:alpha",
+        "data_mode": "fixture",
+    }}
+    assert dev_preview.api_identity_matches(matching, metadata) is True
+
+    wrong_commit = {"data": {**matching["data"], "source_commit": "b" * 40}}
+    assert dev_preview.api_identity_matches(wrong_commit, metadata) is False
+    assert dev_preview.api_identity_matches(None, metadata) is False
+
+
+def test_preview_scheduler_status_uses_api_effective_dispatch():
+    fresh = {"data": {
+        "effective_dispatch": True,
+        "scheduler": {
+            "dispatch_enabled": True,
+            "instance_dispatch_enabled": True,
+        },
+    }}
+    assert dev_preview.scheduler_status(True, fresh) == {
+        "process_enabled": True,
+        "ledger_enabled": True,
+        "effective_dispatch": True,
+    }
+
+    stale = {"data": {
+        "effective_dispatch": False,
+        "heartbeat_status": "stale",
+        "scheduler": {
+            "dispatch_enabled": True,
+            "instance_dispatch_enabled": True,
+        },
+    }}
+    assert dev_preview.scheduler_status(True, stale)["effective_dispatch"] is False
+
+
 def test_preview_metadata_is_private(tmp_path):
     path = tmp_path / "preview.json"
     dev_preview.write_json(path, {"token": "secret"})

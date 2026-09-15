@@ -394,6 +394,11 @@ def http_json(url: str) -> dict | None:
     try:
         with opener.open(url, timeout=2) as response:
             return json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read())
+        except (OSError, ValueError):
+            return None
     except (OSError, ValueError, urllib.error.URLError):
         return None
 
@@ -440,19 +445,54 @@ def wait_until(
     raise PreviewError(f"timed out waiting for {message}")
 
 
+def api_identity_matches(payload: dict | None, metadata: dict) -> bool:
+    data = (payload or {}).get("data", {})
+    identity = metadata.get("identity", {})
+    return (
+        data.get("source_commit") == identity.get("commit")
+        and data.get("source_dirty") is identity.get("dirty")
+        and data.get("environment") == f"preview:{metadata.get('id')}"
+        and data.get("data_mode") == "fixture"
+    )
+
+
+def scheduler_status(process_running: bool, payload: dict | None) -> dict:
+    data = (payload or {}).get("data", {})
+    state = data.get("scheduler", {})
+    return {
+        "process_enabled": process_running
+        and bool(state.get("instance_dispatch_enabled", False)),
+        "ledger_enabled": bool(state.get("dispatch_enabled", False)),
+        # The API owns heartbeat freshness and the effective-dispatch rule.
+        # Recomputing a weaker approximation here would let a stuck process
+        # disagree with the page and still appear able to dispatch.
+        "effective_dispatch": process_running
+        and bool(data.get("effective_dispatch", False)),
+    }
+
+
 def status_payload(root: Path, metadata: dict) -> dict:
     actual = checkout_identity()
     processes = {
         name: {**record, "running": process_matches(record, metadata.get("token", ""))}
         for name, record in metadata.get("processes", {}).items()
     }
-    identity_ok = all(
+    checkout_identity_ok = all(
         actual.get(key) == metadata.get("identity", {}).get(key)
         for key in ("checkout", "commit", "dirty", "worktree_fingerprint")
     )
     all_running = len(processes) == 4 and all(
         item["running"] for item in processes.values()
     )
+    api_identity = (
+        http_json(
+            f"http://127.0.0.1:{metadata['ports']['api']}/api/v1/health/ready"
+        )
+        if all_running
+        else None
+    )
+    api_identity_ok = api_identity_matches(api_identity, metadata) if all_running else None
+    identity_ok = checkout_identity_ok and api_identity_ok is not False
     scheduler_view = (
         http_json(
             f"http://127.0.0.1:{metadata['ports']['api']}/api/v1/operations/scheduler"
@@ -460,13 +500,10 @@ def status_payload(root: Path, metadata: dict) -> dict:
         if all_running
         else None
     )
-    scheduler_data = (scheduler_view or {}).get("data", {})
-    scheduler_state = scheduler_data.get("scheduler", {})
-    process_enabled = bool(
-        processes.get("scheduler", {}).get("running", False)
-    ) and bool(scheduler_state.get("instance_dispatch_enabled", False))
-    ledger_enabled = bool(scheduler_state.get("dispatch_enabled", False))
-    effective_dispatch = process_enabled and ledger_enabled
+    dispatch = scheduler_status(
+        bool(processes.get("scheduler", {}).get("running", False)),
+        scheduler_view,
+    )
     return {
         "id": metadata["id"],
         "state": "running"
@@ -475,14 +512,13 @@ def status_payload(root: Path, metadata: dict) -> dict:
         if all_running
         else "stopped",
         "identity_ok": identity_ok,
+        "checkout_identity_ok": checkout_identity_ok,
+        "api_identity_ok": api_identity_ok,
+        "api_identity": (api_identity or {}).get("data"),
         "recorded_identity": metadata.get("identity"),
         "actual_identity": actual,
         "mode": "fixture",
-        "scheduler": {
-            "process_enabled": process_enabled,
-            "ledger_enabled": ledger_enabled,
-            "effective_dispatch": effective_dispatch,
-        },
+        "scheduler": dispatch,
         "ui_url": f"http://127.0.0.1:{metadata['ports']['ui']}",
         "api_docs_url": f"http://127.0.0.1:{metadata['ports']['api']}/docs",
         "api_url": f"http://127.0.0.1:{metadata['ports']['api']}/api/v1",
@@ -606,6 +642,10 @@ def start(args, root: Path, metadata_path: Path) -> int:
             processes,
             root / "logs",
         )
+        if not api_identity_matches(
+            http_json(api_base + "/api/v1/health/ready"), metadata
+        ):
+            raise PreviewError("preview API identity does not match the recorded checkout")
         wait_until(
             lambda: http_json(api_base + "/api/v1/operations/scheduler") is not None,
             "scheduler status",

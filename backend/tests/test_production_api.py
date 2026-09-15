@@ -263,10 +263,23 @@ def test_operations_scheduler_reports_state_and_due_plans(client, config):
     assert payload["due_now"] == 0
     assert payload["scheduler"]["heartbeat_at"] is None
     assert payload["dispatch_enabled"] is True
+    assert payload["effective_dispatch"] is False
+    assert payload["heartbeat_status"] == "unknown"
     assert payload["plans_by_state"] == {"enabled": 1}
+
+    ledger = RunLedger(config.ledger_path)
+    ledger.scheduler_heartbeat(instance_id="test-scheduler", dispatch_enabled=True)
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    assert payload["effective_dispatch"] is True
+    assert payload["heartbeat_status"] == "fresh"
+    assert payload["heartbeat_age_seconds"] < 5
+
+    ledger.set_global_dispatch(False)
+    payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
+    assert payload["effective_dispatch"] is False
     # Once a slot is genuinely in the past the view lists it (the endpoint
     # compares against the real clock, so the slot must really have passed).
-    RunLedger(config.ledger_path).set_task_next_run_at(
+    ledger.set_task_next_run_at(
         task_id="p1", next_run_at="2020-01-01T00:00:00+00:00")
     payload = client.get("/api/v1/operations/scheduler", headers=auth()).json()["data"]
     assert payload["due_task_ids"] == ["p1"]
