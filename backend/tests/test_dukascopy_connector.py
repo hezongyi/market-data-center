@@ -1,10 +1,13 @@
 import json
+import lzma
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
 import dukascopy_python
 import pandas as pd
 import pytest
+import requests
 
 from data_center.connectors.dukascopy import DukascopyConnector
 from data_center.connectors.registry import CONNECTORS
@@ -89,6 +92,62 @@ def test_dukascopy_connector_governs_http_timeout_and_proxy(monkeypatch) -> None
     assert captured["status_checked"] is True
 
 
+def test_dukascopy_connector_falls_back_to_official_bi5_for_eurusd_minute(monkeypatch) -> None:
+    requested = {}
+    payload = lzma.compress(b"".join([
+        struct.pack(">IIIff", 1_000, 110_010, 110_000, 1.0, 2.0),
+        struct.pack(">IIIff", 30_000, 110_030, 110_020, 1.0, 3.0),
+        struct.pack(">IIIff", 61_000, 110_020, 110_010, 1.0, 4.0),
+    ]))
+
+    class Response:
+        content = payload
+
+        def raise_for_status(self):
+            requested["status_checked"] = True
+
+    def get(url, **kwargs):
+        requested.update(url=url, kwargs=kwargs)
+        return Response()
+
+    monkeypatch.setattr(dukascopy_python.requests, "get", get)
+    connector = DukascopyConnector(fetch=lambda **_: (_ for _ in ()).throw(requests.ConnectionError()))
+
+    rows = connector.fetch_bars(job(
+        timeframe="1m",
+        start=datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 14, 3, tzinfo=timezone.utc),
+    ))
+
+    assert requested["url"].endswith("/EURUSD/2026/08/14/02h_ticks.bi5")
+    assert requested["status_checked"] is True
+    assert [row.bar_ts for row in rows] == [
+        datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 14, 2, 1, tzinfo=timezone.utc),
+    ]
+    assert (rows[0].open, rows[0].high, rows[0].low, rows[0].close, rows[0].volume) == (
+        1.1, 1.1002, 1.1, 1.1002, 5.0,
+    )
+
+
+def test_dukascopy_bi5_fallback_rejects_invalid_payload(monkeypatch) -> None:
+    class Response:
+        content = b"not-lzma"
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(dukascopy_python.requests, "get", lambda *_args, **_kwargs: Response())
+    connector = DukascopyConnector(fetch=lambda **_: (_ for _ in ()).throw(requests.Timeout()))
+
+    with pytest.raises(ValueError, match="not valid LZMA"):
+        connector.fetch_bars(job(
+            timeframe="1m",
+            start=datetime(2026, 9, 14, 2, tzinfo=timezone.utc),
+            end=datetime(2026, 9, 14, 3, tzinfo=timezone.utc),
+        ))
+
+
 def test_dukascopy_connector_rejects_unbounded_minute_request() -> None:
     with pytest.raises(ValueError, match="exceeds bounded range"):
         DukascopyConnector(fetch=lambda **_: frame("2026-01-01T00:00:00Z")).fetch_bars(
@@ -117,7 +176,7 @@ def test_dukascopy_ingest_publishes_manifest_and_readback(tmp_path, monkeypatch)
 
     assert receipt["status"] == "pass"
     assert receipt["provider"] == "dukascopy"
-    assert receipt["connector_version"] == "dukascopy-python-4.0.1-bid-v1"
+    assert receipt["connector_version"] == "dukascopy-python-4.0.1-bid-bi5-fallback-v2"
     assert receipt["row_count"] == 2
     manifest = json.loads(Path(receipt["manifest"]).read_text())
     assert manifest["dataset_id"] == "provider_bars"

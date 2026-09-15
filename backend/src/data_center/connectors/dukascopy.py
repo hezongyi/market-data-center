@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import lzma
 import os
+import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,7 +21,7 @@ class DukascopyConnector:
     """Historical provider-native BID bars through dukascopy-python."""
 
     provider = "dukascopy"
-    version = "dukascopy-python-4.0.1-bid-v1"
+    version = "dukascopy-python-4.0.1-bid-bi5-fallback-v2"
 
     _INTERVALS: ClassVar[dict[str, str]] = {
         "1m": dukascopy_python.INTERVAL_MIN_1,
@@ -50,6 +52,10 @@ class DukascopyConnector:
     }
     _ASSET_CLASSES: ClassVar[set[str]] = {"fx", "commodity", "crypto"}
     _REQUIRED_COLUMNS: ClassVar[tuple[str, ...]] = ("open", "high", "low", "close", "volume")
+    _DATAFEED_RECORD: ClassVar[struct.Struct] = struct.Struct(">IIIff")
+    _DATAFEED_URL: ClassVar[str] = (
+        "https://datafeed.dukascopy.com/datafeed/{symbol}/{year}/{month}/{day}/{hour}h_ticks.bi5"
+    )
 
     def __init__(
         self,
@@ -159,6 +165,49 @@ class DukascopyConnector:
             raise ValueError("Dukascopy payload contains duplicate timestamps")
         return normalized
 
+    @classmethod
+    def _datafeed_frame(cls, payload: bytes, *, hour: datetime) -> pd.DataFrame:
+        """Aggregate one official hourly BI5 BID tick file into UTC minute bars."""
+        try:
+            decoded = lzma.decompress(payload)
+        except lzma.LZMAError as exc:
+            raise ValueError("Dukascopy BI5 payload is not valid LZMA data") from exc
+        if len(decoded) % cls._DATAFEED_RECORD.size:
+            raise ValueError("Dukascopy BI5 payload has a partial tick record")
+        ticks = []
+        for offset_ms, _ask, bid, _ask_volume, bid_volume in cls._DATAFEED_RECORD.iter_unpack(decoded):
+            if offset_ms >= 3_600_000:
+                raise ValueError("Dukascopy BI5 tick lies outside its hourly file")
+            ticks.append((hour + pd.Timedelta(milliseconds=offset_ms), bid / 100_000, bid_volume))
+        if not ticks:
+            raise ProviderGapError("Dukascopy returned no ticks for the requested hour")
+        frame = pd.DataFrame(ticks, columns=["bar_ts", "bid", "volume"]).set_index("bar_ts")
+        bars = frame.resample("1min").agg(
+            open=("bid", "first"), high=("bid", "max"), low=("bid", "min"),
+            close=("bid", "last"), volume=("volume", "sum"),
+        )
+        return bars.dropna(subset=["open", "high", "low", "close"])
+
+    def _fetch_datafeed_minute(self, *, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+        if start.minute or start.second or start.microsecond or end - start > pd.Timedelta(hours=1):
+            raise ValueError("Dukascopy BI5 fallback requires an hour-aligned window of at most one hour")
+        frames = []
+        cursor = start
+        while cursor < end:
+            url = self._DATAFEED_URL.format(
+                symbol=symbol,
+                year=f"{cursor.year:04d}",
+                month=f"{cursor.month - 1:02d}",
+                day=f"{cursor.day:02d}",
+                hour=f"{cursor.hour:02d}",
+            )
+            response = dukascopy_python.requests.get(url)
+            frames.append(self._datafeed_frame(response.content, hour=cursor))
+            cursor += pd.Timedelta(hours=1)
+        if not frames:
+            raise ProviderGapError("Dukascopy requested range contains no hourly file")
+        return pd.concat(frames).sort_index()
+
     def fetch_bars(self, job: IngestJob) -> list[ProviderBar]:
         start, requested_end = self._validate_job(job)
         provider_symbol, canonical_symbol, quote_currency = self._provider_symbol(job.symbol)
@@ -166,15 +215,23 @@ class DukascopyConnector:
         if effective_end <= start:
             raise ProviderGapError("Dukascopy requested range has no completed bars")
         with self._http_policy():
-            frame = self._fetch(
-                instrument=provider_symbol,
-                interval=self._INTERVALS[job.timeframe],
-                offer_side=dukascopy_python.OFFER_SIDE_BID,
-                start=self._naive_utc(start),
-                end=self._naive_utc(effective_end),
-                max_retries=0,
-                limit=30_000,
-            )
+            try:
+                frame = self._fetch(
+                    instrument=provider_symbol,
+                    interval=self._INTERVALS[job.timeframe],
+                    offer_side=dukascopy_python.OFFER_SIDE_BID,
+                    start=self._naive_utc(start),
+                    end=self._naive_utc(effective_end),
+                    max_retries=0,
+                    limit=30_000,
+                )
+            except Exception as exc:
+                request_error = getattr(dukascopy_python.requests, "RequestException", ())
+                if job.timeframe != "1m" or canonical_symbol != "EURUSD" or not isinstance(exc, request_error):
+                    raise
+                frame = self._fetch_datafeed_minute(
+                    symbol=canonical_symbol, start=start, end=effective_end,
+                )
         frame = self._normalized_frame(frame)
         ingest_ts = datetime.now(timezone.utc)
         rows: list[ProviderBar] = []

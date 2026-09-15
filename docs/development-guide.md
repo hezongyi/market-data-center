@@ -159,7 +159,10 @@ live connector 在发出请求前核对 provider、EURUSD、窗口、累计请�
 单个已限制请求的落盘量，下一次拉取会停止。API 同时只接受窗口范围内的 fixed/manual 任务。默认
 fixture 与 live 都关闭告警外发、使用独立 auth/ledger/canonical/evidence/backup；
 不得省略 `--base` 操作上述保留预览。`--inherit-proxy` 仅在 live 显式选择时
-传入标准代理环境变量，代理值不写 preview metadata、状态输出或文档。
+传入标准代理环境变量，代理值不写 preview metadata 或状态输出。开发机若需持久保存代理，使用
+repository 外的权限受限环境文件或 shell 私有环境；仓库忽略的 `.env.local` 不会被 preview
+脚本自动加载。SOCKS 代理使用 `ALL_PROXY=socks5h://host:port`，同时用 `NO_PROXY` 排除
+`127.0.0.1,localhost`；锁定依赖包含 requests 所需的 PySocks 支持。
 
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 

@@ -70,7 +70,7 @@ Provider Adapter
 
 ## 当前基线与缺口
 
-- connector 当前固定调用 `dukascopy_python.OFFER_SIDE_BID`，版本为 `dukascopy-python-4.0.1-bid-v1`。
+- connector 默认调用 `dukascopy_python.OFFER_SIDE_BID`；EURUSD 1m 在该库使用的旧图表端点发生网络错误时，回退到官方 hourly BI5 tick 文件并按 BID 聚合，版本为 `dukascopy-python-4.0.1-bid-bi5-fallback-v2`。
 - connector 能处理 `1m/5m/15m/30m/1h/4h/1d` provider-native bars，但 Data Center 当前没有派生聚合 workflow。
 - `provider_bars.v1` 的 identity 为 `provider + symbol + timeframe + bar_ts`；虽然模型有 `price_type`，但主键、分区、selector、cursor 和 coverage 没有包含价格方向，不能安全混写 BID/ASK。
 - 当前正式 manifest 可见的 Dukascopy 数据仍是有限验收窗口；legacy raw Parquet 不在 Data Center manifest 中，也不能因路径存在而视为已受治理数据。

@@ -125,6 +125,8 @@ pytz==2026.3.post1
     # via
     #   pandas
     #   yfinance
+pysocks==1.7.1
+    # via market-data-center (backend/pyproject.toml)
 requests==2.34.2
     # via
     #   market-data-center (backend/pyproject.toml)
