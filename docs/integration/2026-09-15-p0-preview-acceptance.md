@@ -1,14 +1,14 @@
 # P0 独立预览阶段验收
 
 日期：2026-09-15
-状态：用户阶段验收通过；独立评审修正和完整本地 gate 通过，等待 hosted CI
+状态：用户阶段验收、独立评审、完整本地 gate 与 hosted CI 通过；PR #123 已合并
 
 ## 当前验收卡
 
 - 阶段：P0 / E01；PV01、PV02、PV04、PV05、PV07，PV03/PV06/PV08 基础范围。
 - 预览：`http://127.0.0.1:25345`；远程访问时转发 UI 25345 与 API 25344。
-- 身份：`codex/p0-isolated-preview` / clean implementation commit `a573675`；observed_at `2026-09-15T08:29:25Z`（阶段验收记录，精确运行身份以 `status` 为准）。
-- 环境：分支预览，fixture；数据与日志保留在 ignored `.preview/p0-eurusd/`。
+- 身份：main 集成预览 / merge commit `7019dc3` / dirty=false；observed_at `2026-09-15T09:11:27Z`。
+- 环境：main 集成预览，fixture；数据与日志保留在 `/home/quant/repos/market-data-center-p0-preview/.preview/p0-eurusd/`，删除该 worktree 前需迁移或备份。
 - 操作：打开 UI；核对顶部环境条；初始化至少 12 位密码并登录/退出；观察顶部 scheduler 心跳；打开 `http://127.0.0.1:25344/docs`。
 - 预期：明确显示“预览 · 模拟数据”、id/commit/dirty/mode；登录写入独立 cookie/auth 库；调度显示有效派发且心跳变化；API 文档独立可用。
 - 限制：P1 才交付 shadcn-admin 主线和详情路由；完整 fixture task→scheduler→worker→发布→读回在 P2/P3；live sandbox 在 P2；不联系真实 provider，不外发告警，不部署生产。
@@ -39,3 +39,9 @@
 - `DATACENTER_PYTHON=.venv/bin/python bash scripts/ci.sh all`：在评审修正 commit `db7f7b3` 通过；487 passed、5 skipped；Node 22 Web build、桌面/移动浏览器全旅程、服务重启验收通过。
 - `NODE_ENV=production npm --prefix webui ci --include=dev`：通过；确认 #106 场景仍安装锁定的 Vite/TypeScript/Playwright 开发依赖。
 - `.venv/bin/python scripts/dev_preview_acceptance.py --python .venv/bin/python`：通过；four_process_start、parallel_isolation、same_origin_auth、cookie_isolation、independent_stop、restart_retention。
+
+## 合并与交接
+
+- PR：[#123](https://github.com/hezongyi/market-data-center/pull/123)，head `2c73387` 的 Python 3.10/3.11/3.12、Web browser 与 required `verify` 均通过；2026-09-15 合并为 `7019dc3`。
+- 本地基线：`/home/quant/repos/market-data-center-latest` 的 `main` 已 fast-forward 到 `7019dc3`。
+- 运行预览：原 auth/data 保留，已在相同端口重启到 `7019dc3`；P0 交接后不自动进入 P1，不部署生产。
