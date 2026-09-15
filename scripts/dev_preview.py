@@ -406,13 +406,32 @@ def http_ok(url: str) -> bool:
 
 
 def wait_until(
-    predicate, message: str, processes: list[subprocess.Popen], timeout: float = 45
+    predicate,
+    message: str,
+    processes: dict[str, subprocess.Popen],
+    log_root: Path,
+    timeout: float = 45,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        failed = [process for process in processes if process.poll() is not None]
+        failed = {
+            name: process.returncode
+            for name, process in processes.items()
+            if process.poll() is not None
+        }
         if failed:
-            raise PreviewError(f"a preview process exited while waiting for {message}")
+            details = []
+            for name, returncode in failed.items():
+                log_path = log_root / f"{name}.log"
+                try:
+                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+                except OSError:
+                    tail = "<log unavailable>"
+                details.append(f"{name} exited {returncode}; log tail:\n{tail}")
+            raise PreviewError(
+                f"preview process exited while waiting for {message}: "
+                + "\n".join(details)
+            )
         if predicate():
             return
         time.sleep(0.2)
@@ -566,11 +585,11 @@ def start(args, root: Path, metadata_path: Path) -> int:
             "--strictPort",
         ],
     }
-    processes: list[subprocess.Popen] = []
+    processes: dict[str, subprocess.Popen] = {}
     try:
         for name in ("api", "worker", "scheduler", "vite"):
             process, record = spawn_component(name, commands[name], root, env)
-            processes.append(process)
+            processes[name] = process
             metadata["processes"][name] = record
         write_json(metadata_path, metadata)
         api_base = f"http://127.0.0.1:{ports['api']}"
@@ -583,14 +602,19 @@ def start(args, root: Path, metadata_path: Path) -> int:
             ),
             "API, worker and storage readiness",
             processes,
+            root / "logs",
         )
         wait_until(
             lambda: http_json(api_base + "/api/v1/operations/scheduler") is not None,
             "scheduler status",
             processes,
+            root / "logs",
         )
         wait_until(
-            lambda: http_ok(f"http://127.0.0.1:{ports['ui']}"), "Vite UI", processes
+            lambda: http_ok(f"http://127.0.0.1:{ports['ui']}"),
+            "Vite UI",
+            processes,
+            root / "logs",
         )
     except BaseException:
         try:
