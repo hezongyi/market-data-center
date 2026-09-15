@@ -12,6 +12,17 @@ class ProviderGapError(ValueError):
     """
 
 
+class SessionClosedError(ProviderGapError):
+    """The requested window lies entirely outside the instrument's session.
+
+    A weekend window for an FX instrument owes no bars at all, so this is an
+    expected and deterministic condition: retrying the same window cannot
+    produce output.  It subclasses ``ProviderGapError`` so every caller that
+    already treats a gap as ``degraded`` keeps working, while a caller that can
+    tell the two apart reports it as ``skipped`` instead.
+    """
+
+
 class InputUnavailableError(ValueError):
     """A step's fixed input cannot be rebuilt from its persisted references.
 
@@ -24,6 +35,14 @@ class InputUnavailableError(ValueError):
 
 # Run receipts record the error type by name.  ``ValueError`` predates the
 # dedicated type and is still accepted so that receipts written by earlier
-# workers keep their established meaning.
-PROVIDER_GAP_ERROR_TYPES = frozenset({ProviderGapError.__name__})
+# workers keep their established meaning.  A closed window belongs to the same
+# degradation class as a gap: both say "no bars for this window", and neither
+# is ever filled with synthesized ones.
+PROVIDER_GAP_ERROR_TYPES = frozenset({ProviderGapError.__name__, SessionClosedError.__name__})
+
+#: A subset of the gap class that owes no output at all, so retrying the same
+#: window is pointless and the condition is reported as skipped rather than
+#: degraded.
+SESSION_CLOSED_ERROR_TYPES = frozenset({SessionClosedError.__name__})
+
 INPUT_UNAVAILABLE_ERROR_TYPES = frozenset({InputUnavailableError.__name__})
