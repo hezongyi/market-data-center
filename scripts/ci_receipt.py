@@ -2,13 +2,53 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
+import os
 import platform
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from code_identity import checkout_identity
+
 WEB_PACKAGE = Path(__file__).resolve().parents[1] / "webui" / "package.json"
+
+
+def environment_identity(repo: Path) -> dict:
+    packages = sorted((dist.metadata["Name"], dist.version) for dist in importlib.metadata.distributions())
+    # Tools may consume arbitrary variables (PYTEST_ADDOPTS, NODE_OPTIONS,
+    # VITE_*, proxies, etc.). Prefer cache misses over falsely matching evidence.
+    relevant = dict(os.environ)
+    for key in ("DATACENTER_CI_RECEIPT", "DATACENTER_CI_ACTION", "_", "SHLVL", "PWD", "OLDPWD"):
+        relevant.pop(key, None)
+    installed = repo / "webui/node_modules/.package-lock.json"
+    try:
+        node = subprocess.check_output(["node", "--version"], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        node = "unavailable"
+    return {"python": platform.python_version(), "python_executable": sys.executable,
+            "platform": platform.platform(), "node": node,
+            "python_packages_hash": hashlib.sha256(json.dumps(packages).encode()).hexdigest(),
+            "web_install_hash": hashlib.sha256(installed.read_bytes()).hexdigest() if installed.exists() else None,
+            "configuration_hash": hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()}
+
+
+def reusable(receipt: dict, source: dict, environment: dict, request: dict) -> bool:
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("details"), dict):
+        return False
+    details = receipt["details"]
+    checks = details.get("checks", [])
+    return (receipt.get("result") == "pass" and receipt.get("source") == source
+            and receipt.get("source_after") == source and receipt.get("environment") == environment
+            and details.get("identity_stable") is True and details.get("request") == request
+            and isinstance(checks, list) and bool(checks) and len(checks) == len(request["checks"])
+            and all(isinstance(check, dict) and check.get("result") == "pass"
+                    and check.get("exit_code") == 0 and check.get("name") == expected["name"]
+                    and check.get("command") == expected["command"]
+                    for check, expected in zip(checks, request["checks"])))
 
 
 def software_version() -> str:
@@ -27,15 +67,13 @@ def main() -> None:
     parser.add_argument("--started-at", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    try:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except (OSError, subprocess.CalledProcessError):
-        commit = "unknown"
+    source = checkout_identity(WEB_PACKAGE.parents[1])
     payload = {
         "receipt_version": "operational-receipt.v1",
         "action": args.action,
-        "commit": commit,
-        "environment": {"python": platform.python_version(), "platform": platform.platform()},
+        "commit": source["commit"],
+        "source": source,
+        "environment": environment_identity(WEB_PACKAGE.parents[1]),
         "command": f"bash scripts/ci.sh {args.scope}",
         "started_at": args.started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),

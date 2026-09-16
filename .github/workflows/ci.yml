@@ -2,7 +2,9 @@ name: Checks
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,7 +14,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      base: ${{ steps.select.outputs.base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select checks
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # A new branch/manual run has no useful before SHA; keep the full gate.
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then BASE=HEAD; fi
+          python scripts/ci_policy.py plan --event "$EVENT" --base "$BASE" --github-output "$GITHUB_OUTPUT"
+
+  docs:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Documentation checks
+        env:
+          DATACENTER_PYTHON: python3
+          DATACENTER_DOCS_BASE: ${{ needs.plan.outputs.base }}
+        run: bash scripts/ci.sh docs
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-receipts
+          path: acceptance-receipts/ci/
+
   backend:
+    needs: plan
+    if: needs.plan.outputs.mode == 'full'
     name: backend-python-${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -26,6 +69,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: backend/constraints/*.txt
       - run: python -m venv .venv
       - name: Install locked dependencies
         run: .venv/bin/python -m pip install -c backend/constraints/py$(echo '${{ matrix.python-version }}' | tr -d .).txt -e './backend[dev]'
@@ -43,6 +87,8 @@ jobs:
             acceptance-receipts/operational-snapshot-benchmark.json
 
   web:
+    needs: plan
+    if: needs.plan.outputs.mode == 'full'
     name: web-node-22-browser
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -60,7 +106,7 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: python -m venv .venv
       - run: .venv/bin/python -m pip install -c backend/constraints/py311.txt -e './backend[dev]'
-      - run: npm --prefix webui ci --include=dev
+      - run: bash scripts/prepare-dev.sh web
       - run: npx --prefix webui playwright install --with-deps chromium
       - name: Unified Web and browser checks
         env:
@@ -78,11 +124,18 @@ jobs:
   verify:
     name: verify
     if: always()
-    needs: [backend, web]
+    needs: [plan, docs, backend, web]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - uses: actions/checkout@v4
       - name: Enforce required checks
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          PLAN: ${{ needs.plan.result }}
+          DOCS: ${{ needs.docs.result }}
+          BACKEND: ${{ needs.backend.result }}
+          WEB: ${{ needs.web.result }}
         run: |
-          test '${{ needs.backend.result }}' = success
-          test '${{ needs.web.result }}' = success
+          python scripts/ci_policy.py verify --mode "$MODE" \
+            --plan "$PLAN" --docs "$DOCS" --backend "$BACKEND" --web "$WEB"

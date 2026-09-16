@@ -41,7 +41,7 @@ jobs:
               DATACENTER_CI_RECEIPT="acceptance-receipts/dependency-refresh-python-$version.json" \
               DATACENTER_CI_ACTION=dependency_refresh bash scripts/ci.sh backend
           done
-      - run: npm --prefix webui ci
+      - run: bash scripts/prepare-dev.sh web
       - run: npx --prefix webui playwright install --with-deps chromium
       - name: Validate service and browser acceptance
         env:

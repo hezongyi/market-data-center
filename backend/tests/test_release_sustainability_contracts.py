@@ -41,7 +41,7 @@ def test_hosted_ci_and_dependency_refresh_cover_supported_runtimes():
 
 
 def test_local_browser_gate_has_explicit_node_playwright_and_chromium_preflight():
-    script = (ROOT / "scripts/ci.sh").read_text()
+    script = (ROOT / "scripts/web-preflight.sh").read_text()
     assert 'node_major=' in script and 'Node 22 is required' in script
     assert "require.resolve('playwright'" in script
     assert ".cache/ms-playwright" in script
