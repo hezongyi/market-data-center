@@ -82,6 +82,7 @@ class MaintenanceTaskRequest(BaseModel):
     start: datetime
     end: datetime
     task_id: str | None = None
+    managed_dataset_id: str | None = None
     schedule: Literal["manual"] = "manual"
 
 
@@ -161,6 +162,7 @@ def _task_document(request: MaintenanceTaskRequest, dataset_id: str, *, asset_cl
     task_id = request.task_id or f"{run_kind}-{request.provider}-{request.symbol or request.series_id or 'dataset'}"
     return {
         "task_id": task_id,
+        "managed_dataset_id": request.managed_dataset_id,
         "run_kind": run_kind,
         "run_scope": request.run_scope,
         "dataset_id": dataset_id,
@@ -228,7 +230,8 @@ def _policy_for(provider: str, timeframe: str):
 
 def _ingest_job(task: dict, request: MaintenanceTaskRequest) -> IngestJob:
     return IngestJob(
-        job_id=task["task_id"], dataset_id=task["dataset_id"], provider=request.provider,
+        job_id=task["task_id"], managed_dataset_id=request.managed_dataset_id,
+        dataset_id=task["dataset_id"], provider=request.provider,
         symbol=request.symbol or "", asset_class=task["asset_class"] or "crypto",
         timeframe=request.timeframe, start=request.start, end=request.end,
         run_scope=request.run_scope, run_kind=request.run_kind,

@@ -1020,11 +1020,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (KeyError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
 
     @app.post(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance", status_code=202)
-    def request_managed_maintenance(dataset_id: str, payload: dict, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), x_api_key: str | None = Header(default=None)) -> dict:
+    def request_managed_maintenance(dataset_id: str, payload: dict, http_request: Request,
+                                    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        request_key = idempotency_key or current_request_id()
         try:
-            value = dataset_center.request(dataset_id, symbol=payload["symbol"], start=payload["start"], end=payload["end"], idempotency_key=idempotency_key)
-            return api_envelope(value)
+            value = dataset_center.request(dataset_id, symbol=payload["symbol"], start=payload["start"], end=payload["end"], idempotency_key=request_key)
+            if value.get("execution"):
+                return api_envelope(value["execution"])
+            request = MaintenanceTaskRequest(
+                task_id=f"managed-{dataset_id}-{value['request_id']}", dataset_id="provider_bars",
+                managed_dataset_id=dataset_id,
+                provider="dukascopy", symbol=value["symbol"], asset_class="fx", timeframe="1m",
+                start=parse_instant(value["start"]), end=parse_instant(value["end"]),
+                run_scope="maintenance", run_kind="backfill", schedule="manual",
+            )
+            execution = submit_maintenance(request=request, ledger=ledger, config=config,
+                                            capacity_policy=capacity_policy, http_request=http_request,
+                                            request_id=value["request_id"])
+            dataset_center.attach_execution(request_key, execution)
+            return api_envelope(execution)
         except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
         except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc))
 

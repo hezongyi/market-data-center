@@ -118,3 +118,13 @@ class DatasetCenter:
 
     def requests(self, dataset_id: str) -> list[dict]:
         return [r for r in self._requests.values() if r["dataset_id"] == dataset_id]
+
+    def attach_execution(self, idempotency_key: str, execution: dict) -> dict:
+        with self._lock:
+            value = self._requests.get(idempotency_key)
+            if value is None:
+                raise KeyError(idempotency_key)
+            value["execution"] = execution
+            value["status"] = execution.get("status", value["status"])
+            self._save()
+            return value

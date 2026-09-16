@@ -45,6 +45,7 @@ class MarketBar(BaseModel):
 
 class IngestJob(BaseModel):
     job_id: str
+    managed_dataset_id: str | None = None
     dataset_id: str = "provider_bars"
     provider: str = "fixture"
     symbol: str
