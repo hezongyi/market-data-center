@@ -179,7 +179,7 @@ hourly BI5 tick 文件并按 BID 聚合，每个小时文件分别扣减一次 l
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
-默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2 手动任务闭环和 PV08 已实现并等待维护者阶段复核。P3 自动两轮/恢复和 P4 第二任务旅程仍未开始，这些限制必须继续显示在阶段验收卡中。
+默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2 手动任务闭环和 PV08 已实现并通过维护者阶段验收。P3 自动两轮/恢复和 P4 第二任务旅程仍未开始，这些限制必须继续显示在阶段验收卡中。
 
 ## 5. 文档与发布
 
