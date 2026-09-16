@@ -241,10 +241,18 @@ def test_production_task_cannot_bypass_managed_dataset_definition(tmp_path):
     created = client.post("/api/v1/production/tasks", json={
         "task_id": "valid-managed", "name": "valid", "definition": definition}, headers=auth)
     assert created.status_code == 201, created.json()
+    assert client.post("/api/v1/production/tasks/valid-managed/actions", json={
+        "command": "resume"}, headers=auth).status_code == 200
+    triggered = client.post("/api/v1/production/tasks/valid-managed/actions", json={
+        "command": "run_now"}, headers=auth)
+    assert triggered.status_code == 200, triggered.json()
+    execution_id = triggered.json()["data"]["execution_id"]
     assert client.patch("/api/v1/managed-datasets/managed", json={
         "status": "archived", "expected_version": 2}, headers=auth).status_code == 200
     assert client.post("/api/v1/production/tasks/valid-managed/actions", json={
         "command": "run_now"}, headers=auth).status_code == 409
+    assert client.post(f"/api/v1/production/executions/{execution_id}/retry",
+                       headers=auth).status_code == 409
 
 
 def test_direct_managed_derive_uses_scoped_snapshot_and_publication(tmp_path):

@@ -875,6 +875,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                    x_api_key: str | None = Header(default=None)) -> dict:
         """Re-plan the unfinished needs of a terminal round as a linked follow-up."""
         require_api_key(config, x_api_key)
+        execution = ledger.get_production_execution(execution_id)
+        if execution is None:
+            raise HTTPException(status_code=404, detail="production execution not found")
+        task = production_tasks_service.read(execution["task_id"])
+        if task is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        require_managed_definition(task.get("payload") or {})
         try:
             result = production_tasks_service.retry(
                 execution_id=execution_id, actor=operator_identity(request, config),
