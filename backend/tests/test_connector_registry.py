@@ -15,3 +15,10 @@ def test_connector_allowlist_blocks_real_providers_in_fixture_preview(monkeypatc
         assert str(exc) == "provider disabled in this environment: dukascopy"
     else:
         raise AssertionError("fixture preview allowed a real provider connector")
+
+
+def test_fixture_mode_substitutes_a_deterministic_connector_for_dukascopy(monkeypatch) -> None:
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    monkeypatch.setenv("DATACENTER_DATA_MODE", "fixture")
+    connector = get_connector("dukascopy")
+    assert connector.version == "isolated-preview-fixture-v1"

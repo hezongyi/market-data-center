@@ -448,6 +448,7 @@ export type RecipeInfo = {
   output_dataset: string;
   source_timeframe: string;
   target_timeframe: string;
+  providers: string[];
   price_bases: string[];
   session_profile: string;
   materialization: string;

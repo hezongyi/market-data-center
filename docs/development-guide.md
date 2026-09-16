@@ -140,11 +140,48 @@ DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
   --id p1-eurusd --base /home/quant/repos/.preview --update
 ```
 
+P2 开发预览使用独立 id `p2-eurusd`，不覆盖 P0/P1 数据。fixture 模式把
+Dukascopy/EURUSD 业务身份路由到确定性的本地分钟 adapter，receipt 明确记录
+`isolated-preview-fixture-v1`；它不访问 provider。P2 live 验收另用新 id，模式
+一经创建不可切换，且命令必须显式给出不超过 24 小时的 UTC 窗口和预算：
+
+```bash
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p2-eurusd --base /home/quant/repos/.preview
+
+set -a; source "$HOME/.config/market-data-center/dukascopy-preview.env"; set +a
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p2-eurusd-live-day3 --base /home/quant/repos/.preview --mode live \
+  --live-start 2026-09-14T00:00:00Z --live-end 2026-09-15T00:00:00Z \
+  --live-request-budget 100 --live-byte-budget-mib 100 \
+  --live-runtime-budget-seconds 3600 --inherit-proxy
+```
+
+live connector 在每次实际 provider HTTP 请求前核对 provider、EURUSD、窗口、累计请求数、持久化运行时
+预算和 canonical 字节数；超限立即拒绝。磁盘检查发生在请求前，因此最多可能超出
+单个已限制请求的落盘量，下一次拉取会停止。API 同时只接受窗口范围内的 fixed/manual 任务。默认
+fixture 与 live 都关闭告警外发、使用独立 auth/ledger/canonical/evidence/backup；
+不得省略 `--base` 操作上述保留预览。`--inherit-proxy` 仅在 live 显式选择时
+传入标准代理环境变量，代理值不写 preview metadata 或状态输出。开发机若需持久保存代理，使用
+repository 外的权限受限环境文件或 shell 私有环境；仓库忽略的 `.env.local` 不会被 preview
+脚本自动加载。SOCKS 代理使用 `ALL_PROXY=socks5h://host:port`，同时用 `NO_PROXY` 排除
+`127.0.0.1,localhost`；锁定依赖包含 requests 所需的 PySocks 支持。EURUSD 1m 使用官方
+hourly BI5 tick 文件并按 BID 聚合，每个小时文件分别扣减一次 live 请求预算。
+瞬时网络错误使用 connector 内固定次数和冷却时间重试；每次尝试仍分别扣减预算，耗尽预算时立即停止。
+
+2026-09-16 的 P2 PV08 实证使用 clean commit `b1bc42a`：UI
+`http://127.0.0.1:21933`、API docs `http://127.0.0.1:21932/docs`，execution
+`132b61ae-76c8-4880-83ff-97a094bbcc92` 覆盖上述完整 UTC 交易日并以
+`completed/degraded` 收口。官方 BI5 发布 22 个 raw 小时（1,320 行）和可查询的 264 条 5m；
+每条派生数据均有 `input_snapshot_id`。22:00–23:00 文件真实缺少 22:19、22:29 两分钟，
+因此该小时标为 provider gap 且没有补造；实际网络尝试为 35/100。该结果用于核对完整窗口、
+固定输入、缺口诚实呈现和预算，而不是“全日无缺口”的承诺。登录凭据按预览交接单提供。
+
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
-默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2/P3 的完整任务数据闭环与 P4 的第二任务旅程仍未完成，这些限制必须继续显示在阶段验收卡中。
+默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2 手动任务闭环和 PV08 已实现并通过维护者阶段验收。P3 自动两轮/恢复和 P4 第二任务旅程仍未开始，这些限制必须继续显示在阶段验收卡中。
 
 ## 5. 文档与发布
 

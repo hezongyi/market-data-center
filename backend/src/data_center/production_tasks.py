@@ -22,9 +22,9 @@ from .capacity import CapacityPolicy
 from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
 from .control_plane import timeframe_delta
+from .dataset_center import managed_dataset_root
 from .domain.errors import SESSION_CLOSED_ERROR_TYPES
 from .domain.models import DeriveJob, IngestJob
-from .dataset_center import managed_dataset_root
 from .instants import aware_utc
 from .platform import coverage_from_catalog, ingest_window_payloads
 from .platform_registry import REGISTRY, config_digest, maintenance_policy_for
@@ -1111,6 +1111,8 @@ class ProductionTasks:
         published = (self.ledger.completed_derived_windows(task["task_id"]) if skip_completed
                      else set())
         for window_start, window_end in windows:
+            if len(planned) >= budget:
+                break
             chain_documents = []
             for target in targets:
                 try:
@@ -1124,38 +1126,45 @@ class ProductionTasks:
                     if item not in chain_documents:
                         chain_documents.append(item)
             for recipe_document in chain_documents:
+                if len(planned) >= budget:
+                    break
                 window_identity = (f"derive:{recipe_document['recipe_id']}:"
                                    f"{_as_utc(window_start, 'window_start').isoformat()}:"
                                    f"{_as_utc(window_end, 'window_end').isoformat()}")
-                prepared = self._derive_runs(definition=definition, recipe_document=recipe_document,
-                                             window_start=window_start, window_end=window_end)
-                if prepared is None:
-                    deferred.append(window_identity)
-                    continue
-                runs, blocked = prepared
-                for run_start, run_end in blocked:
-                    identity = f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}"
-                    deferred.append(identity)
-                    not_ready.append(identity)
-                for run_start, run_end in runs:
-                    # A run that now covers ground an earlier round already
-                    # published is split around it, so a repair derives the
-                    # missing buckets and neither less nor more.
-                    pieces = exclude_planned_windows(
-                        candidates=[{"start": run_start, "end": run_end}],
-                        planned=[{"start": start, "end": end} for start, end in sorted(published)])
-                    for piece in pieces:
+                # Exclude already published ranges before resolving and reading
+                # their snapshots.  On a long fixed window, doing this after
+                # the read made every tick rescan all prior history and kept
+                # getting slower even after the step budget was exhausted.
+                pending_inputs = exclude_planned_windows(
+                    candidates=[{"start": _as_utc(window_start, "window_start").isoformat(),
+                                 "end": _as_utc(window_end, "window_end").isoformat()}],
+                    planned=[{"start": start, "end": end} for start, end in sorted(published)])
+                for pending_input in pending_inputs:
+                    if len(planned) >= budget:
+                        break
+                    prepared = self._derive_runs(
+                        definition=definition, recipe_document=recipe_document,
+                        window_start=pending_input["start"], window_end=pending_input["end"])
+                    if prepared is None:
+                        deferred.append(window_identity)
+                        continue
+                    runs, blocked = prepared
+                    for run_start, run_end in blocked:
+                        identity = f"derive:{recipe_document['recipe_id']}:{run_start}:{run_end}"
+                        deferred.append(identity)
+                        not_ready.append(identity)
+                    for run_start, run_end in runs:
                         if len(planned) >= budget:
                             break
                         identity = (f"derive:{recipe_document['recipe_id']}:"
-                                    f"{piece['start']}:{piece['end']}")
+                                    f"{run_start}:{run_end}")
                         if identity in existing or any(item["dedupe_key"] == identity
                                                        for item in planned):
                             continue
                         step = self._derive_step(task=task, definition=definition,
                                                  execution_id=execution_id,
                                                  recipe_document=recipe_document,
-                                                 run_start=piece["start"], run_end=piece["end"],
+                                                 run_start=run_start, run_end=run_end,
                                                  identity=identity)
                         if step is not None:
                             planned.append(step)
@@ -1743,6 +1752,8 @@ class ProductionTasks:
         now = now or datetime.now(timezone.utc)
         drift = self.reconcile_config_digest(limit=limit)
         backoffs = self._record_provider_backoffs(now=now, limit=limit)
+        fixed_continuations = self._advance_fixed_window_backlog(
+            now=now, limit=limit, step_budget=8)
         closure = self._advance_dependency_closure(limit=limit, step_budget=8)
         # A round that died after publishing, or raw published outside a round,
         # is still owed its derived outputs (spec 6.2, AC10).
@@ -1788,9 +1799,45 @@ class ProductionTasks:
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],
+                "fixed_continuations": fixed_continuations,
                 "provider_backoff_recorded": backoffs["recorded"],
                 "provider_backoff_cleared": backoffs["cleared"],
                 "reconciled_at": now.isoformat()}
+
+    def _advance_fixed_window_backlog(self, *, now: datetime, limit: int,
+                                      step_budget: int) -> builtins.list[dict]:
+        """Append the next bounded raw batch before a fixed execution can close.
+
+        A fixed manual request represents its entire half-open window, even when
+        provider policy shards that window into more steps than one scheduler
+        tick may accept.  Keeping those batches on the original execution makes
+        its terminal receipt truthful: ``pass`` means the complete requested
+        window was dispatched, not merely the first bounded batch.
+        """
+        continued: list[dict] = []
+        for execution in self.ledger.list_running_executions(limit=limit):
+            task = self.ledger.get_production_task(execution["task_id"])
+            if task is None or task["desired_state"] != "enabled":
+                continue
+            definition = task.get("payload") or {}
+            if (definition.get("window_policy") or {}).get("mode") != "fixed":
+                continue
+            progress = self.ledger.production_progress_core(task["task_id"]) or {}
+            if not progress.get("backlog"):
+                continue
+            steps = self.ledger.refresh_execution_steps(execution["execution_id"])
+            if not steps or any(step["state"] not in self.ledger.STEP_TERMINAL_STATES
+                                for step in steps):
+                continue
+            if any(step["state"] in {"failed", "blocked"} for step in steps):
+                continue
+            result = self.dispatch(task=task, execution=execution, now=now,
+                                   step_budget=step_budget)
+            if result["planned_steps"]:
+                continued.append({"execution_id": execution["execution_id"],
+                                  "planned_steps": result["planned_steps"],
+                                  "backlog": result["plan"]["backlog"]})
+        return continued
 
     def _record_repaired_windows(self, *, task: dict, steps: builtins.list[dict]) -> None:
         """Send raw windows that were republished after derivation back for recompute."""
@@ -2012,10 +2059,12 @@ def plan_execution(task: dict, definition: dict, execution: dict, *, now: dateti
     if mode == "fixed":
         start = _as_utc(window_policy["start"], "window_policy.start")
         end = _as_utc(window_policy["end"], "window_policy.end")
-        frontier_end = start
+        recorded_frontier = _optional_utc((progress or {}).get("frontier"))
+        frontier_end = max(start, min(end, recorded_frontier)) if recorded_frontier else start
         if end > start:
-            planned, _ = expand("backfill", "ingest", [(start, end)])
-            frontier_end = max([_as_utc(item["end"], "window_end") for item in planned], default=start)
+            planned, _ = expand("backfill", "ingest", [(frontier_end, end)])
+            frontier_end = max([_as_utc(item["end"], "window_end") for item in planned],
+                               default=frontier_end)
     else:
         history_start = _as_utc(window_policy["history_start"], "window_policy.history_start")
         end = scheduled_end(now, lag_minutes=policy.closed_bar_lag_minutes)

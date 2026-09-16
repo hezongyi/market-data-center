@@ -1130,12 +1130,16 @@ class RunLedger:
         return {"step_id": step_id, "execution_id": execution_id, "stage": stage,
                 "window_start": window_start, "window_end": window_end, "state": "pending", "created_at": stamp}
 
-    def list_production_steps(self, execution_id: str, *, limit: int = 100) -> list[dict]:
+    def list_production_steps(self, execution_id: str, *, limit: int | None = 100) -> list[dict]:
         with self._connect() as conn:
-            rows = conn.execute("select step_id,execution_id,stage,window_start,window_end,state,block_reason,"
-                                "run_id,created_at,dedupe_key,recipe_id,timeframe from production_steps "
-                                "where execution_id=? order by created_at, step_id limit ?",
-                                (execution_id, max(1, min(limit, 500)))).fetchall()
+            query = ("select step_id,execution_id,stage,window_start,window_end,state,block_reason,"
+                     "run_id,created_at,dedupe_key,recipe_id,timeframe from production_steps "
+                     "where execution_id=? order by created_at, step_id")
+            if limit is None:
+                rows = conn.execute(query, (execution_id,)).fetchall()
+            else:
+                rows = conn.execute(query + " limit ?",
+                                    (execution_id, max(1, min(limit, 500)))).fetchall()
         return [{"step_id": r[0], "execution_id": r[1], "stage": r[2], "window_start": r[3],
                  "window_end": r[4], "state": r[5], "block_reason": r[6], "run_id": r[7],
                  "created_at": r[8], "dedupe_key": r[9], "recipe_id": r[10], "timeframe": r[11]}
@@ -1673,7 +1677,15 @@ class RunLedger:
                     payload = {**payload, "plan_id": row[0], "execution_id": execution_id,
                                "step_id": step_id, "owner_plan_id": row[0],
                                "owner_execution_id": execution_id, "owner_step_id": step_id}
-                    run_ids.append(self._insert_run_and_job(tx, payload, stamp))
+                    run_id = self._insert_run_and_job(tx, payload, stamp)
+                    run_ids.append(run_id)
+                    # A production step currently owns one bounded run. Keep
+                    # that relation on the step read model so UI/API consumers
+                    # can follow it to the receipt, manifest and lineage.
+                    tx.execute(
+                        "update production_steps set run_id=coalesce(run_id, ?) where step_id=?",
+                        (run_id, step_id),
+                    )
                 if step.get("state") == "blocked":
                     tx.execute("update production_steps set state='blocked', block_reason=? where step_id=?",
                                (step.get("block_reason"), step_id))
@@ -1747,7 +1759,10 @@ class RunLedger:
                 if derived != state or block_reason != _block_reason:
                     tx.execute("update production_steps set state=?, block_reason=?, updated_at=? where step_id=?",
                                (derived, block_reason, stamp, step_id))
-        return self.list_production_steps(execution_id)
+        # Reconciliation must see every step.  The public API always supplies a
+        # bounded limit, but truncating this internal result can close a large
+        # fixed-window execution while newer steps are still queued.
+        return self.list_production_steps(execution_id, limit=None)
 
     def close_finished_executions(self, *, limit: int = 50) -> builtins.list[dict]:
         """Close executions whose steps reached a terminal state (spec 7.2.5).
