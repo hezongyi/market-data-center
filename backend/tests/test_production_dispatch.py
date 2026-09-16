@@ -299,6 +299,99 @@ def test_planning_is_bounded_by_policy_and_reports_a_backlog(tmp_path):
     assert planned_end <= parse_instant(plan["planned_start"]) + timedelta(days=31)
 
 
+def test_fixed_window_plan_reports_no_rewind_and_dispatches(tmp_path):
+    ledger, service, _ = build(tmp_path)
+    fixed = definition(window_policy={
+        "mode": "fixed", "start": "2026-09-14T08:00:00+00:00",
+        "end": "2026-09-14T09:00:00+00:00",
+    })
+    service.change("p1", "update", definition=fixed, expected_version=1, now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    result = service.dispatch(
+        task=ledger.get_production_task("p1"), execution=execution, now=NOW,
+    )
+    assert result["plan"]["rewound"] is False
+    assert result["planned_steps"] == 1
+
+
+def test_fixed_window_execution_continues_until_the_whole_window_is_dispatched(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger, canonical_root=tmp_path / "lake")
+    fixed = {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m",
+        "price_basis": "bid", "bar_timeframes": [],
+        "window_policy": {
+            "mode": "fixed", "start": "2026-09-14T00:00:00+00:00",
+            "end": "2026-09-15T00:00:00+00:00",
+        },
+        "schedule": {"schedule": "manual"},
+    }
+    service.create(definition=fixed, name="EURUSD", task_id="p1",
+                   desired_state="enabled", now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True,
+                          planner=service, step_budget=8)
+
+    scheduler.tick(now=NOW)
+    assert len(ledger.list_production_steps(execution["execution_id"])) == 8
+
+    # Dukascopy's weekday FX session excludes its daily maintenance break, so
+    # this civil day expands to 23 governed hourly requests rather than 24.
+    for expected_steps in (16, 23):
+        while (claim := ledger.claim_next_job()) is not None:
+            ledger.finish_job(claim["job_id"], claim["run_id"],
+                              {"status": "pass", "run_id": claim["run_id"]})
+        scheduler.tick(now=NOW + timedelta(minutes=expected_steps))
+        assert len(ledger.list_production_steps(execution["execution_id"])) == expected_steps
+        assert ledger.get_production_execution(execution["execution_id"])["state"] == "running"
+
+    while (claim := ledger.claim_next_job()) is not None:
+        ledger.finish_job(claim["job_id"], claim["run_id"],
+                          {"status": "pass", "run_id": claim["run_id"]})
+    scheduler.tick(now=NOW + timedelta(hours=1))
+    completed = ledger.get_production_execution(execution["execution_id"])
+    assert completed["state"] == "completed" and completed["outcome"] == "pass"
+    assert service.read("p1")["progress"]["backlog"] is False
+
+
+def test_fixed_window_with_more_than_one_read_page_cannot_close_early(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger, canonical_root=tmp_path / "lake")
+    fixed = {
+        "provider": "dukascopy", "symbol": "EURUSD", "raw_timeframe": "1m",
+        "price_basis": "bid", "bar_timeframes": [],
+        "window_policy": {
+            "mode": "fixed", "start": "2026-06-01T00:00:00+00:00",
+            "end": "2026-06-08T00:00:00+00:00",
+        },
+        "schedule": {"schedule": "manual"},
+    }
+    service.create(definition=fixed, name="EURUSD", task_id="p1",
+                   desired_state="enabled", now=NOW)
+    execution = service.change("p1", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="one", dispatch_enabled=True,
+                          planner=service, step_budget=8)
+    scheduler.tick(now=NOW)
+
+    for tick in range(30):
+        while (claim := ledger.claim_next_job()) is not None:
+            ledger.finish_job(claim["job_id"], claim["run_id"],
+                              {"status": "pass", "run_id": claim["run_id"]})
+        scheduler.tick(now=NOW + timedelta(minutes=tick + 1))
+        progress = service.read("p1")["progress"]
+        current = ledger.get_production_execution(execution["execution_id"])
+        if not progress["backlog"] and current["state"] == "completed":
+            break
+        if progress["backlog"]:
+            assert current["state"] == "running"
+    else:
+        pytest.fail("fixed window did not exhaust its bounded backlog")
+
+    assert len(ledger.list_production_steps(execution["execution_id"], limit=None)) > 100
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "completed"
+    assert ledger.production_progress("p1")["frontier"] == fixed["window_policy"]["end"]
+
+
 def test_scheduled_end_respects_the_provider_availability_lag():
     assert scheduled_end(NOW, lag_minutes=180) == NOW - timedelta(hours=3)
     # The lag is subtracted first, then the boundary is closed to the minute.
@@ -443,6 +536,38 @@ def derived_definition(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def test_derived_planning_skips_published_history_before_snapshot_reads(tmp_path, monkeypatch):
+    ledger, service, task = build(tmp_path)
+    definition_doc = {
+        **task["payload"], "provider": "dukascopy", "symbol": "EURUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+    }
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    windows = [((start + timedelta(hours=index)).isoformat(),
+                (start + timedelta(hours=index + 1)).isoformat())
+               for index in range(200)]
+    monkeypatch.setattr(ledger, "completed_derived_windows", lambda _task_id: set(windows[:120]))
+    monkeypatch.setattr(ledger, "list_production_steps", lambda _execution_id: [])
+    reads = []
+
+    def derive_runs(**kwargs):
+        reads.append((kwargs["window_start"], kwargs["window_end"]))
+        return [(kwargs["window_start"], kwargs["window_end"])], []
+
+    monkeypatch.setattr(service, "_derive_runs", derive_runs)
+    monkeypatch.setattr(service, "_derive_step", lambda **kwargs: {
+        "dedupe_key": kwargs["identity"], "window_start": kwargs["run_start"],
+        "window_end": kwargs["run_end"],
+    })
+
+    planned, deferred, not_ready = service._plan_derived_windows(
+        task=task, definition=definition_doc, execution_id="e1", windows=windows,
+        step_budget=8, skip_completed=True)
+
+    assert len(planned) == 8 and reads == windows[120:128]
+    assert deferred == [] and not_ready == []
 
 
 def publish_raw(root, *, start, minutes=60, run_id="raw-part",

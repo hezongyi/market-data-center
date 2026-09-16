@@ -203,6 +203,7 @@ def _recipe_document(recipe) -> dict:
         "output_dataset": recipe.output_dataset,
         "source_timeframe": recipe.source_timeframe,
         "target_timeframe": recipe.target_timeframe,
+        "providers": list(recipe.allowed_providers),
         "price_bases": list(recipe.allowed_price_bases),
         "session_profile": recipe.session_profile,
         "materialization": recipe.materialization,
@@ -532,7 +533,8 @@ def platform_capabilities(capacity_policy, config, ledger) -> dict:
             "asset_class": item.asset_class, "currency": item.currency,
             "session_profile": item.session_profile, "calendar_profile": item.calendar_profile,
             "approved": item.approved,
-        } for item in REGISTRY.instruments(capability.provider)]
+        } for item in REGISTRY.instruments(capability.provider)
+          if config.preview_symbol_allowed(item.symbol)]
         providers.append({
             "provider": capability.provider,
             "asset_classes": list(capability.asset_classes),
