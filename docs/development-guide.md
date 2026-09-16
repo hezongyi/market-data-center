@@ -147,11 +147,12 @@ Dukascopy/EURUSD 业务身份路由到确定性的本地分钟 adapter，receipt
 DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
   --id p2-eurusd --base /home/quant/repos/.preview
 
+set -a; source "$HOME/.config/market-data-center/dukascopy-preview.env"; set +a
 DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
-  --id p2-eurusd-live --base /home/quant/repos/.preview --mode live \
+  --id p2-eurusd-live-day3 --base /home/quant/repos/.preview --mode live \
   --live-start 2026-09-14T00:00:00Z --live-end 2026-09-15T00:00:00Z \
-  --live-request-budget 30 --live-byte-budget-mib 100 \
-  --live-runtime-budget-seconds 600 --inherit-proxy
+  --live-request-budget 100 --live-byte-budget-mib 100 \
+  --live-runtime-budget-seconds 3600 --inherit-proxy
 ```
 
 live connector 在每次实际 provider HTTP 请求前核对 provider、EURUSD、窗口、累计请求数、持久化运行时
@@ -166,11 +167,19 @@ repository 外的权限受限环境文件或 shell 私有环境；仓库忽略�
 hourly BI5 tick 文件并按 BID 聚合，每个小时文件分别扣减一次 live 请求预算。
 瞬时网络错误使用 connector 内固定次数和冷却时间重试；每次尝试仍分别扣减预算，耗尽预算时立即停止。
 
+2026-09-16 的 P2 PV08 实证使用 clean commit `b1bc42a`：UI
+`http://127.0.0.1:21933`、API docs `http://127.0.0.1:21932/docs`，execution
+`132b61ae-76c8-4880-83ff-97a094bbcc92` 覆盖上述完整 UTC 交易日并以
+`completed/degraded` 收口。官方 BI5 发布 22 个 raw 小时（1,320 行）和可查询的 264 条 5m；
+每条派生数据均有 `input_snapshot_id`。22:00–23:00 文件真实缺少 22:19、22:29 两分钟，
+因此该小时标为 provider gap 且没有补造；实际网络尝试为 35/100。该结果用于核对完整窗口、
+固定输入、缺口诚实呈现和预算，而不是“全日无缺口”的承诺。登录凭据按预览交接单提供。
+
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 
 预览交付必须运行 API/worker/scheduler/Vite，而非只有静态页；模拟内容显著标识。stop 保留数据；浏览器测试不销毁用户预览；更换版本要说明。登录凭据通过适当本地交付方式提供，不写入公共验收卡。
 
-默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2/P3 的完整任务数据闭环与 P4 的第二任务旅程仍未完成，这些限制必须继续显示在阶段验收卡中。
+默认预览只允许 fixture connector、关闭告警外发，并为 API、worker、scheduler、auth、canonical、ledger、evidence、backup 和日志提供独立根。页面顶部显示预览身份、模拟数据和 scheduler 心跳。P0 不完成的 P1 路由/shadcn 页面现已交付；P2 手动任务闭环和 PV08 已实现并等待维护者阶段复核。P3 自动两轮/恢复和 P4 第二任务旅程仍未开始，这些限制必须继续显示在阶段验收卡中。
 
 ## 5. 文档与发布
 
