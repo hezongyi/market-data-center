@@ -79,7 +79,7 @@ class DatasetCenter:
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._lock = RLock()
         self._items: dict[str, ManagedDataset] = {}
-        self._requests: dict[str, dict] = {}
+        self._requests: dict[tuple[str, str], dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -101,10 +101,32 @@ class DatasetCenter:
                     members[key] = DatasetMember(**value)
                 raw["derived_targets"] = tuple(raw.get("derived_targets", ()))
                 items[raw["dataset_id"]] = ManagedDataset(**raw, members=members)
-            requests = {}
-            for key, value in payload.get("requests", {}).items():
-                normalized_key = key if key.startswith(f"{value.get('dataset_id')}:") else f"{value.get('dataset_id')}:{key}"
-                requests[normalized_key] = value
+            requests: dict[tuple[str, str], dict] = {}
+            stored_requests = payload.get("requests", [])
+            if isinstance(stored_requests, dict):
+                # Migrate the original flat string-keyed representation.  The
+                # value carries the authoritative dataset identity; stripping
+                # only that exact prefix also preserves legacy raw keys.
+                request_values = []
+                for stored_key, raw_value in stored_requests.items():
+                    value = dict(raw_value)
+                    dataset_id = value["dataset_id"]
+                    prefix = f"{dataset_id}:"
+                    value.setdefault(
+                        "idempotency_key",
+                        stored_key.removeprefix(prefix),
+                    )
+                    request_values.append(value)
+            elif isinstance(stored_requests, list):
+                request_values = stored_requests
+            else:
+                raise TypeError("managed dataset requests must be a list or object")
+            for raw_value in request_values:
+                value = dict(raw_value)
+                request_key = (value["dataset_id"], value["idempotency_key"])
+                if request_key in requests:
+                    raise ValueError("duplicate managed dataset request identity")
+                requests[request_key] = value
         except (AttributeError, OSError, ValueError, TypeError, KeyError) as exc:
             raise DatasetStateError(f"managed dataset state is unreadable: {self.path}") from exc
         self._items = items
@@ -119,7 +141,10 @@ class DatasetCenter:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"datasets": [d.as_dict() for d in self._items.values()], "requests": self._requests}
+        payload = {
+            "datasets": [d.as_dict() for d in self._items.values()],
+            "requests": list(self._requests.values()),
+        }
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True, indent=2))
         temporary.replace(self.path)
@@ -149,6 +174,17 @@ class DatasetCenter:
         with self._lock, self._file_lock():
             self._load()
             return list(self._items.values())
+
+    @contextmanager
+    def locked_dataset(self, dataset_id: str):
+        """Hold the control-plane lock across a dataset publication boundary."""
+        with self._lock, self._file_lock():
+            self._load()
+            try:
+                item = self._items[dataset_id]
+            except KeyError as exc:
+                raise KeyError(dataset_id) from exc
+            yield item
 
     def update(self, dataset_id: str, *, expected_version: int, **changes) -> ManagedDataset:
         with self._lock, self._file_lock():
@@ -214,13 +250,16 @@ class DatasetCenter:
             if start_at.tzinfo is None or end_at.tzinfo is None or start_at >= end_at:
                 raise ValueError("maintenance range must be timezone-aware and non-empty")
             raw_key = idempotency_key or str(uuid4())
-            key = f"{dataset_id}:{raw_key}"
+            key = (dataset_id, raw_key)
             if key in self._requests:
                 existing = self._requests[key]
                 if (existing["symbol"], existing["start"], existing["end"]) != (symbol, start, end):
                     raise ValueError("idempotency key was already used for another request")
                 return existing, False
-            value = {"request_id": str(uuid4()), "idempotency_key": raw_key, "dataset_id": dataset_id, "symbol": symbol, "start": start, "end": end, "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
+            value = {"request_id": str(uuid4()), "idempotency_key": raw_key,
+                     "action_key_version": 2, "dataset_id": dataset_id, "symbol": symbol,
+                     "start": start, "end": end, "status": "queued",
+                     "created_at": datetime.now(timezone.utc).isoformat()}
             self._requests[key] = value; self._save(); return value, True
 
     def request(self, dataset_id: str, *, symbol: str, start: str, end: str,
@@ -234,7 +273,7 @@ class DatasetCenter:
         """Compensate a control-plane refusal without deleting an accepted replay."""
         with self._lock, self._file_lock():
             self._load()
-            key = f"{dataset_id}:{idempotency_key}"
+            key = (dataset_id, idempotency_key)
             value = self._requests.get(key)
             if value and value.get("request_id") == request_id and not value.get("execution"):
                 del self._requests[key]
@@ -248,9 +287,11 @@ class DatasetCenter:
     def attach_execution(self, dataset_id: str, idempotency_key: str, execution: dict) -> dict:
         with self._lock, self._file_lock():
             self._load()
-            value = self._requests.get(f"{dataset_id}:{idempotency_key}")
+            value = self._requests.get((dataset_id, idempotency_key))
             if value is None:
                 raise KeyError(idempotency_key)
+            if value.get("dataset_id") != dataset_id:
+                raise DatasetStateError("managed request dataset identity mismatch")
             value["execution"] = execution
             value["status"] = execution.get("status", value["status"])
             self._save()

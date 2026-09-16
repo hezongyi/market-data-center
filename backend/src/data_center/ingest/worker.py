@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 from data_center.catalog.manifest import (
@@ -105,6 +105,9 @@ class LocalWorker:
             item = DatasetCenter(self.root).get(managed_dataset_id)
         except (KeyError, DatasetStateError) as exc:
             raise PublicationError("managed dataset ownership is unavailable") from exc
+        self._validate_managed_writable(item, payload)
+
+    def _validate_managed_writable(self, item, payload: dict | None = None) -> None:
         if item.status == "archived":
             raise PublicationError("archived managed dataset is not writable")
         if payload is None:
@@ -133,12 +136,26 @@ class LocalWorker:
             return
         raise PublicationError("job dataset does not match managed ownership")
 
+    @contextmanager
+    def _managed_publication_guard(self, managed_dataset_id: str | None,
+                                   payload: dict | None = None):
+        if managed_dataset_id is None:
+            yield
+            return
+        with ExitStack() as stack:
+            try:
+                item = stack.enter_context(
+                    DatasetCenter(self.root).locked_dataset(managed_dataset_id))
+            except (KeyError, DatasetStateError) as exc:
+                raise PublicationError("managed dataset ownership is unavailable") from exc
+            self._validate_managed_writable(item, payload)
+            yield
+
     def _publish(self, directory, receipt, managed_dataset_id=None, payload=None):
         staged_root = directory / "parts"
         managed_id = managed_dataset_id or receipt.get("managed_dataset_id")
         publication_root = self._publication_root(managed_id)
-        if not manifest_path(publication_root, receipt["run_id"]).exists():
-            self._ensure_managed_writable(managed_id, payload)
+        already_published = manifest_path(publication_root, receipt["run_id"]).exists()
         manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
         paths = validate_manifest(staged_root, manifest)
         if any(manifest[key] != receipt[key] for key in
@@ -146,33 +163,36 @@ class LocalWorker:
             raise PublicationError("receipt does not match staged manifest")
         if {Path(p).resolve() for p in receipt.get("paths", [receipt.get("path")])} != {p.resolve() for p in paths}:
             raise PublicationError("receipt part list does not match staged manifest")
-        published = []
-        for source, item in zip(paths, manifest["parts"]):
-            target = publication_root / item["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # Copy to a fresh inode: staged files must not mutate a published part.
-            if not target.exists():
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
-                    temporary = Path(stream.name)
-                    with source.open("rb") as input_stream:
-                        shutil.copyfileobj(input_stream, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                try:
-                    if target.exists():
-                        if file_hash(target) != item["sha256"]:
-                            raise PublicationError("existing part differs from staged result")
-                    else:
-                        os.rename(temporary, target)
-                        temporary = None
-                finally:
-                    if temporary is not None:
-                        temporary.unlink(missing_ok=True)
-            elif file_hash(target) != item["sha256"]:
-                raise PublicationError("existing part differs from staged result")
-            published.append(str(target))
-        # Same bytes on every recovery; generated_at comes from the staged manifest.
-        published_manifest = write_manifest(publication_root, manifest)
+        guard = (nullcontext() if already_published
+                 else self._managed_publication_guard(managed_id, payload))
+        with guard:
+            published = []
+            for source, item in zip(paths, manifest["parts"]):
+                target = publication_root / item["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Copy to a fresh inode: staged files must not mutate a published part.
+                if not target.exists():
+                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                        temporary = Path(stream.name)
+                        with source.open("rb") as input_stream:
+                            shutil.copyfileobj(input_stream, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        if target.exists():
+                            if file_hash(target) != item["sha256"]:
+                                raise PublicationError("existing part differs from staged result")
+                        else:
+                            os.rename(temporary, target)
+                            temporary = None
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
+                elif file_hash(target) != item["sha256"]:
+                    raise PublicationError("existing part differs from staged result")
+                published.append(str(target))
+            # Same bytes on every recovery; generated_at comes from the staged manifest.
+            published_manifest = write_manifest(publication_root, manifest)
         return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]}),
                 "manifest": str(published_manifest)}
 

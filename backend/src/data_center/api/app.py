@@ -276,6 +276,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ledger = RunLedger(config.ledger_path)
     dataset_center = DatasetCenter(config.canonical_root)
     query_engine = QueryEngine(config.canonical_root)
+    managed_query_engines: dict[str, QueryEngine] = {}
+    managed_query_engines_lock = Lock()
     capacity_policy = config.capacity_policy()
     run_view = RunView(ledger, canonical_root=config.canonical_root,
                        cursor_secret=config.api_key or str(config.canonical_root))
@@ -290,6 +292,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     print(json.dumps({"event": "api_started", "request_id": None,
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
           flush=True)
+
+    def managed_query_engine(dataset_id: str) -> QueryEngine:
+        """Keep cursor snapshots alive while isolating every managed root."""
+        with managed_query_engines_lock:
+            return managed_query_engines.setdefault(
+                dataset_id,
+                QueryEngine(managed_dataset_root(config.canonical_root, dataset_id)),
+            )
+
+    def managed_action_idempotency_key(dataset_id: str, request_key: str, action: str,
+                                       *, version: int) -> str:
+        if version == 1:
+            return f"{dataset_id}:{request_key}:{action}"
+        if version != 2:
+            raise ValueError("unsupported managed action key version")
+        identity = json.dumps([dataset_id, request_key, action], separators=(",", ":"))
+        return f"managed:{hashlib.sha256(identity.encode()).hexdigest()}"
 
     def require_managed_write(*, managed_dataset_id: str | None, dataset_id: str,
                               provider: str, symbol: str | None, timeframe: str,
@@ -1077,6 +1096,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_api_key(config, x_api_key)
         actor = operator_identity(http_request, config)
         try:
+            original = ledger.get(run_id)
+            original_request = ledger.job_request(run_id)
+            managed_dataset_id = (original_request.get("managed_dataset_id")
+                                  or original.get("managed_dataset_id"))
+            if managed_dataset_id is not None:
+                try:
+                    managed_item = dataset_center.get(managed_dataset_id)
+                except KeyError as exc:
+                    raise ValueError("managed dataset ownership is unavailable") from exc
+                if managed_item.status == "archived":
+                    raise ValueError("archived managed dataset is read-only")
             capacity_policy.require_ingest_capacity(config.canonical_root)
             new_id = ledger.retry_run(run_id)
         except (KeyError, ValueError, CapacityProtectedError) as exc:
@@ -1201,11 +1231,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 end=payload["end"], idempotency_key=request_key)
             if value.get("execution"):
                 return api_envelope(value["execution"])
+            action_key_version = int(value.get("action_key_version", 1))
             task_id = f"managed-{dataset_id}-{value['request_id']}"
             production_tasks_service.create(
                 task_id=task_id, name=f"{item.name} · {value['start']} → {value['end']}",
                 desired_state="enabled", actor=operator_identity(http_request, config),
-                request_id=value["request_id"], idempotency_key=f"{dataset_id}:{request_key}:create",
+                request_id=value["request_id"],
+                idempotency_key=managed_action_idempotency_key(
+                    dataset_id, request_key, "create", version=action_key_version),
                 definition={
                     "managed_dataset_id": dataset_id,
                     "provider": item.provider, "symbol": value["symbol"],
@@ -1216,7 +1249,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 })
             execution_record = production_tasks_service.change(
                 task_id, "run_now", actor=operator_identity(http_request, config),
-                request_id=value["request_id"], idempotency_key=f"{dataset_id}:{request_key}:run")
+                request_id=value["request_id"],
+                idempotency_key=managed_action_idempotency_key(
+                    dataset_id, request_key, "run", version=action_key_version))
             execution = {"status": "queued", "state": execution_record.get("state", "pending"),
                          "task_id": task_id, "execution_id": execution_record["execution_id"],
                          "dataset_id": dataset_id, "run_ids": []}
@@ -1262,7 +1297,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="member not found")
         if item.status == "archived":
             raise HTTPException(status_code=409, detail="archived dataset is not queryable")
-        engine = QueryEngine(managed_dataset_root(config.canonical_root, dataset_id))
+        engine = managed_query_engine(dataset_id)
         if timeframe == item.base_timeframe:
             page = engine.provider_bars_page(
                 provider=item.provider, symbol=symbol, timeframe=timeframe,

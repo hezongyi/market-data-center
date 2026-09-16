@@ -1,6 +1,8 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -205,6 +207,49 @@ def test_archived_dataset_blocks_a_previously_queued_worker_job(tmp_path):
     assert receipt["status"] == "failed"
     assert receipt["failure_stage"] == "ownership"
     assert not (managed_dataset_root(lake, "managed") / ".ingest-staging" / run_id).exists()
+
+
+def test_archive_waits_for_first_managed_manifest_commit(tmp_path, monkeypatch):
+    import data_center.ingest.worker as worker_module
+
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    monkeypatch.setenv("DATACENTER_DATA_MODE", "fixture")
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    worker = LocalWorker(lake, ledger)
+    run_id = worker.submit(IngestJob(
+        job_id="archive-race", managed_dataset_id="managed", provider="dukascopy",
+        symbol="EURUSD", asset_class="fx", timeframe="1m",
+        start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+    ))
+    publication_entered = Event()
+    allow_publication = Event()
+    original_write_manifest = worker_module.write_manifest
+
+    def delayed_write_manifest(root, manifest):
+        publication_entered.set()
+        assert allow_publication.wait(10)
+        return original_write_manifest(root, manifest)
+
+    monkeypatch.setattr(worker_module, "write_manifest", delayed_write_manifest)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker_future = pool.submit(worker.run_next)
+        assert publication_entered.wait(10)
+        archive_future = pool.submit(
+            center.update, "managed", expected_version=2, status="archived")
+        time.sleep(0.1)
+        assert not archive_future.done()
+        allow_publication.set()
+        assert worker_future.result(timeout=10) is True
+        assert archive_future.result(timeout=10).status == "archived"
+
+    assert manifest_path(managed_dataset_root(lake, "managed"), run_id).exists()
+    assert ledger.get(run_id)["status"] == "pass"
 
 
 def test_worker_rejects_a_queued_job_outside_managed_membership(tmp_path):

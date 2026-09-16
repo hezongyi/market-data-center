@@ -1345,6 +1345,14 @@ class RunLedger:
                                             "resolved_by_run_id": state[2], "resolved_at": state[3]}
         return payload
 
+    def job_request(self, run_id: str) -> dict:
+        """Return the immutable job request behind a run, including retry runs."""
+        with self._connect() as conn:
+            row = conn.execute("select payload from jobs where run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        return json.loads(row[0])
+
     def upsert_maintenance_task(self, task_id: str, payload: dict, status: str = "queued") -> None:
         with self._connect() as conn:
             conn.execute("insert into maintenance_tasks(task_id,payload,status,updated_at) values (?,?,?,?) on conflict(task_id) do update set payload=excluded.payload,status=excluded.status,updated_at=excluded.updated_at", (task_id, json.dumps(payload), status, self._now()))
@@ -2003,11 +2011,12 @@ class RunLedger:
                 raise ValueError("original job request unavailable")
             new_id = str(uuid4())
             request = json.loads(job[0])
-            payload = {"run_id": new_id, "job_id": request["job_id"], "dataset_id": request["dataset_id"],
-                       "provider": request.get("provider"), "run_scope": original.get("run_scope", "legacy_unclassified"),
-                       "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
-                       "status": "queued", "retry_of": run_id,
-                       "created_at": self._now()}
+            payload = self._run_document(new_id, request, self._now())
+            payload.update({
+                "run_scope": original.get("run_scope", "legacy_unclassified"),
+                "run_kind": original.get("run_kind", request.get("run_kind", "ingest")),
+                "status": "queued", "retry_of": run_id,
+            })
             conn.execute("insert into runs(run_id,payload,status,created_at,plan_id,execution_id,step_id,error_type) "
                          "values (?,?,?,?,?,?,?,?)",
                          (new_id, json.dumps(payload), "queued", payload["created_at"],

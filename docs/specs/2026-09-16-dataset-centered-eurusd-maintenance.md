@@ -1,9 +1,11 @@
 # 数据集中心的 EURUSD 维护闭环
 
 日期：2026-09-16
-状态：implemented；P2.1 技术验证通过，待维护者阶段验收
+状态：accepted；P2.1 已由开发 agent 完成 DS01–DS04 阶段验收，证据见[实施路线图](../plans/2026-09-15-eurusd-first-implementation.md)
 
 本规范局部接续 `2026-09-15-eurusd-first-product-baseline.md`：保留 EURUSD、Dukascopy、BID 1m→5m、固定输入、缺口正确性、认证、预览和发布门禁；将长期管理对象改为数据集/成员/请求/执行。
+
+2026-09-16 维护者已委托开发 agent 自行完成阶段验收，通过后继续已授权流程。执行与记录遵循[开发指南 §2](../development-guide.md#2-交付循环)；此委托不自动把未验证项目标记为通过。
 
 ## P2.1 范围
 
