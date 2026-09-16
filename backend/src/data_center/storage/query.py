@@ -290,6 +290,7 @@ class QueryEngine:
                          rows_scanned=rows_scanned, warning=warning)
 
     def provider_bars_page(self, *, symbol: str, timeframe: str, provider: str,
+                           managed_dataset_id: str | None = None,
                            start: datetime | None = None, end: datetime | None = None,
                            page_size: int | None = None, cursor: str | None = None) -> QueryPage:
         clauses, params = [], []
@@ -299,8 +300,11 @@ class QueryEngine:
         if end is not None:
             clauses.append("bar_ts < ?")
             params.append(end)
+        selector = {"provider": provider, "symbol": symbol, "timeframe": timeframe}
+        if managed_dataset_id:
+            selector["managed_dataset"] = managed_dataset_id
         return self._query_page(
-            dataset_id="provider_bars", selector={"provider": provider, "symbol": symbol, "timeframe": timeframe},
+            dataset_id="provider_bars", selector=selector,
             start=start.isoformat() if start else None, end=end.isoformat() if end else None,
             mode="current", asof_ts=None, page_size=page_size, cursor=cursor,
             sort_keys=["bar_ts"],

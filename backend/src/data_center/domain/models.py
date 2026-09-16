@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class ProviderBar(BaseModel):
+    managed_dataset_id: str | None = None
     symbol: str
     asset_class: str
     provider: str

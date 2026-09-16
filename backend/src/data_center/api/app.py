@@ -1047,7 +1047,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_managed_maintenance(dataset_id: str) -> dict:
         try: dataset_center.get(dataset_id)
         except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
-        return api_envelope(dataset_center.requests(dataset_id))
+        requests = dataset_center.requests(dataset_id)
+        for request in requests:
+            execution = request.get("execution")
+            if execution and execution.get("run_ids"):
+                runs = [ledger.get(run_id) for run_id in execution["run_ids"]]
+                request["run_statuses"] = [run.get("status") for run in runs if run]
+                if runs and all(run and run.get("status") in {"completed", "failed", "dead_letter"} for run in runs):
+                    request["status"] = "completed" if all(run.get("status") == "completed" for run in runs if run) else "degraded"
+        return api_envelope(requests)
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/bars")
+    def managed_dataset_bars(dataset_id: str, symbol: str = "EURUSD", timeframe: str = "1m",
+                              start: str | None = None, end: str | None = None,
+                              page_size: int | None = None, cursor: str | None = None) -> dict:
+        try:
+            item = dataset_center.get(dataset_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="dataset not found")
+        if symbol not in item.members:
+            raise HTTPException(status_code=404, detail="member not found")
+        page = query_engine.provider_bars_page(
+            provider=item.provider, symbol=symbol, timeframe=timeframe, managed_dataset_id=dataset_id,
+            start=parse_instant(start) if start else None,
+            end=parse_instant(end) if end else None, page_size=page_size, cursor=cursor,
+        )
+        return api_envelope(page.rows, meta={"count": page.count, "snapshot_id": page.snapshot_id,
+                                             "next_cursor": page.next_cursor, "dataset_id": dataset_id})
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:

@@ -6,7 +6,8 @@ from data_center.catalog.paths import market_bars_path, provider_bars_path
 from data_center.domain.models import MarketBar, ProviderBar
 
 
-def write_provider_bars(root: Path, rows: Iterable[ProviderBar], *, part_id: str | None = None) -> list[Path]:
+def write_provider_bars(root: Path, rows: Iterable[ProviderBar], *, part_id: str | None = None,
+                        managed_dataset_id: str | None = None) -> list[Path]:
     records = list(rows)
     if not records:
         raise ValueError("cannot write empty provider_bars dataset")
@@ -20,7 +21,8 @@ def write_provider_bars(root: Path, rows: Iterable[ProviderBar], *, part_id: str
         year_records = [record.model_dump() for record in records if record.bar_ts.year == year]
         first = year_records[0]
         target = provider_bars_path(root, provider=first["provider"], asset_class=first["asset_class"],
-                                    symbol=first["symbol"], timeframe=first["timeframe"], year=year)
+                                    symbol=first["symbol"], timeframe=first["timeframe"], year=year,
+                                    managed_dataset_id=managed_dataset_id)
         target.mkdir(parents=True, exist_ok=True)
         path = target / f"part-{shared_part_id}.parquet"
         if path.exists():
