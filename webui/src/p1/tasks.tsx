@@ -11,7 +11,10 @@ import {
   CalendarClock,
   ChevronRight,
   CircleAlert,
+  CircleCheckBig,
+  CirclePlay,
   Copy,
+  Database,
   ListChecks,
   LoaderCircle,
   Plus,
@@ -19,9 +22,11 @@ import {
   Search,
 } from "lucide-react";
 import type {
+  Bar,
   Capabilities,
   ProductionPlan,
   ProductionPreview,
+  ProductionStep,
 } from "../lib/api";
 import { schedulerCardLabel } from "./scheduler-status";
 import { createServices } from "../services";
@@ -63,10 +68,19 @@ import {
 const services = createServices("");
 const createIdempotencySuffix = () =>
   `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const datetimeLocal = () => {
-  const date = new Date(Date.now() - 7 * 86400_000);
+const datetimeLocal = (date: Date) => {
   const offset = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+};
+const completeTradingWindow = () => {
+  const end = new Date();
+  end.setUTCHours(0, 0, 0, 0);
+  const start = new Date(end.getTime() - 86400_000);
+  while (start.getUTCDay() === 0 || start.getUTCDay() === 6) {
+    start.setUTCDate(start.getUTCDate() - 1);
+    end.setUTCDate(end.getUTCDate() - 1);
+  }
+  return { start: datetimeLocal(start), end: datetimeLocal(end) };
 };
 type Draft = {
   name: string;
@@ -74,22 +88,29 @@ type Draft = {
   symbol: string;
   rawTimeframe: string;
   priceBasis: string;
+  windowMode: string;
   historyStart: string;
+  historyEnd: string;
   schedule: string;
   intervalMinutes: number;
   derived5m: boolean;
 };
-const emptyDraft = (): Draft => ({
-  name: "",
-  provider: "",
-  symbol: "",
-  rawTimeframe: "",
-  priceBasis: "",
-  historyStart: datetimeLocal(),
-  schedule: "manual",
-  intervalMinutes: 15,
-  derived5m: false,
-});
+const emptyDraft = (): Draft => {
+  const window = completeTradingWindow();
+  return {
+    name: "",
+    provider: "",
+    symbol: "",
+    rawTimeframe: "",
+    priceBasis: "",
+    windowMode: "fixed",
+    historyStart: window.start,
+    historyEnd: window.end,
+    schedule: "manual",
+    intervalMinutes: 15,
+    derived5m: true,
+  };
+};
 const definitionOf = (draft: Draft) => ({
   provider: draft.provider,
   symbol: draft.symbol,
@@ -97,10 +118,17 @@ const definitionOf = (draft: Draft) => ({
   price_basis: draft.priceBasis,
   bar_timeframes: draft.derived5m ? ["5m"] : [],
   window_policy: {
-    mode: "continuous",
-    history_start: draft.historyStart
-      ? new Date(draft.historyStart).toISOString()
-      : "",
+    mode: draft.windowMode,
+    ...(draft.windowMode === "fixed"
+      ? {
+          start: draft.historyStart ? new Date(draft.historyStart).toISOString() : "",
+          end: draft.historyEnd ? new Date(draft.historyEnd).toISOString() : "",
+        }
+      : {
+          history_start: draft.historyStart
+            ? new Date(draft.historyStart).toISOString()
+            : "",
+        }),
   },
   schedule:
     draft.schedule === "manual"
@@ -134,6 +162,94 @@ const formatTime = (value: string | null | undefined) =>
         timeZone: "UTC",
       }).format(new Date(value)) + " UTC"
     : "—";
+const formatPrice = (value: number) =>
+  new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 }).format(value);
+const executionStateLabel = (state: string) => ({
+  pending: "待处理",
+  queued: "排队中",
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  skipped: "已跳过",
+  blocked: "已阻塞",
+  pausing: "暂停中",
+  paused: "已暂停",
+}[state] ?? `未知状态（${state}）`);
+const executionStageLabel = (stage: string) => stage === "raw"
+  ? "原始数据"
+  : stage.startsWith("derive:")
+    ? `派生数据（${stage.slice("derive:".length)}）`
+    : `未知阶段（${stage}）`;
+const executionOutcomeLabel = (outcome: string | null) => outcome ? ({
+  pass: "通过",
+  failed: "失败",
+  degraded: "降级",
+  skipped: "已跳过",
+}[outcome] ?? `未知结果（${outcome}）`) : "—";
+
+function CopyRequestButton({ request }: { request: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() =>
+        void navigator.clipboard.writeText(request).then(() => setCopied(true))
+      }
+    >
+      <Copy data-icon="inline-start" />
+      {copied ? "已复制" : "复制 HTTP 请求"}
+    </Button>
+  );
+}
+
+function CopyValueButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      type="button"
+      title={value}
+      variant="ghost"
+      size="sm"
+      onClick={() =>
+        void navigator.clipboard.writeText(value).then(() => setCopied(true))
+      }
+    >
+      <span className="mono">{value.slice(0, 12)}</span>
+      <Copy data-icon="inline-end" />
+      <span className="sr-only">{copied ? "已复制" : `复制${label}`}</span>
+    </Button>
+  );
+}
+
+function BarsTable({ rows }: { rows: Bar[] }) {
+  if (!rows.length)
+    return <p className="m-0 text-sm text-muted-foreground">尚未发布数据。</p>;
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>时间（UTC）</TableHead>
+          <TableHead>开</TableHead>
+          <TableHead>高</TableHead>
+          <TableHead>低</TableHead>
+          <TableHead>收</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.slice(-5).map((row) => (
+          <TableRow key={row.bar_ts}>
+            <TableCell className="mono text-xs">{formatTime(row.bar_ts)}</TableCell>
+            <TableCell>{formatPrice(row.open)}</TableCell>
+            <TableCell>{formatPrice(row.high)}</TableCell>
+            <TableCell>{formatPrice(row.low)}</TableCell>
+            <TableCell>{formatPrice(row.close)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
 
 function ErrorNotice({ error }: { error: unknown }) {
   return (
@@ -208,10 +324,19 @@ function CreateTaskSheet({
   const providers = capabilities?.providers ?? [];
   const selectedProvider =
     providers.find((item) => item.provider === draft.provider) ?? providers[0];
+  const provider = draft.provider || selectedProvider?.provider || "";
+  const rawTimeframe =
+    draft.rawTimeframe || selectedProvider?.maintenance_timeframes?.[0] || "";
+  const priceBasis = draft.priceBasis || selectedProvider?.price_bases?.[0] || "";
   const canDerive5m =
-    capabilities?.production?.outputs?.some(
-      (output) =>
-        output.dataset_id === "market_bars" && output.timeframes.includes("5m"),
+    capabilities?.recipes.some(
+      (recipe) =>
+        recipe.input_dataset === "provider_bars" &&
+        recipe.output_dataset === "market_bars" &&
+        recipe.source_timeframe === rawTimeframe &&
+        recipe.target_timeframe === "5m" &&
+        (!recipe.providers.length || recipe.providers.includes(provider)) &&
+        (!recipe.price_bases.length || recipe.price_bases.includes(priceBasis)),
     ) ?? false;
   const effectiveDraft = (): Draft => ({
     ...draft,
@@ -259,7 +384,6 @@ function CreateTaskSheet({
     },
     onError: setError,
   });
-  const provider = draft.provider || selectedProvider?.provider || "";
   const instruments = selectedProvider?.instruments ?? [];
   return (
     <Sheet
@@ -276,8 +400,8 @@ function CreateTaskSheet({
         <SheetHeader>
           <SheetTitle>创建数据任务</SheetTitle>
           <SheetDescription>
-            选项来自 capabilities API。P1 先保存为暂停，运行与真实数据闭环在 P2
-            验收。
+            选项来自 capabilities API。保存后在详情页启用并手动运行，查看原始
+            1m 与派生 5m 数据。
           </SheetDescription>
         </SheetHeader>
         <div className="grid flex-1 gap-5 overflow-y-auto px-6 py-4">
@@ -380,14 +504,43 @@ function CreateTaskSheet({
               />
             </div>
           </div>
-          <div className="field">
-            <Label htmlFor="history-start">历史起点</Label>
-            <Input
-              id="history-start"
-              type="datetime-local"
-              value={draft.historyStart}
-              onChange={(e) => update({ historyStart: e.target.value })}
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="field">
+              <Label htmlFor="window-mode">数据窗口</Label>
+              <ChoiceSelect
+                id="window-mode"
+                ariaLabel="数据窗口"
+                value={draft.windowMode}
+                placeholder="选择窗口"
+                options={[
+                  { value: "fixed", label: "固定窗口" },
+                  { value: "continuous", label: "从历史起点持续维护" },
+                ]}
+                onValueChange={(value) => update({ windowMode: value })}
+              />
+            </div>
+            <div className="field">
+              <Label htmlFor="history-start">
+                {draft.windowMode === "fixed" ? "窗口开始" : "历史起点"}
+              </Label>
+              <Input
+                id="history-start"
+                type="datetime-local"
+                value={draft.historyStart}
+                onChange={(e) => update({ historyStart: e.target.value })}
+              />
+            </div>
+            {draft.windowMode === "fixed" && (
+              <div className="field sm:col-start-2">
+                <Label htmlFor="history-end">窗口结束</Label>
+                <Input
+                  id="history-end"
+                  type="datetime-local"
+                  value={draft.historyEnd}
+                  onChange={(e) => update({ historyEnd: e.target.value })}
+                />
+              </div>
+            )}
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="field">
@@ -712,11 +865,113 @@ export function TaskDetailPage() {
   const plan = useQuery({
     queryKey: ["production-plan", taskId],
     queryFn: () => services.production.plan(taskId),
+    refetchInterval: 2500,
   });
   const executions = useQuery({
     queryKey: ["production-executions", taskId],
     queryFn: () => services.production.executions(taskId, 10),
     enabled: !!plan.data,
+    refetchInterval: 2500,
+  });
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: () => services.catalog.capabilities(),
+  });
+  const latestExecution =
+    executions.data?.items[0] ??
+    plan.data?.current_execution ??
+    plan.data?.executions?.[0];
+  const steps = useQuery({
+    queryKey: ["production-steps", latestExecution?.execution_id],
+    queryFn: () => services.production.steps(latestExecution!.execution_id),
+    enabled: !!latestExecution,
+    refetchInterval: 2500,
+  });
+  const taskPayload = (plan.data?.payload ?? {}) as {
+    raw_timeframe?: string;
+    bar_timeframes?: string[];
+    price_basis?: string;
+    window_policy?: { mode?: string; history_start?: string; start?: string; end?: string };
+    schedule?: Record<string, unknown>;
+  };
+  const recipe5m = capabilities.data?.recipes.find(
+    (recipe) =>
+      recipe.input_dataset === "provider_bars" &&
+      recipe.output_dataset === "market_bars" &&
+      recipe.source_timeframe === taskPayload.raw_timeframe &&
+      recipe.target_timeframe === "5m",
+  );
+  const rawRequest =
+    plan.data?.provider && plan.data.symbol && taskPayload.raw_timeframe
+      ? `/api/v1/bars?${new URLSearchParams({
+          provider: plan.data.provider,
+          symbol: plan.data.symbol,
+          timeframe: taskPayload.raw_timeframe,
+          page_size: "100",
+        })}`
+      : null;
+  const derivedRequest =
+    plan.data?.provider &&
+    plan.data.symbol &&
+    taskPayload.price_basis &&
+    recipe5m
+      ? `/api/v1/market-bars?${new URLSearchParams({
+          provider: plan.data.provider,
+          symbol: plan.data.symbol,
+          timeframe: "5m",
+          price_basis: taskPayload.price_basis,
+          recipe_id: recipe5m.recipe_id,
+          recipe_version: recipe5m.recipe_version,
+          page_size: "100",
+        })}`
+      : null;
+  const readback = useQuery({
+    queryKey: ["production-readback", taskId, rawRequest, derivedRequest],
+    queryFn: async () => {
+      const provider = plan.data!.provider!;
+      const symbol = plan.data!.symbol!;
+      const raw = await services.query.bars({
+        provider,
+        symbol,
+        timeframe: taskPayload.raw_timeframe!,
+      });
+      const derived =
+        recipe5m && taskPayload.price_basis
+          ? await services.query.marketBars({
+              provider,
+              symbol,
+              timeframe: "5m",
+              price_basis: taskPayload.price_basis,
+              recipe_id: recipe5m.recipe_id,
+              recipe_version: recipe5m.recipe_version,
+            })
+          : null;
+      return { raw, derived };
+    },
+    enabled: !!rawRequest,
+    refetchInterval: 2500,
+  });
+  const runMutation = useMutation({
+    mutationFn: async () => {
+      const current = plan.data;
+      if (!current) throw new Error("任务尚未载入");
+      if (current.desired_state === "paused") {
+        await services.production.act(
+          taskId,
+          "resume",
+          `ui-resume-${createIdempotencySuffix()}`,
+          { expected_version: current.definition_version },
+        );
+      }
+      return services.production.act(
+        taskId,
+        "run_now",
+        `ui-run-${createIdempotencySuffix()}`,
+      );
+    },
+    onSuccess: async () => {
+      await Promise.all([plan.refetch(), executions.refetch()]);
+    },
   });
   if (plan.isLoading)
     return (
@@ -740,13 +995,15 @@ export function TaskDetailPage() {
       </>
     );
   const item = plan.data;
-  const payload = item.payload as {
-    raw_timeframe?: string;
-    bar_timeframes?: string[];
-    price_basis?: string;
-    window_policy?: { history_start?: string };
-    schedule?: Record<string, unknown>;
-  };
+  const payload = taskPayload;
+  const runIsComplete =
+    latestExecution?.state === "completed" &&
+    latestExecution.outcome === "pass" &&
+    item.progress?.backlog === false &&
+    (item.progress?.deferred_derived?.length ?? 0) === 0;
+  const runIsActive = ["pending", "queued", "running"].includes(
+    latestExecution?.state ?? "",
+  );
   return (
     <>
       <header className="mb-6">
@@ -784,14 +1041,99 @@ export function TaskDetailPage() {
           <Button
             variant="outline"
             onClick={() =>
-              void Promise.all([plan.refetch(), executions.refetch()])
+              void Promise.all([
+                plan.refetch(),
+                executions.refetch(),
+                steps.refetch(),
+                readback.refetch(),
+              ])
             }
           >
             <RefreshCw />
             刷新
           </Button>
+          <Button
+            onClick={() => runMutation.mutate()}
+            disabled={runMutation.isPending || item.desired_state === "archived"}
+          >
+            <CirclePlay data-icon="inline-start" />
+            {runMutation.isPending
+              ? "正在派发…"
+              : item.desired_state === "paused"
+                ? "启用并立即运行"
+                : "立即运行"}
+          </Button>
         </div>
       </header>
+      {runMutation.error && <div className="mb-6"><ErrorNotice error={runMutation.error} /></div>}
+      <Card className="mb-6" aria-label="运行结论">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 gap-3">
+              {runIsComplete ? (
+                <CircleCheckBig className="mt-0.5 shrink-0 text-primary" />
+              ) : (
+                <CircleAlert className="mt-0.5 shrink-0 text-muted-foreground" />
+              )}
+              <div className="min-w-0">
+                <CardTitle>
+                  {runIsComplete
+                    ? "本次运行已完成，数据已就绪"
+                    : runIsActive
+                      ? "任务正在运行"
+                      : latestExecution
+                        ? "本次运行需要检查"
+                        : "任务尚未运行"}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {runIsComplete
+                    ? `最新执行已通过，处理边界为 ${formatTime(item.progress?.raw_frontier)}，当前无积压。`
+                    : runIsActive
+                      ? "执行状态会自动刷新；完成后这里会明确显示通过结果和处理边界。"
+                      : latestExecution
+                        ? `最新执行状态为${executionStateLabel(latestExecution.state)}，结果为${executionOutcomeLabel(latestExecution.outcome)}。`
+                        : "点击“立即运行”后，这里会显示本轮是否完成以及数据处理边界。"}
+                </CardDescription>
+              </div>
+            </div>
+            <Badge variant={runIsComplete ? "default" : "outline"}>
+              {runIsComplete
+                ? "已完成 · 通过"
+                : latestExecution?.outcome
+                  ? executionOutcomeLabel(latestExecution.outcome)
+                  : latestExecution
+                    ? executionStateLabel(latestExecution.state)
+                    : "未运行"}
+            </Badge>
+          </div>
+        </CardHeader>
+        {latestExecution && (
+          <CardContent>
+            <dl className="grid gap-4 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-xs text-muted-foreground">最新执行</dt>
+                <dd className="mt-1">
+                  <CopyValueButton value={latestExecution.execution_id} label="运行 ID" />
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">完成时间</dt>
+                <dd className="mt-1 font-medium">{formatTime(latestExecution.finished_at)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">积压</dt>
+                <dd className="mt-1 font-medium">
+                  {item.progress?.backlog === false
+                    ? "无"
+                    : item.progress?.backlog
+                      ? "有"
+                      : "尚未记录"}
+                </dd>
+              </div>
+            </dl>
+          </CardContent>
+        )}
+      </Card>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(18rem,.7fr)]">
         <div className="grid gap-6">
           <Card>
@@ -831,14 +1173,106 @@ export function TaskDetailPage() {
                   </dd>
                 </div>
                 <div className="sm:col-span-2">
-                  <dt className="text-xs text-muted-foreground">历史起点</dt>
+                  <dt className="text-xs text-muted-foreground">数据窗口</dt>
                   <dd className="mt-1 font-medium">
-                    {formatTime(payload.window_policy?.history_start)}
+                    {formatTime(payload.window_policy?.history_start ?? payload.window_policy?.start)}
+                    {payload.window_policy?.end ? ` → ${formatTime(payload.window_policy.end)}` : " → 持续维护"}
                   </dd>
                 </div>
               </dl>
             </CardContent>
           </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>执行步骤</CardTitle>
+              <CardDescription>
+                raw 发布完成后，派生步骤使用固定 input snapshot 生成 5m。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-0">
+              {steps.isLoading ? (
+                <div className="p-6 text-sm text-muted-foreground">正在载入…</div>
+              ) : steps.error ? (
+                <div className="px-6"><ErrorNotice error={steps.error} /></div>
+              ) : steps.data?.length ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>阶段</TableHead>
+                      <TableHead>窗口</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>run ID</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {steps.data.map((step: ProductionStep) => (
+                      <TableRow key={step.step_id}>
+                        <TableCell>{executionStageLabel(step.stage)}</TableCell>
+                        <TableCell className="text-xs">
+                          {formatTime(step.window_start)} → {formatTime(step.window_end)}
+                        </TableCell>
+                        <TableCell><Badge variant="outline">{executionStateLabel(step.state)}</Badge></TableCell>
+                        <TableCell>
+                          {step.run_id ? (
+                            <CopyValueButton value={step.run_id} label="run ID" />
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="p-6 text-sm text-muted-foreground">运行派发后显示步骤。</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="size-4" />
+                原始 1m 数据
+              </CardTitle>
+              <CardDescription>
+                UI 通过与 HTTP 相同的 provider-bars 查询读取最近样本。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 px-0">
+              <div className="px-6">
+                {rawRequest && <CopyRequestButton request={`curl -sS '${window.location.origin}${rawRequest}'`} />}
+              </div>
+              {readback.isLoading ? (
+                <div className="px-6 text-sm text-muted-foreground">正在载入原始数据…</div>
+              ) : readback.error ? (
+                <div className="px-6"><ErrorNotice error={readback.error} /></div>
+              ) : (
+                <BarsTable rows={readback.data?.raw.items ?? []} />
+              )}
+            </CardContent>
+          </Card>
+          {payload.bar_timeframes?.includes("5m") && (
+            <Card>
+              <CardHeader>
+                <CardTitle>派生 5m 数据</CardTitle>
+                <CardDescription>
+                  recipe {recipe5m ? `${recipe5m.recipe_id}@${recipe5m.recipe_version}` : "载入中"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 px-0">
+                <div className="px-6">
+                  {derivedRequest && <CopyRequestButton request={`curl -sS '${window.location.origin}${derivedRequest}'`} />}
+                </div>
+                {readback.isLoading ? (
+                  <div className="px-6 text-sm text-muted-foreground">正在载入派生数据…</div>
+                ) : readback.error ? (
+                  <div className="px-6"><ErrorNotice error={readback.error} /></div>
+                ) : (
+                  <BarsTable rows={readback.data?.derived?.items ?? []} />
+                )}
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>最近运行</CardTitle>
@@ -862,6 +1296,7 @@ export function TaskDetailPage() {
                       <TableHead>运行 ID</TableHead>
                       <TableHead>触发</TableHead>
                       <TableHead>状态</TableHead>
+                      <TableHead>结果</TableHead>
                       <TableHead>创建时间</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -873,7 +1308,12 @@ export function TaskDetailPage() {
                         </TableCell>
                         <TableCell>{run.trigger_source}</TableCell>
                         <TableCell>
-                          <Badge variant="outline">{run.state}</Badge>
+                          <Badge variant="outline">{executionStateLabel(run.state)}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={run.outcome === "pass" ? "default" : "outline"}>
+                            {executionOutcomeLabel(run.outcome)}
+                          </Badge>
                         </TableCell>
                         <TableCell>{formatTime(run.created_at)}</TableCell>
                       </TableRow>
@@ -922,12 +1362,12 @@ export function TaskDetailPage() {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>阶段限制</CardTitle>
+              <CardTitle>数据模式</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              P1
-              用于确认列表、创建与详情体验。任务创建为暂停状态；手动运行、真实
-              Dukascopy 发布和完整数据读回在 P2 实施。
+              当前页面按预览顶部标识区分模拟与真实源。模拟模式保留
+              Dukascopy/EURUSD/BID 身份，但 connector 版本明确标记为 isolated
+              preview fixture，不访问 Dukascopy 网络。
             </CardContent>
           </Card>
         </div>
