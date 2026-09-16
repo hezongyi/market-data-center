@@ -33,6 +33,11 @@ from data_center.catalog.manifest import (
 from data_center.catalog.registry import iter_dataset_definitions
 from data_center.catalog.snapshot import selector_hash
 from data_center.control_plane import timeframe_delta
+from data_center.dataset_center import (
+    DatasetCenter,
+    DatasetMember,
+    managed_dataset_root,
+)
 from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.maintenance_tasks import (
@@ -269,7 +274,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     config.auth_password_hash = None
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
+    dataset_center = DatasetCenter(config.canonical_root)
     query_engine = QueryEngine(config.canonical_root)
+    managed_query_engines: dict[str, QueryEngine] = {}
+    managed_query_engines_lock = Lock()
     capacity_policy = config.capacity_policy()
     run_view = RunView(ledger, canonical_root=config.canonical_root,
                        cursor_secret=config.api_key or str(config.canonical_root))
@@ -284,6 +292,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     print(json.dumps({"event": "api_started", "request_id": None,
                       **{key: identity[key] for key in ("deployment_id", "software_version", "source_commit")}}),
           flush=True)
+
+    def managed_query_engine(dataset_id: str) -> QueryEngine:
+        """Keep cursor snapshots alive while isolating every managed root."""
+        with managed_query_engines_lock:
+            return managed_query_engines.setdefault(
+                dataset_id,
+                QueryEngine(managed_dataset_root(config.canonical_root, dataset_id)),
+            )
+
+    def managed_action_idempotency_key(dataset_id: str, request_key: str, action: str,
+                                       *, version: int) -> str:
+        if version == 1:
+            return f"{dataset_id}:{request_key}:{action}"
+        if version != 2:
+            raise ValueError("unsupported managed action key version")
+        identity = json.dumps([dataset_id, request_key, action], separators=(",", ":"))
+        return f"managed:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+    def require_managed_write(*, managed_dataset_id: str | None, dataset_id: str,
+                              provider: str, symbol: str | None, timeframe: str,
+                              asset_class: str | None = None,
+                              price_basis: str | None = None,
+                              recipe_id: str | None = None,
+                              recipe_version: str | None = None) -> None:
+        """Keep every public write seam inside the managed dataset contract."""
+        if managed_dataset_id is None:
+            return
+        try:
+            item = dataset_center.get(managed_dataset_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="managed dataset not found") from exc
+        if item.status == "archived":
+            raise HTTPException(status_code=409, detail="archived dataset is read-only")
+        canonical_symbol = str(symbol or "").upper()
+        member = item.members.get(canonical_symbol)
+        if member is None or member.status != "active":
+            raise HTTPException(status_code=409, detail="managed dataset member is not writable")
+        if (provider != item.provider or asset_class not in {None, item.asset_class}
+                or price_basis not in {None, item.price_type}):
+            raise HTTPException(status_code=409, detail="write does not match managed dataset ownership")
+        if dataset_id == "provider_bars":
+            if timeframe != item.base_timeframe:
+                raise HTTPException(status_code=409, detail="write does not match managed base timeframe")
+            return
+        if dataset_id == "market_bars" and recipe_id and recipe_version:
+            try:
+                recipe = REGISTRY.recipe(recipe_id, recipe_version)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail="recipe is not registered") from exc
+            targets = item.effective_derived_targets(canonical_symbol)
+            if recipe.source_timeframe != item.base_timeframe or recipe.target_timeframe not in targets:
+                raise HTTPException(status_code=409, detail="recipe is not registered for managed member")
+            return
+        raise HTTPException(status_code=409, detail="dataset is not writable through managed ownership")
+
+    def require_managed_definition(definition: dict) -> None:
+        """Validate a normalized production definition against managed ownership."""
+        preview = production_tasks_service.preview(definition)
+        if preview["validation"]["errors"]:
+            return
+        normalized = preview["definition"]
+        managed_id = normalized.get("managed_dataset_id")
+        if managed_id is None:
+            return
+        try:
+            item = dataset_center.get(managed_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="managed dataset not found") from exc
+        symbol = str(normalized.get("symbol") or "").upper()
+        member = item.members.get(symbol)
+        if item.status == "archived":
+            raise HTTPException(status_code=409, detail="archived dataset is read-only")
+        if member is None or member.status != "active":
+            raise HTTPException(status_code=409, detail="managed dataset member is not writable")
+        if (normalized.get("provider") != item.provider
+                or normalized.get("asset_class") != item.asset_class
+                or normalized.get("raw_timeframe") != item.base_timeframe
+                or normalized.get("price_basis") != item.price_type
+                or set(normalized.get("bar_timeframes") or ())
+                - set(item.effective_derived_targets(symbol))
+                or (normalized.get("window_policy") or {}).get("mode") != "fixed"
+                or (normalized.get("schedule") or {}).get("schedule") != item.schedule):
+            raise HTTPException(status_code=409, detail="production definition does not match managed dataset")
 
     @app.post(f"{config.api_prefix}/auth/login")
     def auth_login(payload: dict, response: Response):
@@ -619,7 +710,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current = production_tasks_service.read(task_id)
         if current is None:
             raise HTTPException(status_code=404, detail="production task not found")
-        require_preview_definition({**(current.get("payload") or {}), **(override or {})})
+        definition = {**(current.get("payload") or {}), **(override or {})}
+        require_preview_definition(definition)
+        require_managed_definition(definition)
 
     @app.middleware("http")
     async def preview_provider_boundary(request: Request, call_next):
@@ -676,7 +769,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def production_task_create(payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        require_preview_definition(payload.get("definition") or {})
+        definition = payload.get("definition") or {}
+        require_preview_definition(definition)
+        require_managed_definition(definition)
         actor = operator_identity(request, config)
         try:
             task = production_tasks_service.create(
@@ -702,6 +797,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
         definition = payload.get("definition") or payload
         require_preview_definition(definition)
+        require_managed_definition(definition)
         return api_envelope(production_tasks_service.preview(definition))
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
@@ -725,6 +821,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             command = "update"
         if command == "update" and payload.get("definition") is not None:
             require_preview_change(task_id, payload.get("definition"))
+        elif command == "resume":
+            require_preview_change(task_id, None)
         try:
             task = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
@@ -753,6 +851,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         command = str(payload.get("command") or "")
         if command == "copy" or (command == "update" and payload.get("definition") is not None):
             require_preview_change(task_id, payload.get("definition"))
+        elif command in {"resume", "run_now", "retry"}:
+            require_preview_change(task_id, None)
         actor = operator_identity(request, config)
         try:
             result = production_tasks_service.change(
@@ -794,6 +894,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                    x_api_key: str | None = Header(default=None)) -> dict:
         """Re-plan the unfinished needs of a terminal round as a linked follow-up."""
         require_api_key(config, x_api_key)
+        execution = ledger.get_production_execution(execution_id)
+        if execution is None:
+            # Let the service record the rejected mutation before preserving
+            # the public not-found response and its stable error contract.
+            try:
+                return api_envelope(production_tasks_service.retry(
+                    execution_id=execution_id, actor=operator_identity(request, config),
+                    request_id=current_request_id(),
+                    idempotency_key=request.headers.get("Idempotency-Key")))
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="production execution not found") from exc
+        task = production_tasks_service.read(execution["task_id"])
+        if task is None:
+            raise HTTPException(status_code=404, detail="production task not found")
+        require_managed_definition(task.get("payload") or {})
         try:
             result = production_tasks_service.retry(
                 execution_id=execution_id, actor=operator_identity(request, config),
@@ -839,6 +954,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                          x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
         require_allowed_provider(request.provider)
+        require_managed_write(
+            managed_dataset_id=request.managed_dataset_id,
+            dataset_id=request.dataset_id or "provider_bars", provider=request.provider,
+            symbol=request.symbol, timeframe=request.timeframe, asset_class=request.asset_class,
+            price_basis=request.price_basis, recipe_id=request.recipe_id,
+            recipe_version=request.recipe_version)
         envelope = submit_maintenance(request=request, ledger=ledger, config=config,
                                       capacity_policy=capacity_policy, http_request=http_request,
                                       request_id=current_request_id())
@@ -975,6 +1096,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_api_key(config, x_api_key)
         actor = operator_identity(http_request, config)
         try:
+            original = ledger.get(run_id)
+            original_request = ledger.job_request(run_id)
+            managed_dataset_id = (original_request.get("managed_dataset_id")
+                                  or original.get("managed_dataset_id"))
+            if managed_dataset_id is not None:
+                try:
+                    managed_item = dataset_center.get(managed_dataset_id)
+                except KeyError as exc:
+                    raise ValueError("managed dataset ownership is unavailable") from exc
+                if managed_item.status == "archived":
+                    raise ValueError("archived managed dataset is read-only")
             capacity_policy.require_ingest_capacity(config.canonical_root)
             new_id = ledger.retry_run(run_id)
         except (KeyError, ValueError, CapacityProtectedError) as exc:
@@ -1029,6 +1161,179 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def datasets() -> dict:
         return api_envelope([definition.as_dict() for definition in iter_dataset_definitions()])
 
+    @app.get(f"{config.api_prefix}/managed-datasets")
+    def managed_datasets() -> dict:
+        return api_envelope([item.as_dict() for item in dataset_center.list()])
+
+    @app.post(f"{config.api_prefix}/managed-datasets", status_code=201)
+    def create_managed_dataset(payload: dict, http_request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try:
+            supplied = {key: payload[key] for key in ("provider", "asset_class", "price_type", "base_timeframe", "derived_targets", "schedule") if key in payload}
+            expected = {"provider": "dukascopy", "asset_class": "fx", "price_type": "bid",
+                        "base_timeframe": "1m", "derived_targets": ["5m"], "schedule": "manual"}
+            refused = [key for key, value in supplied.items() if value != expected[key]]
+            if refused:
+                raise ValueError("P2.1 dataset definition is fixed: " + ", ".join(sorted(refused)))
+            item = dataset_center.create(dataset_id=payload["dataset_id"], name=payload["name"],
+                                         notes=payload.get("notes", ""), history_start=payload.get("history_start"))
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return api_envelope(item.as_dict())
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}")
+    def managed_dataset(dataset_id: str) -> dict:
+        try: return api_envelope(dataset_center.get(dataset_id).as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+
+    @app.patch(f"{config.api_prefix}/managed-datasets/{{dataset_id}}")
+    def update_managed_dataset(dataset_id: str, payload: dict,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        if "expected_version" not in payload:
+            raise HTTPException(status_code=409, detail="expected_version is required")
+        try:
+            expected_version = int(payload["expected_version"])
+            changes = {key: value for key, value in payload.items() if key != "expected_version"}
+            return api_envelope(dataset_center.update(
+                dataset_id, expected_version=expected_version, **changes).as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        except (TypeError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/members", status_code=201)
+    def add_managed_member(dataset_id: str, payload: dict,
+                           x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        if "expected_version" not in payload:
+            raise HTTPException(status_code=409, detail="expected_version is required")
+        try:
+            targets = payload.get("derived_targets")
+            item = dataset_center.add_member(dataset_id, DatasetMember(
+                symbol=payload["symbol"], history_start=payload.get("history_start"),
+                derived_targets=tuple(targets) if targets is not None else None),
+                expected_version=int(payload["expected_version"]))
+            return api_envelope(item.as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        except (TypeError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance", status_code=202)
+    def request_managed_maintenance(dataset_id: str, payload: dict, http_request: Request,
+                                    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        request_key = idempotency_key or current_request_id()
+        created_request = False
+        value = None
+        try:
+            item = dataset_center.get(dataset_id)
+            value, created_request = dataset_center.submit_request(
+                dataset_id, symbol=payload["symbol"], start=payload["start"],
+                end=payload["end"], idempotency_key=request_key)
+            if value.get("execution"):
+                return api_envelope(value["execution"])
+            action_key_version = int(value.get("action_key_version", 1))
+            task_id = f"managed-{dataset_id}-{value['request_id']}"
+            production_tasks_service.create(
+                task_id=task_id, name=f"{item.name} · {value['start']} → {value['end']}",
+                desired_state="enabled", actor=operator_identity(http_request, config),
+                request_id=value["request_id"],
+                idempotency_key=managed_action_idempotency_key(
+                    dataset_id, request_key, "create", version=action_key_version),
+                definition={
+                    "managed_dataset_id": dataset_id,
+                    "provider": item.provider, "symbol": value["symbol"],
+                    "raw_timeframe": item.base_timeframe, "price_basis": item.price_type,
+                    "bar_timeframes": list(item.effective_derived_targets(value["symbol"])),
+                    "window_policy": {"mode": "fixed", "start": value["start"], "end": value["end"]},
+                    "schedule": {"schedule": "manual"},
+                })
+            execution_record = production_tasks_service.change(
+                task_id, "run_now", actor=operator_identity(http_request, config),
+                request_id=value["request_id"],
+                idempotency_key=managed_action_idempotency_key(
+                    dataset_id, request_key, "run", version=action_key_version))
+            execution = {"status": "queued", "state": execution_record.get("state", "pending"),
+                         "task_id": task_id, "execution_id": execution_record["execution_id"],
+                         "dataset_id": dataset_id, "run_ids": []}
+            dataset_center.attach_execution(dataset_id, request_key, execution)
+            return api_envelope(execution)
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        except ValueError as exc:
+            if created_request and value is not None:
+                dataset_center.discard_unattached_request(
+                    dataset_id, request_key, value["request_id"])
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance")
+    def list_managed_maintenance(dataset_id: str) -> dict:
+        try: dataset_center.get(dataset_id)
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        requests = dataset_center.requests(dataset_id)
+        for request in requests:
+            execution = request.get("execution")
+            if execution and execution.get("execution_id"):
+                record = ledger.get_production_execution(execution["execution_id"])
+                steps = ledger.list_production_steps(execution["execution_id"])
+                execution["state"] = (record or {}).get("state", execution.get("state"))
+                execution["run_ids"] = [step["run_id"] for step in steps if step.get("run_id")]
+                execution["steps"] = steps
+            if execution and execution.get("run_ids"):
+                runs = [ledger.get(run_id) for run_id in execution["run_ids"]]
+                request["run_statuses"] = [run.get("status") for run in runs if run]
+            if execution and execution.get("state") in {"completed", "failed", "skipped"}:
+                request["status"] = "completed" if execution["state"] == "completed" else "degraded"
+        return api_envelope(requests)
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/bars")
+    def managed_dataset_bars(dataset_id: str, symbol: str = "EURUSD", timeframe: str = "1m",
+                              start: str | None = None, end: str | None = None,
+                              page_size: int | None = None, cursor: str | None = None) -> dict:
+        try:
+            item = dataset_center.get(dataset_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="dataset not found")
+        symbol = symbol.upper()
+        if symbol not in item.members:
+            raise HTTPException(status_code=404, detail="member not found")
+        if item.status == "archived":
+            raise HTTPException(status_code=409, detail="archived dataset is not queryable")
+        engine = managed_query_engine(dataset_id)
+        if timeframe == item.base_timeframe:
+            page = engine.provider_bars_page(
+                provider=item.provider, symbol=symbol, timeframe=timeframe,
+                start=parse_instant(start) if start else None,
+                end=parse_instant(end) if end else None, page_size=page_size, cursor=cursor)
+        elif timeframe in item.effective_derived_targets(symbol):
+            page = engine.market_bars_page(
+                provider=item.provider, symbol=symbol, timeframe=timeframe,
+                price_basis=item.price_type, recipe_id=f"utc-24x7-1m-to-{timeframe}-ohlcv",
+                recipe_version="1", start=parse_instant(start) if start else None,
+                end=parse_instant(end) if end else None, page_size=page_size, cursor=cursor)
+        else:
+            raise HTTPException(status_code=422, detail="timeframe is not registered for this member")
+        return api_envelope(page.rows, meta={"count": page.count, "snapshot_id": page.snapshot_id,
+                                             "next_cursor": page.next_cursor, "dataset_id": dataset_id})
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/coverage")
+    def managed_dataset_coverage(dataset_id: str, symbol: str = "EURUSD") -> dict:
+        try:
+            item = dataset_center.get(dataset_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="dataset not found")
+        if item.status == "archived":
+            raise HTTPException(status_code=409, detail="archived dataset is not queryable")
+        symbol = symbol.upper()
+        if symbol not in item.members:
+            raise HTTPException(status_code=404, detail="member not found")
+        root = managed_dataset_root(config.canonical_root, dataset_id)
+        raw = provider_bars_coverage(root, provider=item.provider, symbol=symbol,
+                                     timeframe=item.base_timeframe)
+        derived = [market_bars_coverage(
+            root, provider=item.provider, symbol=symbol, timeframe=target,
+            price_basis=item.price_type, recipe_id=f"utc-24x7-1m-to-{target}-ohlcv",
+            recipe_version="1") for target in item.effective_derived_targets(symbol)]
+        return api_envelope({"dataset_id": dataset_id, "raw": raw, "derived": derived})
+
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
         from fastapi import HTTPException
@@ -1041,15 +1346,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/runs/{{run_id}}/manifest")
     def run_manifest(run_id: str) -> dict:
         try:
-            payload = json.loads(manifest_path(config.canonical_root, run_id).read_text())
-            validate_manifest(config.canonical_root, payload)
-        except (OSError, json.JSONDecodeError, PublicationError):
+            try:
+                managed_id = ledger.get(run_id).get("managed_dataset_id")
+            except KeyError:
+                managed_id = None
+            root = managed_dataset_root(config.canonical_root, managed_id)
+            payload = json.loads(manifest_path(root, run_id).read_text())
+            validate_manifest(root, payload)
+        except (KeyError, OSError, json.JSONDecodeError, PublicationError):
             raise HTTPException(status_code=404, detail="manifest not found")
         return api_envelope(payload)
 
     @app.post(f"{config.api_prefix}/ingest/runs")
     def ingest(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        require_managed_write(
+            managed_dataset_id=job.managed_dataset_id, dataset_id=job.dataset_id,
+            provider=job.provider, symbol=job.symbol, timeframe=job.timeframe,
+            asset_class=job.asset_class)
         actor = operator_identity(http_request, config)
         requested_days = max(0, math.ceil((job.end - job.start).total_seconds() / 86_400))
         if job.run_kind == "backfill":
@@ -1177,12 +1491,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source_timeframe = REGISTRY.recipe(job.recipe_id, job.recipe_version).source_timeframe
         except ValueError:
             source_timeframe = "1d"
+        require_managed_write(
+            managed_dataset_id=job.managed_dataset_id, dataset_id=job.dataset_id,
+            provider=job.provider, symbol=job.symbol, timeframe=source_timeframe,
+            recipe_id=job.recipe_id, recipe_version=job.recipe_version)
         envelope = submit_maintenance(
             request=MaintenanceTaskRequest(
                 run_kind="derive", run_scope=job.run_scope, dataset_id="market_bars",
                 provider=job.provider, symbol=job.symbol, timeframe=source_timeframe,
                 recipe_id=job.recipe_id, recipe_version=job.recipe_version,
                 start=job.start, end=job.end, task_id=job.job_id,
+                managed_dataset_id=job.managed_dataset_id,
             ),
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),
@@ -1192,11 +1511,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post(f"{config.api_prefix}/quality/checks", status_code=202)
     def quality_check(job: IngestJob, http_request: Request, x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
+        require_managed_write(
+            managed_dataset_id=job.managed_dataset_id, dataset_id=job.dataset_id,
+            provider=job.provider, symbol=job.symbol, timeframe=job.timeframe,
+            asset_class=job.asset_class)
         envelope = submit_maintenance(
             request=MaintenanceTaskRequest(
                 run_kind="quality", run_scope=job.run_scope, dataset_id=job.dataset_id,
                 provider=job.provider, symbol=job.symbol, asset_class=job.asset_class,
                 timeframe=job.timeframe, start=job.start, end=job.end, task_id=job.job_id,
+                managed_dataset_id=job.managed_dataset_id,
             ),
             ledger=ledger, config=config, capacity_policy=capacity_policy,
             http_request=http_request, request_id=current_request_id(),

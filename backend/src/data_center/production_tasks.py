@@ -22,6 +22,7 @@ from .capacity import CapacityPolicy
 from .catalog.manifest import PublicationError
 from .catalog.snapshot import Catalog, snapshot_reference
 from .control_plane import timeframe_delta
+from .dataset_center import managed_dataset_root
 from .domain.errors import SESSION_CLOSED_ERROR_TYPES
 from .domain.models import DeriveJob, IngestJob
 from .instants import aware_utc
@@ -101,7 +102,7 @@ def _as_utc(value, field: str) -> datetime:
 
 def ownership_key(*, dataset_id: str, provider: str | None = None, symbol: str | None = None,
                   timeframe: str | None = None, price_basis: str | None = None,
-                  series_id: str | None = None) -> str:
+                  series_id: str | None = None, managed_dataset_id: str | None = None) -> str:
     """Render the ownership key of one production output (spec 3.3)."""
     if dataset_id == OBSERVATION_DATASET:
         parts = [dataset_id, series_id]
@@ -109,7 +110,8 @@ def ownership_key(*, dataset_id: str, provider: str | None = None, symbol: str |
         parts = [dataset_id, provider, symbol, timeframe, price_basis or "bid"]
     if any(not part for part in parts):
         raise ValueError(f"incomplete ownership identity for {dataset_id}")
-    return ":".join(str(part) for part in parts)
+    identity = ":".join(str(part) for part in parts)
+    return f"managed:{managed_dataset_id}:{identity}" if managed_dataset_id else identity
 
 
 def _recipe_document(recipe) -> dict:
@@ -270,6 +272,12 @@ def normalize_definition(definition: dict, *, now: datetime) -> dict:
         concurrency = 1
     if errors:
         raise DefinitionError(errors)
+    managed_dataset_id = definition.get("managed_dataset_id")
+    if managed_dataset_id is not None:
+        try:
+            managed_dataset_root(Path("."), str(managed_dataset_id))
+        except ValueError as exc:
+            raise DefinitionError([{"field": "managed_dataset_id", "message": str(exc)}]) from exc
     return {
         "provider": provider,
         "symbol": symbol,
@@ -281,6 +289,7 @@ def normalize_definition(definition: dict, *, now: datetime) -> dict:
         "schedule": schedule,
         "concurrency": concurrency,
         "recipe_chains": chains,
+        "managed_dataset_id": str(managed_dataset_id) if managed_dataset_id else None,
     }
 
 
@@ -288,11 +297,13 @@ def ownership_keys(definition: dict) -> list[str]:
     """Every output ownership key a plan holds (spec 3.3)."""
     keys = [ownership_key(dataset_id=RAW_DATASET, provider=definition["provider"],
                           symbol=definition["symbol"], timeframe=definition["raw_timeframe"],
-                          price_basis=definition["price_basis"])]
+                          price_basis=definition["price_basis"],
+                          managed_dataset_id=definition.get("managed_dataset_id"))]
     for timeframe in definition.get("bar_timeframes", ()):
         keys.append(ownership_key(dataset_id=DERIVED_DATASET, provider=definition["provider"],
                                   symbol=definition["symbol"], timeframe=timeframe,
-                                  price_basis=definition["price_basis"]))
+                                  price_basis=definition["price_basis"],
+                                  managed_dataset_id=definition.get("managed_dataset_id")))
     return keys
 
 
@@ -321,6 +332,7 @@ def config_facts(definition: dict) -> dict:
     policy = maintenance_policy_for(definition["provider"], definition["raw_timeframe"])
     return {
         "dataset": RAW_DATASET,
+        "managed_dataset_id": definition.get("managed_dataset_id"),
         "provider": capability.provider,
         "capability": {
             "timeframes": list(capability.timeframes),
@@ -402,6 +414,11 @@ class ProductionTasks:
         secret = cursor_secret or f"market-data-center-production:{ledger.path}"
         self._cursor_secret = hashlib.sha256(secret.encode()).digest()
         self.cursor_ttl_seconds = cursor_ttl_seconds
+
+    def _root(self, definition: dict) -> Path | None:
+        if self.canonical_root is None:
+            return None
+        return managed_dataset_root(self.canonical_root, definition.get("managed_dataset_id"))
 
     # -- cursors ---------------------------------------------------------
     def _encode_cursor(self, payload: dict) -> str:
@@ -901,7 +918,7 @@ class ProductionTasks:
         if self.canonical_root is None:
             return []
         try:
-            snapshot = Catalog(self.canonical_root).resolve(
+            snapshot = Catalog(self._root(definition)).resolve(
                 RAW_DATASET, {"provider": definition["provider"], "symbol": definition["symbol"],
                               "timeframe": definition["raw_timeframe"]})
         except (PublicationError, ValueError):
@@ -1164,7 +1181,7 @@ class ProductionTasks:
         all right now, which is a deferral rather than a decision about a bucket.
         """
         try:
-            snapshot = Catalog(self.canonical_root).resolve(
+            snapshot = Catalog(self._root(definition)).resolve(
                 recipe_document["input_dataset"],
                 {"provider": definition["provider"], "symbol": definition["symbol"],
                  "timeframe": recipe_document["source_timeframe"]})
@@ -1231,7 +1248,8 @@ class ProductionTasks:
                      run_start: str, run_end: str, identity: str) -> dict | None:
         """Build one derive step with its fixed input for one ready bucket run."""
         try:
-            snapshot = Catalog(self.canonical_root).resolve(
+            root = self._root(definition)
+            snapshot = Catalog(root).resolve(
                 recipe_document["input_dataset"],
                 {"provider": definition["provider"], "symbol": definition["symbol"],
                  "timeframe": recipe_document["source_timeframe"]})
@@ -1240,10 +1258,11 @@ class ProductionTasks:
         if not snapshot.parts:
             return None
         input_id = self.ledger.store_production_input(
-            snapshot_reference(self.canonical_root, snapshot))
+            snapshot_reference(root, snapshot))
         job = DeriveJob(
             job_id=f"{task['task_id']}:{execution_id[:8]}:{recipe_document['target_timeframe']}:"
                    f"{run_start[:16].replace(':', '')}",
+            managed_dataset_id=definition.get("managed_dataset_id"),
             provider=definition["provider"], symbol=definition["symbol"],
             recipe_id=recipe_document["recipe_id"], recipe_version=recipe_document["recipe_version"],
             start=run_start, end=run_end, run_scope="production")
@@ -1391,6 +1410,7 @@ class ProductionTasks:
         capability = REGISTRY.capability(definition["provider"])
         job = IngestJob(
             job_id=f"{task['task_id']}:{execution_id[:8]}:raw",
+            managed_dataset_id=definition.get("managed_dataset_id"),
             dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
             asset_class=definition.get("asset_class") or capability.asset_classes[0],
             timeframe=definition["raw_timeframe"],
@@ -1569,7 +1589,7 @@ class ProductionTasks:
         job = _raw_job(task=task, definition=definition, execution={"execution_id": "coverage"},
                        start=scan[0], end=scan[1], run_kind="ingest", capability=capability)
         try:
-            return coverage_from_catalog(root=self.canonical_root, job=job)
+            return coverage_from_catalog(root=self._root(definition), job=job)
         except (PublicationError, OSError, ValueError):
             return None
 
@@ -1776,13 +1796,35 @@ class ProductionTasks:
                 "last_execution_id": execution["execution_id"],
             })
             self.ledger.mark_execution_progress_reconciled(execution["execution_id"])
+        archived = self._archive_terminal_managed_tasks()
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],
                 "fixed_continuations": fixed_continuations,
                 "provider_backoff_recorded": backoffs["recorded"],
                 "provider_backoff_cleared": backoffs["cleared"],
+                "managed_tasks_archived": archived,
                 "reconciled_at": now.isoformat()}
+
+    def _archive_terminal_managed_tasks(self) -> builtins.list[str]:
+        """Release one-shot dataset ownership, including pre-upgrade terminal tasks."""
+        archived = []
+        for task in self.ledger.list_production_tasks():
+            definition = task.get("payload") or {}
+            if (not definition.get("managed_dataset_id")
+                    or (definition.get("schedule") or {}).get("schedule") != "manual"
+                    or task.get("desired_state") == "archived"
+                    or self.ledger.active_execution_for_task(task["task_id"]) is not None):
+                continue
+            executions = self.ledger.list_production_executions(task["task_id"], limit=1)
+            if not executions or executions[0].get("state") not in {"completed", "failed", "skipped"}:
+                continue
+            execution_id = executions[0]["execution_id"]
+            self.change(
+                task["task_id"], "archive", actor="managed-dataset-reconciler",
+                request_id=execution_id)
+            archived.append(task["task_id"])
+        return archived
 
     def _advance_fixed_window_backlog(self, *, now: datetime, limit: int,
                                       step_budget: int) -> builtins.list[dict]:
@@ -1965,6 +2007,7 @@ def _raw_job(*, task: dict, definition: dict, execution: dict, start: datetime, 
              run_kind: str, capability) -> IngestJob:
     return IngestJob(
         job_id=f"{task['task_id']}:{execution['execution_id'][:8]}:raw:{run_kind}",
+        managed_dataset_id=definition.get("managed_dataset_id"),
         dataset_id=RAW_DATASET, provider=definition["provider"], symbol=definition["symbol"],
         asset_class=definition.get("asset_class") or capability.asset_classes[0],
         timeframe=definition["raw_timeframe"], start=start, end=end,

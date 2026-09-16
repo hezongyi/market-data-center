@@ -6,6 +6,8 @@
 
 读取 [当前产品规范](specs/2026-09-15-eurusd-first-product-baseline.md)与[路线图](plans/2026-09-15-eurusd-first-implementation.md)，UI 另读 `webui/AGENTS.md`，预览另读[预览规范](specs/2026-09-15-isolated-preview-environment.md)。旧 spec 的历史状态不代表当前排期，未列入本轮的旧工作默认暂停。
 
+2026-09-16 起同时读取[数据集中心接续规范](specs/2026-09-16-dataset-centered-eurusd-maintenance.md)。P2 已通过用户阶段验收；下一切片 P2.1 仍只做 Dukascopy FX / EURUSD，P3 完善单品种全流程后 P4 才加入 GBPUSD。新模型验收引用 DS01–DS07，旧 P2 receipt 保留但不能证明新行为已通过。
+
 普通切片只需目标、用户动作、验收项和改动范围，不为每个按钮写 spec。新能力或改变数据/接口/权限/预览隔离契约时更新相应 spec；实现方法、文件落点和顺序写 plan；研究证据写 research；已可执行的步骤写 guide/runbook。
 
 用户直接委派的小任务和分析可直接进行，不强制先新建 issue。共享 issue 或多个 agent 同时工作时按[协作约定](agent-collaboration.md)认领；未经授权不向 GitHub/其它人发送消息。保护现有 worktree；广泛变更使用独立分支/worktree。
@@ -174,6 +176,22 @@ hourly BI5 tick 文件并按 BID 聚合，每个小时文件分别扣减一次 l
 每条派生数据均有 `input_snapshot_id`。22:00–23:00 文件真实缺少 22:19、22:29 两分钟，
 因此该小时标为 provider gap 且没有补造；实际网络尝试为 35/100。该结果用于核对完整窗口、
 固定输入、缺口诚实呈现和预算，而不是“全日无缺口”的承诺。登录凭据按预览交接单提供。
+
+P2.1 数据集中心预览使用独立 id `p21-eurusd-dataset` 与同一外置 base，
+不覆盖 P0/P1/P2 数据。它保留数据集、维护请求、production execution、raw/5m
+parts 与 ownership 审计；页面可创建固定的 Dukascopy FX / BID 1m 数据集、加入
+EURUSD、暂停/恢复并执行固定区间手工补数。操作时仍必须显式传 base：
+
+```bash
+bash scripts/dev-preview.sh status --id p21-eurusd-dataset --base /home/quant/repos/.preview
+DATACENTER_PYTHON=.venv/bin/python bash scripts/dev-preview.sh start \
+  --id p21-eurusd-dataset --base /home/quant/repos/.preview --update
+```
+
+2026-09-16 技术验收时 UI 为 `http://127.0.0.1:23639/datasets`、API docs 为
+`http://127.0.0.1:23638/docs`，fixture 模式四进程健康；实际地址与代码身份仍以
+上述 `status` 读回为准。凭据仅通过本地验收交接提供，不写入仓库。真实 Dukascopy
+连接仍因外部代理返回 HTTP 503 而受限，不能把本 fixture 结果报告为 live 成功。
 
 运行进程仍依赖启动它的代码 worktree 和 Python 环境。删除或替换该 worktree 前先用上述外置 base 停止预览；在新 worktree 安装锁定依赖后，再以相同 id/base 和 `--update` 重启，原持久数据会继续使用。地址以 `status` 的实际输出为准；若端口或运行主机改变，应同步更新本节与根 AGENTS 路由提示。
 

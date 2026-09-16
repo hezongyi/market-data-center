@@ -1,15 +1,17 @@
 # EURUSD 首个闭环实施路线图
 
 日期：2026-09-15
-状态：approved；P0、P1 已完成并通过用户阶段验收；P2 已实现并等待最终阶段复核；P3 未开始
+状态：approved；P0–P2 已完成并通过用户阶段验收；P2.1 已完成并通过开发 agent 阶段验收，P3 未开始
 依据：[产品规范](../specs/2026-09-15-eurusd-first-product-baseline.md)、[预览规范](../specs/2026-09-15-isolated-preview-environment.md)、[开发指南](../development-guide.md)。本文件不增加功能要求。
+
+2026-09-16 验收委托修订：预览可用后及时提供地址，由开发 agent 执行阶段及集成产品验收；通过后按本路线图继续已授权工作，不等待用户确认。历史用户验收记录保留；本次文档修订本身不宣告新的验收或下一阶段已完成。
 
 ## 基线已落地 / 尚未落地
 
 - 维护者已确认方向；规范、开发指南、AGENTS 和 PR 模板进入本次工作分支。
 - 两份原提案已归 `docs/research/`；本地上游参考来源见 `docs/references/shadcn-admin.md`。
 - P0 独立预览与 P1 UI 主线均已实现并通过用户阶段验收；P1 由 PR #127 合入 main，未发生生产变更。共享基线以合入 main 的提交为准，PR/commit/CI 记录用于核对同步结果。
-- P2 分支在 2026-09-16 以 `b1bc42a` 完成 fixture 与有界真实 Dukascopy 手动闭环；完整日 live 结果诚实保留 provider gap，最终用户阶段复核、hosted verify 和合并尚未完成。未进入 P3。
+- P2 分支在 2026-09-16 完成 fixture 与有界真实 Dukascopy 手动闭环；完整日 live 结果诚实保留 provider gap，用户阶段复核与 hosted verify 通过，并由 PR #129 合入 main。未进入 P3。
 - 后续按此表执行，不重新以旧迁移总目标选择任务。一次聚焦一个产品切片；能并行的工作不得抢同一文件或预览环境。
 
 ## 阶段与可操作交付
@@ -18,7 +20,8 @@
 | --- | --- | --- | --- |
 | P0 独立预览 | 新 scripts/dev-preview.sh 及必要支持模块、Vite 代理、fixture 配置、环境标识、开发指南；处理 #106 的开发依赖安装 | 独立四进程、实际 URL、身份、日志、可重启保留数据；PV01/02/04/05/07，PV03/06/08 先基础实现并注明后续范围 | 已完成；用户阶段验收通过 |
 | P1 成套 UI 主线 | webui 中引入固定上游 shell/theme/ui；任务列表、创建/详情、真实登录；处理旧 CSS 作用域与 URL fallback | E02，用户确认列表/详情的风格和操作；PV06 路由、身份与有效派发状态验收 | 已完成并通过用户阶段验收；PR #127；PV06 状态收口于 2026-09-15 复验通过 |
-| P2 手动数据闭环 | 复用 production_tasks、connector、worker、transform，联通页面与 API；增补缺失读模型/反馈 | E03/04/09，受控源全链路及有界真实 Dukascopy 沙箱；PV03/08 对应证据 | 已实现并通过用户阶段验收（fixture + PV08）；PR #129 |
+| P2 手动数据闭环 | 复用 production_tasks、connector、worker、transform，联通页面与 API；增补缺失读模型/反馈 | E03/04/09，受控源全链路及有界真实 Dukascopy 沙箱；PV03/08 对应证据 | 已实现并通过用户阶段验收（fixture + PV08）；PR #129 已合并 |
+| P2.1 EURUSD 数据集手动闭环 | 数据集/成员、独立目录、名称备注、继承参数、查询、维护请求、单次补数与暂停手工维护 | DS01–DS04 对应本阶段；EURUSD 数据集内 1m→5m 的可操作预览与 agent 阶段验收证据 | 已完成；2026-09-16 开发 agent 验收通过 DS01–DS04；保留 fixture 预览与数据 |
 | P3 自动与恢复 | scheduler 实际派发、状态解释、异常/缺口/恢复 UI；有界故障检查 | E05/06/07，真实 scheduler 连续自动两轮，暂停/重启/缺口恢复 | 待开始 |
 | P4 自主管理收口 | GBPUSD 复用、独立暂停/查询、归档与删除、用户指南；通过后按需增加已有周期 | E08；E01–E09 用户整体验收。无已确认需求则不扩大周期 | 待开始 |
 | P5 版本交付 | 候选验证、版本/tag/发布回执、生产身份与单 writer 核对 | E10，生产范围按明确授权执行；不依赖 legacy parity/crypto 扩面 | 待开始 |
@@ -65,4 +68,22 @@ P0 已将 AGENTS 中详细浏览器安装/GitHub 环境排错迁到开发环境�
 | main 持续集成，不积累巨大 PR，tag/激活独立 | 开发指南 §2/3/5；P5；发布清单适用范围 |
 | 当前状态有观测时间，模拟/真实、实现/接受/部署不混用 | 产品规范 §4；预览 status；开发指南 §5；current-state |
 
-CI 的重复触发/安装优化仍是待实现工作；P2 已实现并等待最终阶段复核，P3 不随本阶段自动启动。
+## P2.1 实施与阶段验收证据
+
+2026-09-16 的完整 R2 门禁已通过：后端 `535 passed, 5 skipped`，Ruff、文档一致性、依赖锁、生产环境模板、secret scan、operations/benchmark、Web build、隔离预览、浏览器验收与服务重启 smoke 均通过。最终边界修正落在行为提交 `58203e2`–`04bd091`，并重新执行完整门禁；浏览器证据包含 1440×1000 与 390×844，覆盖数据集 URL 刷新/后退、session 草稿保留、loading/empty/pending、字段验证、乐观版本更新、归档审计只读呈现和长名称移动端无横向溢出。
+
+DS01–DS04 的独立 fixture 验收已证明：固定数据集定义、成员继承与版本；独立目录/归属及 global 无兜底；固定区间 EURUSD 1m→5m、snapshot lineage、排队与数据集内幂等；暂停后查询和第二次手工维护且保持暂停。归档后通用 ingest/derive/production-task 写入口与 worker 发布均 fail closed，direct derive 与 gap coverage 只解析 scoped root；损坏控制面状态不会静默覆盖，scoped publication 在 ledger 故障后可恢复。保留预览为 `p21-eurusd-dataset`，UI `http://127.0.0.1:23639/datasets`，fixture 数据与历史回执继续保留。上述为既有技术验收记录；开发 agent 按当前版本确认适用证据并记录阶段结论，不再等待维护者反馈。
+
+2026-09-16 17:39 UTC，开发 agent 在分支 `codex/p2-1-baseline`、HEAD `3999f25312db20ac21ef6a9d87fb56ec65233f4c` 加工作区修正上收口 P2.1 阶段验收，结论为 **DS01–DS04 通过**：
+
+- 聚焦 R2 只读复核发现的四项边界缺口已全部关闭：跨数据集幂等分隔符碰撞及旧请求恢复、归档与首次 manifest 提交竞态、managed 1m/5m 分页快照、归档后的通用与链式 retry；同一 reviewer 定点复查无剩余阻断意见。
+- 针对性边界回归 `104 passed, 5 skipped`，覆盖上述缺口及 DS01–DS04 原边界，回执 `acceptance-receipts/ci/backend-fast-20260916T173304-794437f1.json`。
+- 修正后的完整 R2 适用门禁 `569 passed, 5 skipped`，并通过 Ruff、依赖/兼容性、operations、10,000 规模基准、Web build、预览隔离、桌面/移动浏览器旅程与服务恢复，回执 `acceptance-receipts/ci/all-20260916T173412-96c7f423.json`。
+- 保留预览现场读回 `p21-recheck-1789551457`：数据集保持 `paused`，EURUSD 继承 Dukascopy/BID/1m 与 5m 目标；两个固定小时维护请求均 `completed`，共读回 120 条 1m 与 24 条 5m，保留 2 个 `input_snapshot_id`，第二次手工维护后仍为暂停。修正后重启并保留原数据，1m 前两页各 10 条、时间连续且 `snapshot_id` 一致。
+- 回执如实记录 `dirty: true`：除已授权的开发流程优化外，还包含本次四项 P2.1 收口修正；完整门禁前后工作区指纹均为 `88715865b2248d54afa7d7f3960ae5b0e2640b234f3a7cf8da5cbf6e195f2824`，没有在运行中混入其它版本。验收结论对应该精确工作区，不能只用 HEAD 冒充。
+
+本结论是开发 agent 验收，不写作用户亲自验收，也不表示已合并、发布或部署生产。
+
+真实 Dukascopy 限制未改变：经开发机常用代理 `192.168.7.33:7890` 返回 HTTP 503，直连超时；这是外部连通性限制，不以 fixture 结果冒充 live 成功。本技术验收记录不包含尚未开始的 P3 自动调度/恢复证据。
+
+P2 已合并，P2.1 已完成开发 agent 阶段验收；待满足 hosted `verify` 与 protected-main 等合并门槛后，可按路线图继续已授权的 P3 工作，无需再次请求用户验收或继续确认。流程工具优化不改变这些产品阶段的验收状态。

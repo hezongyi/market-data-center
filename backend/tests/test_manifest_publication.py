@@ -72,9 +72,9 @@ def test_corrupt_staged_part_blocks_entire_publication(tmp_path, monkeypatch):
     ledger, worker, run_id = setup_run(tmp_path)
     publish = worker._publish
 
-    def corrupt(directory, receipt):
+    def corrupt(directory, receipt, **kwargs):
         Path(receipt['paths'][-1]).write_bytes(b'invalid parquet')
-        return publish(directory, receipt)
+        return publish(directory, receipt, **kwargs)
 
     monkeypatch.setattr(worker, '_publish', corrupt)
     assert worker.run_next()

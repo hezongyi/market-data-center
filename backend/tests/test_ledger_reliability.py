@@ -1,9 +1,17 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+from data_center.catalog.manifest import manifest_path
+from data_center.dataset_center import (
+    DatasetCenter,
+    DatasetMember,
+    managed_dataset_root,
+)
 from data_center.domain.models import IngestJob
 from data_center.ingest.worker import LocalWorker
 from data_center.runs.ledger import RunLedger
@@ -139,6 +147,130 @@ def test_publication_failure_recovers_without_refetch(tmp_path, monkeypatch):
     assert ledger.get(run_id)["status"] == "pass"
     assert {str(p): p.read_bytes() for p in paths} == original
     assert not (tmp_path / "lake" / ".ingest-staging" / run_id / "2").exists()
+
+
+def test_managed_publication_and_ledger_recovery_stay_in_scoped_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    monkeypatch.setenv("DATACENTER_DATA_MODE", "fixture")
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    scoped = managed_dataset_root(lake, "managed")
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    worker = LocalWorker(lake, ledger)
+    run_id = worker.submit(IngestJob(
+        job_id="managed-recover", managed_dataset_id="managed", provider="dukascopy",
+        symbol="EURUSD", asset_class="fx", timeframe="1m",
+        start=datetime(2025, 12, 31, tzinfo=timezone.utc),
+        end=datetime(2025, 12, 31, 1, tzinfo=timezone.utc),
+    ))
+    finish = ledger.finish_job
+    monkeypatch.setattr(
+        ledger, "finish_job",
+        lambda *args: (_ for _ in ()).throw(OSError("ledger unavailable")),
+    )
+
+    with pytest.raises(OSError, match="ledger unavailable"):
+        worker.run_next()
+
+    assert ledger.get(run_id)["status"] == "running"
+    assert manifest_path(scoped, run_id).exists()
+    assert not manifest_path(lake, run_id).exists()
+    assert (scoped / ".ingest-staging" / run_id / "1" / "result.json").exists()
+    assert not (lake / ".ingest-staging" / run_id).exists()
+
+    monkeypatch.setattr(ledger, "finish_job", finish)
+    assert worker.run_next() is False
+    assert ledger.get(run_id)["status"] == "pass"
+
+
+def test_archived_dataset_blocks_a_previously_queued_worker_job(tmp_path):
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    worker = LocalWorker(lake, ledger)
+    run_id = worker.submit(IngestJob(
+        job_id="archived-before-claim", managed_dataset_id="managed", provider="fixture",
+        symbol="EURUSD", asset_class="fx", timeframe="1d",
+        start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    ))
+    center.update("managed", expected_version=2, status="archived")
+
+    assert worker.run_next() is True
+    receipt = ledger.get(run_id)
+    assert receipt["status"] == "failed"
+    assert receipt["failure_stage"] == "ownership"
+    assert not (managed_dataset_root(lake, "managed") / ".ingest-staging" / run_id).exists()
+
+
+def test_archive_waits_for_first_managed_manifest_commit(tmp_path, monkeypatch):
+    import data_center.ingest.worker as worker_module
+
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    monkeypatch.setenv("DATACENTER_DATA_MODE", "fixture")
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    worker = LocalWorker(lake, ledger)
+    run_id = worker.submit(IngestJob(
+        job_id="archive-race", managed_dataset_id="managed", provider="dukascopy",
+        symbol="EURUSD", asset_class="fx", timeframe="1m",
+        start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+    ))
+    publication_entered = Event()
+    allow_publication = Event()
+    original_write_manifest = worker_module.write_manifest
+
+    def delayed_write_manifest(root, manifest):
+        publication_entered.set()
+        assert allow_publication.wait(10)
+        return original_write_manifest(root, manifest)
+
+    monkeypatch.setattr(worker_module, "write_manifest", delayed_write_manifest)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker_future = pool.submit(worker.run_next)
+        assert publication_entered.wait(10)
+        archive_future = pool.submit(
+            center.update, "managed", expected_version=2, status="archived")
+        time.sleep(0.1)
+        assert not archive_future.done()
+        allow_publication.set()
+        assert worker_future.result(timeout=10) is True
+        assert archive_future.result(timeout=10).status == "archived"
+
+    assert manifest_path(managed_dataset_root(lake, "managed"), run_id).exists()
+    assert ledger.get(run_id)["status"] == "pass"
+
+
+def test_worker_rejects_a_queued_job_outside_managed_membership(tmp_path):
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    run_id = ledger.enqueue_job({
+        "job_id": "invalid-member", "managed_dataset_id": "managed",
+        "dataset_id": "provider_bars", "provider": "dukascopy", "symbol": "GBPUSD",
+        "asset_class": "fx", "timeframe": "1m", "price_basis": "bid",
+        "start": "2026-01-01T00:00:00+00:00", "end": "2026-01-01T01:00:00+00:00",
+    })
+
+    assert LocalWorker(lake, ledger).run_next() is True
+    receipt = ledger.get(run_id)
+    assert receipt["status"] == "failed"
+    assert receipt["failure_stage"] == "ownership"
+    assert not (managed_dataset_root(lake, "managed") / ".ingest-staging" / run_id).exists()
 
 
 def test_competing_worker_cannot_recover_or_claim(tmp_path):

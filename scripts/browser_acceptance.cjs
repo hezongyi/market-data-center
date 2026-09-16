@@ -830,6 +830,22 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await call("POST", "/auth/initialize", {
     username: "admin", password: "browser-p1-password",
   });
+  const managedDatasetId = "browser-managed-long";
+  const managedDatasetName = "P2.1 browser acceptance dataset with a deliberately long name";
+  await call("POST", "/managed-datasets", {
+    dataset_id: managedDatasetId, name: managedDatasetName,
+    notes: "URL and responsive acceptance",
+  });
+  await call("POST", `/managed-datasets/${managedDatasetId}/members`, {
+    symbol: "EURUSD", expected_version: 1,
+  });
+  const secondManagedDatasetId = "browser-managed-second";
+  await call("POST", "/managed-datasets", {
+    dataset_id: secondManagedDatasetId, name: "Second managed dataset",
+  });
+  await call("POST", `/managed-datasets/${secondManagedDatasetId}/members`, {
+    symbol: "EURUSD", expected_version: 1,
+  });
   const p1Page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await p1Page.addInitScript((apiKey) => {
     const original = window.fetch;
@@ -999,6 +1015,107 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   statusTransitionComplete = true;
   await p1Page.getByText("本次运行已完成，数据已就绪", { exact: true }).waitFor();
   await p1Page.getByText("已完成 · 通过", { exact: true }).waitFor();
+
+  recordStep("p21_dataset_mainline");
+  await p1Page.goto(base + `/datasets?dataset=${managedDatasetId}`);
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+  assert.equal(new URL(p1Page.url()).searchParams.get("dataset"), managedDatasetId);
+  await p1Page.getByText("Second managed dataset", { exact: true }).click();
+  await p1Page.waitForURL(new RegExp(`dataset=${secondManagedDatasetId}`));
+  await p1Page.goBack();
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+  const datasetUrl = p1Page.url();
+  await p1Page.reload();
+  assert.equal(p1Page.url(), datasetUrl, "direct dataset refresh must preserve selection");
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+
+  const retainedName = "Retained P2.1 draft";
+  await p1Page.getByLabel("名称", { exact: true }).fill(retainedName);
+  await p1Page.reload();
+  assert.equal(await p1Page.getByLabel("名称", { exact: true }).inputValue(), retainedName,
+    "dataset draft must survive navigation and refresh in the current session");
+
+  await p1Page.getByRole("button", { name: "暂停", exact: true }).click();
+  await p1Page.getByText("已暂停自动维护；查询和手工补数仍可用。", { exact: true }).waitFor();
+  await p1Page.getByRole("button", { name: "恢复", exact: true }).click();
+  await p1Page.getByText("数据集已恢复。", { exact: true }).waitFor();
+  const retainedStart = await p1Page.getByLabel("开始", { exact: true }).inputValue();
+  await p1Page.getByLabel("开始", { exact: true }).fill("");
+  await p1Page.getByText("请选择开始时间。", { exact: true }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "补齐 1m 并派生 5m", exact: true }).isDisabled(), true);
+  await p1Page.getByLabel("开始", { exact: true }).fill(retainedStart);
+
+  await call("PATCH", `/managed-datasets/${secondManagedDatasetId}`, {
+    status: "archived", expected_version: 2,
+  });
+  const archivedMaintenancePattern = new RegExp(
+    `/api/v1/managed-datasets/${secondManagedDatasetId}/maintenance$`,
+  );
+  const archivedMaintenance = route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: [{
+      request_id: "archived-audit-request", dataset_id: secondManagedDatasetId,
+      symbol: "EURUSD", start: "2026-09-14T11:00:00Z", end: "2026-09-14T12:00:00Z",
+      status: "completed", created_at: "2026-09-16T00:00:00Z", run_statuses: ["pass"],
+      execution: { execution_id: "archived-execution", task_id: "archived-task",
+        state: "completed", run_ids: ["archived-run"] },
+    }], meta: {}, errors: [] }),
+  });
+  await p1Page.route(archivedMaintenancePattern, archivedMaintenance);
+  let archivedCoverageCalls = 0;
+  const archivedCoveragePattern = new RegExp(
+    `/api/v1/managed-datasets/${secondManagedDatasetId}/coverage`,
+  );
+  const archivedCoverage = route => {
+    archivedCoverageCalls += 1;
+    return route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ data: null, meta: {}, errors: [{ message: "archived dataset is not queryable" }] }) });
+  };
+  await p1Page.route(archivedCoveragePattern, archivedCoverage);
+  await p1Page.goto(base + `/datasets?dataset=${secondManagedDatasetId}`);
+  await p1Page.getByText("已归档，只保留配置与执行审计。", { exact: true }).waitFor();
+  await p1Page.getByText("archived", { exact: true }).first().waitFor();
+  await p1Page.locator("table tbody tr").filter({ hasText: "2026-09-14T11:00" }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "暂停", exact: true }).count(), 0,
+    "an archived dataset must expose no status write control");
+  assert.equal(await p1Page.getByRole("button", { name: "已归档，不能补数", exact: true }).isDisabled(), true);
+  assert.equal(await p1Page.getByLabel("开始", { exact: true }).isDisabled(), true);
+  assert.equal(await p1Page.getByLabel("结束", { exact: true }).isDisabled(), true);
+  assert.equal(archivedCoverageCalls, 0,
+    "the archived detail must not request forbidden market coverage");
+  await p1Page.unroute(archivedMaintenancePattern, archivedMaintenance);
+  await p1Page.unroute(archivedCoveragePattern, archivedCoverage);
+  await p1Page.goto(base + `/datasets?dataset=${managedDatasetId}`);
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+
+  const managedDatasetsPattern = /\/api\/v1\/managed-datasets$/;
+  let releaseManagedDatasets;
+  const managedDatasetsGate = new Promise(resolve => { releaseManagedDatasets = resolve; });
+  const delayedManagedDatasets = async route => {
+    await managedDatasetsGate;
+    await route.continue();
+  };
+  await p1Page.route(managedDatasetsPattern, delayedManagedDatasets);
+  const delayedReload = p1Page.reload({ waitUntil: "domcontentloaded" });
+  await p1Page.getByText("正在读取数据集…", { exact: true }).waitFor();
+  releaseManagedDatasets();
+  await delayedReload;
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+  await p1Page.unroute(managedDatasetsPattern, delayedManagedDatasets);
+
+  const emptyManagedDatasets = route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: [], meta: {}, errors: [] }),
+  });
+  await p1Page.route(managedDatasetsPattern, emptyManagedDatasets);
+  await p1Page.reload();
+  await p1Page.getByText("尚无数据集，请先创建。", { exact: true }).waitFor();
+  await p1Page.unroute(managedDatasetsPattern, emptyManagedDatasets);
+  await p1Page.goto(base + `/datasets?dataset=${managedDatasetId}`);
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+  await p1Page.screenshot({ path: path.join(output, "p21-datasets-1440.png"), fullPage: true });
   assert.deepEqual(p1Errors, []);
   await p1Page.close();
 
@@ -1020,6 +1137,17 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Mobile.getByRole("heading", { name: "数据任务", exact: true }).waitFor();
   const mobileWidth = await p1Mobile.evaluate(() => ({ body:document.body.scrollWidth, inner:innerWidth }));
   assert.ok(mobileWidth.body <= mobileWidth.inner, JSON.stringify(mobileWidth));
+  await p1Mobile.goto(base + `/datasets?dataset=${managedDatasetId}`);
+  await p1Mobile.getByText(managedDatasetName, { exact: true }).last().waitFor();
+  const managedMobileWidth = await p1Mobile.evaluate(() => ({
+    body: document.body.scrollWidth,
+    document: document.documentElement.scrollWidth,
+    inner: innerWidth,
+  }));
+  assert.ok(managedMobileWidth.body <= managedMobileWidth.inner
+    && managedMobileWidth.document <= managedMobileWidth.inner,
+  JSON.stringify(managedMobileWidth));
+  await p1Mobile.screenshot({ path: path.join(output, "p21-datasets-390.png"), fullPage: true });
   assert.deepEqual(p1MobileErrors, []);
   await p1Mobile.close();
   const report = writeReceipt("pass", {
@@ -1045,7 +1173,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "p1_real_cookie_login", "p1_capabilities_task_sheet", "p1_url_search",
       "p1_direct_detail_refresh", "p1_status_transition", "p1_filter_back", "p1_keyboard_focus",
       "p1_scheduler_loading_error", "p1_create_pending_and_save",
-      "p1_mobile_task_sheet", "p1_legacy_css_isolation"],
+      "p1_mobile_task_sheet", "p1_legacy_css_isolation",
+      "p21_dataset_url_refresh_back", "p21_dataset_draft_retention",
+      "p21_dataset_loading_empty", "p21_dataset_optimistic_status",
+      "p21_dataset_window_validation", "p21_dataset_archived_audit_read_only",
+      "p21_dataset_mobile_no_overflow"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

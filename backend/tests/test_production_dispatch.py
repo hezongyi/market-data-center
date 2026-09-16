@@ -571,7 +571,8 @@ def test_derived_planning_skips_published_history_before_snapshot_reads(tmp_path
 
 
 def publish_raw(root, *, start, minutes=60, run_id="raw-part",
-                provider="fixture", symbol="UI_TEST", skip_minute: int | None = None):
+                provider="fixture", symbol="UI_TEST", asset_class="crypto",
+                price_type="raw", skip_minute: int | None = None):
     """Publish a valid raw 1m part for the fixture instrument.
 
     The fixture connector emits one bar per day whatever the timeframe, so a 1m
@@ -585,10 +586,10 @@ def publish_raw(root, *, start, minutes=60, run_id="raw-part",
     from data_center.domain.models import ProviderBar
     from data_center.storage.parquet import write_provider_bars
 
-    rows = [ProviderBar(symbol=symbol, asset_class="crypto", provider=provider, timeframe="1m",
+    rows = [ProviderBar(symbol=symbol, asset_class=asset_class, provider=provider, timeframe="1m",
                         bar_ts=start + timedelta(minutes=index), open=100 + index, high=102 + index,
                         low=99 + index, close=101 + index, volume=1, currency="USD",
-                        price_type="raw", ingest_ts=start + timedelta(hours=1),
+                        price_type=price_type, ingest_ts=start + timedelta(hours=1),
                         source_hash=f"raw-{index}") for index in range(minutes)
             if skip_minute is None or index != skip_minute]
     paths = write_provider_bars(root, rows, part_id=run_id)
@@ -597,6 +598,77 @@ def publish_raw(root, *, start, minutes=60, run_id="raw-part",
         paths=paths, row_count=len(rows),
         quality_summary={"status": "pass", "finding_count": 0, "findings": []}))
     return paths
+
+
+def test_managed_dataset_raw_snapshot_and_derived_output_share_only_its_root(tmp_path):
+    """DS02/DS03: raw, fixed input and 5m publication never use the global lake."""
+    from data_center.dataset_center import (
+        DatasetCenter,
+        DatasetMember,
+        managed_dataset_root,
+    )
+    from data_center.storage.query import query_market_bars
+
+    lake = tmp_path / "lake"
+    scoped = managed_dataset_root(lake, "eurusd-one")
+    center = DatasetCenter(lake)
+    center.create(dataset_id="eurusd-one", name="EURUSD one")
+    center.add_member(
+        "eurusd-one", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    service = ProductionTasks(ledger, canonical_root=lake)
+    service.create(definition={
+        "managed_dataset_id": "eurusd-one", "provider": "dukascopy", "symbol": "EURUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "fixed", "start": "2026-09-14T11:00:00+00:00",
+                          "end": "2026-09-14T12:00:00+00:00"},
+        "schedule": {"schedule": "manual"},
+    }, name="managed", task_id="managed-one", desired_state="enabled", now=NOW)
+    execution = service.change("managed-one", "run_now", now=NOW)
+    scheduler = Scheduler(ledger, instance_id="managed", dispatch_enabled=True, planner=service)
+    scheduler.tick(now=NOW)
+    raw = ledger.claim_next_job()
+    assert raw is not None and raw["payload"]["managed_dataset_id"] == "eurusd-one"
+    publish_raw(scoped, start=parse_instant(raw["payload"]["start"]), minutes=60,
+                run_id=raw["run_id"], provider="dukascopy", symbol="EURUSD",
+                asset_class="fx", price_type="bid")
+    ledger.finish_job(raw["job_id"], raw["run_id"], {"status": "pass", "run_id": raw["run_id"]})
+
+    scheduler.tick(now=NOW + timedelta(minutes=1))
+    derived_runs = [run for run in ledger.list()
+                    if run.get("execution_id") == execution["execution_id"]
+                    and run.get("run_kind") == "derive"]
+    assert derived_runs, derived_runs
+    assert all(run.get("managed_dataset_id") == "eurusd-one" for run in derived_runs), [
+        (sorted(run), run.get("managed_dataset_id")) for run in derived_runs]
+    worker = LocalWorker(lake, ledger)
+    while worker.run_next():
+        pass
+    scheduler.tick(now=NOW + timedelta(minutes=2))
+
+    scoped_rows = query_market_bars(scoped, provider="dukascopy", symbol="EURUSD", timeframe="5m",
+                                    price_basis="bid", recipe_id="utc-24x7-1m-to-5m-ohlcv",
+                                    recipe_version="1")
+    assert len(scoped_rows) == 12
+    assert query_market_bars(lake, provider="dukascopy", symbol="EURUSD", timeframe="5m",
+                             price_basis="bid", recipe_id="utc-24x7-1m-to-5m-ohlcv",
+                             recipe_version="1") == []
+    assert ledger.get_production_execution(execution["execution_id"])["state"] == "completed"
+    assert ledger.get_production_task("managed-one")["desired_state"] == "archived"
+    assert all(item["state"] == "archived" for item in ledger.ownership_of("managed-one"))
+    service.change("managed-one", "resume", now=NOW + timedelta(minutes=3))
+    assert ledger.get_production_task("managed-one")["desired_state"] == "enabled"
+    assert service.reconcile(now=NOW + timedelta(minutes=4))["managed_tasks_archived"] == [
+        "managed-one"]
+    assert ledger.get_production_task("managed-one")["desired_state"] == "archived"
+    replacement = service.create(definition={
+        "managed_dataset_id": "eurusd-one", "provider": "dukascopy", "symbol": "EURUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "fixed", "start": "2026-09-14T12:00:00+00:00",
+                          "end": "2026-09-14T13:00:00+00:00"},
+        "schedule": {"schedule": "manual"},
+    }, name="managed next", task_id="managed-two", desired_state="enabled", now=NOW)
+    assert replacement["task_id"] == "managed-two"
 
 
 def test_a_hole_blocks_only_the_bucket_that_covers_it(tmp_path):

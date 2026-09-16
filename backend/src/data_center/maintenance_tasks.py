@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from data_center.catalog.registry import iter_dataset_definitions
 from data_center.catalog.snapshot import Catalog
+from data_center.dataset_center import managed_dataset_root
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.platform import (
     build_ingest_plan,
@@ -82,6 +83,7 @@ class MaintenanceTaskRequest(BaseModel):
     start: datetime
     end: datetime
     task_id: str | None = None
+    managed_dataset_id: str | None = None
     schedule: Literal["manual"] = "manual"
 
 
@@ -161,6 +163,7 @@ def _task_document(request: MaintenanceTaskRequest, dataset_id: str, *, asset_cl
     task_id = request.task_id or f"{run_kind}-{request.provider}-{request.symbol or request.series_id or 'dataset'}"
     return {
         "task_id": task_id,
+        "managed_dataset_id": request.managed_dataset_id,
         "run_kind": run_kind,
         "run_scope": request.run_scope,
         "dataset_id": dataset_id,
@@ -229,7 +232,8 @@ def _policy_for(provider: str, timeframe: str):
 
 def _ingest_job(task: dict, request: MaintenanceTaskRequest) -> IngestJob:
     return IngestJob(
-        job_id=task["task_id"], dataset_id=task["dataset_id"], provider=request.provider,
+        job_id=task["task_id"], managed_dataset_id=request.managed_dataset_id,
+        dataset_id=task["dataset_id"], provider=request.provider,
         symbol=request.symbol or "", asset_class=task["asset_class"] or "crypto",
         timeframe=request.timeframe, start=request.start, end=request.end,
         run_scope=request.run_scope, run_kind=request.run_kind,
@@ -260,7 +264,8 @@ def _derived_context(task: dict, request: MaintenanceTaskRequest, root: Path) ->
     if price_bases and "*" not in price_bases and price_basis not in price_bases:
         raise MaintenanceTaskError(f"unsupported price basis for {recipe.recipe_id}: {price_basis}",
                                    field="price_basis", code="unsupported_price_basis")
-    snapshot = Catalog(root).resolve(recipe.input_dataset, {
+    execution_root = managed_dataset_root(root, request.managed_dataset_id)
+    snapshot = Catalog(execution_root).resolve(recipe.input_dataset, {
         "provider": request.provider, "symbol": request.symbol or "", "timeframe": recipe.source_timeframe,
     })
     return {"recipe": recipe, "price_basis": price_basis, "snapshot": snapshot}
@@ -315,7 +320,8 @@ def evaluate_task(*, request: MaintenanceTaskRequest, root: Path, capacity_polic
         job = _ingest_job(task, request)
         coverage_result = None
         if request.run_kind == "gap_repair":
-            coverage_result = coverage_from_catalog(root=root, job=job)
+            coverage_result = coverage_from_catalog(
+                root=managed_dataset_root(root, request.managed_dataset_id), job=job)
             coverage = coverage_result.as_dict()
         maintenance_policy = _policy_for(request.provider, request.timeframe)
         try:
@@ -458,7 +464,8 @@ def submit_task(*, request: MaintenanceTaskRequest, ledger, root: Path, capacity
         job = _ingest_job(task, request)
         coverage_result = None
         if request.run_kind == "gap_repair":
-            coverage_result = coverage_from_catalog(root=root, job=job)
+            coverage_result = coverage_from_catalog(
+                root=managed_dataset_root(root, request.managed_dataset_id), job=job)
         run_ids = enqueue_ingest_plan(ledger=ledger, job=job, coverage=coverage_result,
                                       policy=_policy_for(request.provider, request.timeframe),
                                       request_id=request_id)
@@ -484,12 +491,14 @@ def submit_task(*, request: MaintenanceTaskRequest, ledger, root: Path, capacity
                 "recipe_version": request.recipe_version, "input_snapshot_id": input_snapshot_id,
                 "start": _iso(request.start), "end": _iso(request.end),
                 "run_kind": "parity", "run_scope": request.run_scope, "request_id": request_id,
+                "managed_dataset_id": request.managed_dataset_id,
             })]
         else:
             from data_center.ingest.worker import LocalWorker
 
             job = DeriveJob(
-                job_id=task["task_id"], provider=request.provider, symbol=request.symbol or "",
+                job_id=task["task_id"], managed_dataset_id=request.managed_dataset_id,
+                provider=request.provider, symbol=request.symbol or "",
                 recipe_id=request.recipe_id or "", recipe_version=request.recipe_version or "",
                 start=request.start, end=request.end,
                 input_snapshot_id=input_snapshot_id, run_scope=request.run_scope,

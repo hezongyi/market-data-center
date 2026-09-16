@@ -97,6 +97,8 @@ def run_fixture_ingest(job: IngestJob, root: Path, ledger=None, run_id: str | No
             raise ValueError("execution plan windows produced conflicting duplicate primary keys")
         unique_rows[key] = existing or row
     rows = sorted(unique_rows.values(), key=lambda row: row.bar_ts)
+    if job.managed_dataset_id:
+        rows = [row.model_copy(update={"managed_dataset_id": job.managed_dataset_id}) for row in rows]
     capability = resolve_capability(job.provider, allow_unregistered=job.run_scope == "acceptance")
     allowed_price_bases = set(capability.price_bases)
     if allowed_price_bases and any(row.price_type not in allowed_price_bases for row in rows):
@@ -129,6 +131,7 @@ def run_fixture_ingest(job: IngestJob, root: Path, ledger=None, run_id: str | No
     input_hash = sha256(job.model_dump_json().encode()).hexdigest()
     source_lineage = compact_source_hashes(row.source_hash for row in rows)
     payload = {"run_id": resolved_run_id, "job_id": job.job_id, "status": "pass", "dataset_id": job.dataset_id,
+               "managed_dataset_id": job.managed_dataset_id,
                "schema_version": SCHEMA_VERSION, "provider": job.provider,
                "run_kind": job.run_kind, "run_scope": job.run_scope,
                "execution_plan": execution_plan,

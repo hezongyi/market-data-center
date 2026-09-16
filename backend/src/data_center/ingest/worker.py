@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 from data_center.catalog.manifest import (
@@ -17,8 +17,14 @@ from data_center.catalog.manifest import (
     validate_manifest,
     write_manifest,
 )
+from data_center.dataset_center import (
+    DatasetCenter,
+    DatasetStateError,
+    managed_dataset_root,
+)
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.observability import check_alerts
+from data_center.platform_registry import REGISTRY
 
 
 class LocalWorker:
@@ -53,10 +59,10 @@ class LocalWorker:
 
     def submit_derive(self, job: DeriveJob) -> str:
         from data_center.catalog.snapshot import Catalog, snapshot_reference
-        from data_center.platform_registry import REGISTRY
 
         recipe = REGISTRY.recipe(job.recipe_id, job.recipe_version)
-        snapshot = Catalog(self.root).resolve(
+        execution_root = self._publication_root(job.managed_dataset_id)
+        snapshot = Catalog(execution_root).resolve(
             recipe.input_dataset,
             {"provider": job.provider, "symbol": job.symbol, "timeframe": recipe.source_timeframe},
         )
@@ -67,7 +73,7 @@ class LocalWorker:
         # Persist the parts this execution is accepted against.  The row stays
         # one shared record per snapshot, and the run only carries its id, so a
         # later publication cannot invalidate the accepted input (spec 6.3).
-        input_id = self.ledger.store_production_input(snapshot_reference(self.root, snapshot))
+        input_id = self.ledger.store_production_input(snapshot_reference(execution_root, snapshot))
         # The fixed-input id is carried beside the model dump, not inside the
         # model: a pydantic dump would silently drop an undeclared field and the
         # run would fall back to comparing against the current catalog.
@@ -88,8 +94,68 @@ class LocalWorker:
     def _command(self, directory):
         return [sys.executable, "-m", "data_center.ingest.process", str(directory)]
 
-    def _publish(self, directory, receipt):
+    def _publication_root(self, managed_dataset_id: str | None) -> Path:
+        return managed_dataset_root(self.root, managed_dataset_id)
+
+    def _ensure_managed_writable(self, managed_dataset_id: str | None,
+                                 payload: dict | None = None) -> None:
+        if managed_dataset_id is None:
+            return
+        try:
+            item = DatasetCenter(self.root).get(managed_dataset_id)
+        except (KeyError, DatasetStateError) as exc:
+            raise PublicationError("managed dataset ownership is unavailable") from exc
+        self._validate_managed_writable(item, payload)
+
+    def _validate_managed_writable(self, item, payload: dict | None = None) -> None:
+        if item.status == "archived":
+            raise PublicationError("archived managed dataset is not writable")
+        if payload is None:
+            return
+        symbol = str(payload.get("symbol") or "").upper()
+        member = item.members.get(symbol)
+        if member is None or member.status != "active":
+            raise PublicationError("managed dataset member is not writable")
+        if (payload.get("provider") != item.provider
+                or payload.get("asset_class") not in {None, item.asset_class}
+                or payload.get("price_basis") not in {None, item.price_type}):
+            raise PublicationError("job does not match managed dataset ownership")
+        dataset_id = payload.get("dataset_id")
+        if dataset_id == "provider_bars":
+            if payload.get("timeframe") != item.base_timeframe:
+                raise PublicationError("job does not match managed base timeframe")
+            return
+        if dataset_id == "market_bars":
+            try:
+                recipe = REGISTRY.recipe(payload.get("recipe_id"), payload.get("recipe_version"))
+            except ValueError as exc:
+                raise PublicationError("managed derive recipe is not registered") from exc
+            if (recipe.source_timeframe != item.base_timeframe
+                    or recipe.target_timeframe not in item.effective_derived_targets(symbol)):
+                raise PublicationError("managed derive recipe is not writable")
+            return
+        raise PublicationError("job dataset does not match managed ownership")
+
+    @contextmanager
+    def _managed_publication_guard(self, managed_dataset_id: str | None,
+                                   payload: dict | None = None):
+        if managed_dataset_id is None:
+            yield
+            return
+        with ExitStack() as stack:
+            try:
+                item = stack.enter_context(
+                    DatasetCenter(self.root).locked_dataset(managed_dataset_id))
+            except (KeyError, DatasetStateError) as exc:
+                raise PublicationError("managed dataset ownership is unavailable") from exc
+            self._validate_managed_writable(item, payload)
+            yield
+
+    def _publish(self, directory, receipt, managed_dataset_id=None, payload=None):
         staged_root = directory / "parts"
+        managed_id = managed_dataset_id or receipt.get("managed_dataset_id")
+        publication_root = self._publication_root(managed_id)
+        already_published = manifest_path(publication_root, receipt["run_id"]).exists()
         manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
         paths = validate_manifest(staged_root, manifest)
         if any(manifest[key] != receipt[key] for key in
@@ -97,33 +163,36 @@ class LocalWorker:
             raise PublicationError("receipt does not match staged manifest")
         if {Path(p).resolve() for p in receipt.get("paths", [receipt.get("path")])} != {p.resolve() for p in paths}:
             raise PublicationError("receipt part list does not match staged manifest")
-        published = []
-        for source, item in zip(paths, manifest["parts"]):
-            target = self.root / item["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # Copy to a fresh inode: staged files must not mutate a published part.
-            if not target.exists():
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
-                    temporary = Path(stream.name)
-                    with source.open("rb") as input_stream:
-                        shutil.copyfileobj(input_stream, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                try:
-                    if target.exists():
-                        if file_hash(target) != item["sha256"]:
-                            raise PublicationError("existing part differs from staged result")
-                    else:
-                        os.rename(temporary, target)
-                        temporary = None
-                finally:
-                    if temporary is not None:
-                        temporary.unlink(missing_ok=True)
-            elif file_hash(target) != item["sha256"]:
-                raise PublicationError("existing part differs from staged result")
-            published.append(str(target))
-        # Same bytes on every recovery; generated_at comes from the staged manifest.
-        published_manifest = write_manifest(self.root, manifest)
+        guard = (nullcontext() if already_published
+                 else self._managed_publication_guard(managed_id, payload))
+        with guard:
+            published = []
+            for source, item in zip(paths, manifest["parts"]):
+                target = publication_root / item["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Copy to a fresh inode: staged files must not mutate a published part.
+                if not target.exists():
+                    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                        temporary = Path(stream.name)
+                        with source.open("rb") as input_stream:
+                            shutil.copyfileobj(input_stream, stream)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        if target.exists():
+                            if file_hash(target) != item["sha256"]:
+                                raise PublicationError("existing part differs from staged result")
+                        else:
+                            os.rename(temporary, target)
+                            temporary = None
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
+                elif file_hash(target) != item["sha256"]:
+                    raise PublicationError("existing part differs from staged result")
+                published.append(str(target))
+            # Same bytes on every recovery; generated_at comes from the staged manifest.
+            published_manifest = write_manifest(publication_root, manifest)
         return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]}),
                 "manifest": str(published_manifest)}
 
@@ -149,7 +218,12 @@ class LocalWorker:
     def _recover(self):
         # The child inherits the lock so a replacement cannot recover a live child.
         for job in self.ledger.running_jobs():
-            directory = self.root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            managed_id = (job.get("payload") or {}).get("managed_dataset_id")
+            execution_root = self._publication_root(managed_id)
+            directory = execution_root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            legacy_directory = self.root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            if not directory.exists() and legacy_directory.exists():
+                directory = legacy_directory
             result_path = directory / "result.json"
             result = json.loads(result_path.read_text()) if result_path.exists() else {}
             if "verification" in result:
@@ -159,11 +233,14 @@ class LocalWorker:
                 self._persist_findings(job, payload)
             elif "receipt" in result:
                 try:
-                    receipt = self._publish(directory, result["receipt"])
+                    pending_receipt = {**result["receipt"], "managed_dataset_id":
+                                       (job.get("payload") or {}).get("managed_dataset_id")}
+                    receipt = self._publish(
+                        directory, pending_receipt, payload=job.get("payload") or {})
                     self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
                     self._persist_findings(job, receipt)
                 except PublicationError:
-                    if manifest_path(self.root, job["run_id"]).exists():
+                    if manifest_path(execution_root, job["run_id"]).exists():
                         raise
                     self.ledger.fail_job(job["job_id"], job["run_id"], "publication validation failed",
                                          error_type="PublicationError", failure_stage="publish", retryable=False)
@@ -185,10 +262,21 @@ class LocalWorker:
             claimed = self.ledger.claim_next_job()
             if claimed is None:
                 return False
-            directory = self.root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
+            execution_root = managed_dataset_root(
+                self.root, (claimed.get("payload") or {}).get("managed_dataset_id"))
+            managed_id = (claimed.get("payload") or {}).get("managed_dataset_id")
+            try:
+                self._ensure_managed_writable(managed_id, claimed.get("payload") or {})
+            except PublicationError as exc:
+                self.ledger.fail_job(
+                    claimed["job_id"], claimed["run_id"], str(exc),
+                    error_type="PublicationError", failure_stage="ownership", retryable=False)
+                self.ledger.heartbeat()
+                return True
+            directory = execution_root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
             directory.mkdir(parents=True, exist_ok=True)
             (directory / "request.json").write_text(json.dumps({
-                **claimed, "canonical_root": str(self.root),
+                **claimed, "canonical_root": str(execution_root),
                 # The child reads its fixed input from the ledger read-only; it
                 # never opens it for writing (spec 6.3).
                 "ledger_path": str(self.ledger.path)}))
@@ -209,7 +297,10 @@ class LocalWorker:
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], payload)
                     self._persist_findings(claimed, payload)
                 elif "receipt" in result:
-                    receipt = self._publish(directory, result["receipt"])
+                    pending_receipt = {**result["receipt"], "managed_dataset_id":
+                                       (claimed.get("payload") or {}).get("managed_dataset_id")}
+                    receipt = self._publish(
+                        directory, pending_receipt, payload=claimed.get("payload") or {})
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], receipt)
                     self._persist_findings(claimed, receipt)
                 else:
@@ -223,7 +314,10 @@ class LocalWorker:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
-                if isinstance(exc, PublicationError) and not manifest_path(self.root, claimed["run_id"]).exists():
+                if isinstance(exc, PublicationError):
+                    publication_root = self._publication_root(managed_id)
+                    if manifest_path(publication_root, claimed["run_id"]).exists():
+                        raise
                     self.ledger.fail_job(claimed["job_id"], claimed["run_id"], "publication validation failed",
                                          error_type="PublicationError", failure_stage="publish", retryable=False)
                     self.ledger.heartbeat()

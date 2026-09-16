@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class ProviderBar(BaseModel):
+    managed_dataset_id: str | None = None
     symbol: str
     asset_class: str
     provider: str
@@ -45,6 +46,7 @@ class MarketBar(BaseModel):
 
 class IngestJob(BaseModel):
     job_id: str
+    managed_dataset_id: str | None = None
     dataset_id: str = "provider_bars"
     provider: str = "fixture"
     symbol: str
@@ -58,6 +60,7 @@ class IngestJob(BaseModel):
 
 class DeriveJob(BaseModel):
     job_id: str
+    managed_dataset_id: str | None = None
     dataset_id: Literal["market_bars"] = "market_bars"
     provider: str
     symbol: str
