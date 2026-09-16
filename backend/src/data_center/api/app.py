@@ -877,7 +877,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         require_api_key(config, x_api_key)
         execution = ledger.get_production_execution(execution_id)
         if execution is None:
-            raise HTTPException(status_code=404, detail="production execution not found")
+            # Let the service record the rejected mutation before preserving
+            # the public not-found response and its stable error contract.
+            try:
+                return api_envelope(production_tasks_service.retry(
+                    execution_id=execution_id, actor=operator_identity(request, config),
+                    request_id=current_request_id(),
+                    idempotency_key=request.headers.get("Idempotency-Key")))
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="production execution not found") from exc
         task = production_tasks_service.read(execution["task_id"])
         if task is None:
             raise HTTPException(status_code=404, detail="production task not found")
