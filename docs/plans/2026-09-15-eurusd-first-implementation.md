@@ -68,7 +68,7 @@ P0 已将 AGENTS 中详细浏览器安装/GitHub 环境排错迁到开发环境�
 
 ## P2.1 技术验收证据
 
-2026-09-16 的完整 R2 门禁已通过：后端 `532 passed, 5 skipped`，Ruff、文档一致性、依赖锁、生产环境模板、secret scan、operations/benchmark、Web build、隔离预览、浏览器验收与服务重启 smoke 均通过。最终边界修正落在行为提交 `58203e2`，并重新执行完整门禁；浏览器证据包含 1440×1000 与 390×844，覆盖数据集 URL 刷新/后退、session 草稿保留、loading/empty/pending、字段验证、乐观版本更新、归档审计只读呈现和长名称移动端无横向溢出。
+2026-09-16 的完整 R2 门禁已通过：后端 `535 passed, 5 skipped`，Ruff、文档一致性、依赖锁、生产环境模板、secret scan、operations/benchmark、Web build、隔离预览、浏览器验收与服务重启 smoke 均通过。最终边界修正落在行为提交 `58203e2`–`04bd091`，并重新执行完整门禁；浏览器证据包含 1440×1000 与 390×844，覆盖数据集 URL 刷新/后退、session 草稿保留、loading/empty/pending、字段验证、乐观版本更新、归档审计只读呈现和长名称移动端无横向溢出。
 
 DS01–DS04 的独立 fixture 验收已证明：固定数据集定义、成员继承与版本；独立目录/归属及 global 无兜底；固定区间 EURUSD 1m→5m、snapshot lineage、排队与数据集内幂等；暂停后查询和第二次手工维护且保持暂停。归档后通用 ingest/derive/production-task 写入口与 worker 发布均 fail closed，direct derive 与 gap coverage 只解析 scoped root；损坏控制面状态不会静默覆盖，scoped publication 在 ledger 故障后可恢复。保留预览为 `p21-eurusd-dataset`，UI `http://127.0.0.1:23639/datasets`，fixture 数据与历史回执继续保留；维护者阶段反馈尚待记录。
 
