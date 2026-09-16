@@ -72,6 +72,9 @@ class DatasetCenter:
                 raise ValueError("dataset already exists")
             item = ManagedDataset(dataset_id=dataset_id, name=name, notes=notes, history_start=history_start)
             self._items[dataset_id] = item
+            dataset_root = self.path.parent / dataset_id
+            dataset_root.mkdir(parents=True, exist_ok=True)
+            (dataset_root / "OWNERSHIP.json").write_text(json.dumps({"dataset_id": dataset_id, "provider": item.provider, "asset_class": item.asset_class, "base_timeframe": item.base_timeframe, "price_type": item.price_type}, indent=2))
             self._save()
             return item
 
@@ -84,6 +87,9 @@ class DatasetCenter:
     def update(self, dataset_id: str, **changes) -> ManagedDataset:
         with self._lock:
             item = self.get(dataset_id)
+            immutable = {key for key in ("provider", "asset_class", "price_type", "base_timeframe", "derived_targets") if key in changes}
+            if immutable:
+                raise ValueError("dataset definition is immutable: " + ", ".join(sorted(immutable)))
             for key in ("name", "notes", "history_start", "status"):
                 if key in changes and changes[key] is not None: setattr(item, key, changes[key])
             item.version += 1
@@ -94,6 +100,10 @@ class DatasetCenter:
             item = self.get(dataset_id)
             if item.provider != "dukascopy" or item.asset_class != "fx" or item.price_type != "bid" or item.base_timeframe != "1m":
                 raise ValueError("dataset definition is immutable")
+            if member.symbol.upper() != "EURUSD":
+                raise ValueError("P2.1 only supports EURUSD")
+            if any(target != "5m" for target in member.derived_targets):
+                raise ValueError("P2.1 only supports 5m derived target")
             item.members[member.symbol] = member; item.version += 1; self._save(); return item
 
     def request(self, dataset_id: str, *, symbol: str, start: str, end: str, idempotency_key: str | None = None) -> dict:
