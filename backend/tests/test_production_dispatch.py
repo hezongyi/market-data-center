@@ -602,11 +602,19 @@ def publish_raw(root, *, start, minutes=60, run_id="raw-part",
 
 def test_managed_dataset_raw_snapshot_and_derived_output_share_only_its_root(tmp_path):
     """DS02/DS03: raw, fixed input and 5m publication never use the global lake."""
-    from data_center.dataset_center import managed_dataset_root
+    from data_center.dataset_center import (
+        DatasetCenter,
+        DatasetMember,
+        managed_dataset_root,
+    )
     from data_center.storage.query import query_market_bars
 
     lake = tmp_path / "lake"
     scoped = managed_dataset_root(lake, "eurusd-one")
+    center = DatasetCenter(lake)
+    center.create(dataset_id="eurusd-one", name="EURUSD one")
+    center.add_member(
+        "eurusd-one", DatasetMember(symbol="EURUSD"), expected_version=1)
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     service = ProductionTasks(ledger, canonical_root=lake)
     service.create(definition={

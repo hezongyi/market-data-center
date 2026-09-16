@@ -208,7 +208,7 @@ function Shell({
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton asChild>
-                <Link to="/datasets" activeProps={{ className: "bg-accent" }}>
+                <Link to="/datasets" search={{ dataset: "" }} activeProps={{ className: "bg-accent" }}>
                   <Layers3 />
                   行情数据集
                 </Link>
@@ -416,6 +416,9 @@ const tasksRoute = createRoute({
 const datasetsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/datasets",
+  validateSearch: (search: Record<string, unknown>) => ({
+    dataset: typeof search.dataset === "string" ? search.dataset : "",
+  }),
   component: DatasetsPage,
 });
 const taskRoute = createRoute({

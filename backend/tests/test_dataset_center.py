@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -8,9 +9,11 @@ from data_center.catalog.manifest import build_manifest, write_manifest
 from data_center.dataset_center import (
     DatasetCenter,
     DatasetMember,
+    DatasetStateError,
     managed_dataset_root,
 )
 from data_center.domain.models import ProviderBar
+from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 from data_center.storage.parquet import write_provider_bars
 from data_center.storage.query import query_provider_bars
@@ -19,7 +22,7 @@ from data_center.storage.query import query_provider_bars
 def test_dataset_member_inheritance_and_idempotent_request(tmp_path):
     center = DatasetCenter(tmp_path)
     item = center.create(dataset_id="eurusd", name="EURUSD dataset", notes="first")
-    center.add_member("eurusd", DatasetMember(symbol="EURUSD"))
+    center.add_member("eurusd", DatasetMember(symbol="EURUSD"), expected_version=1)
     assert item.provider == "dukascopy" and item.base_timeframe == "1m"
     first = center.request("eurusd", symbol="EURUSD", start="2026-01-01T00:00:00Z", end="2026-01-02T00:00:00Z", idempotency_key="k1")
     second = center.request("eurusd", symbol="EURUSD", start="2026-01-01T00:00:00Z", end="2026-01-02T00:00:00Z", idempotency_key="k1")
@@ -28,13 +31,83 @@ def test_dataset_member_inheritance_and_idempotent_request(tmp_path):
         center.request("eurusd", symbol="EURUSD", start="2026-01-03T00:00:00Z", end="2026-01-04T00:00:00Z", idempotency_key="k1")
 
 
+def test_dataset_state_corruption_fails_closed_without_overwrite(tmp_path):
+    center = DatasetCenter(tmp_path)
+    center.create(dataset_id="safe", name="Safe")
+    center.path.write_text("{truncated")
+
+    with pytest.raises(DatasetStateError, match="unreadable"):
+        center.list()
+    assert center.path.read_text() == "{truncated"
+    with pytest.raises(DatasetStateError, match="unreadable"):
+        DatasetCenter(tmp_path)
+
+
+def test_dataset_writers_reload_under_a_cross_process_lock(tmp_path):
+    first = DatasetCenter(tmp_path)
+    second = DatasetCenter(tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda item: item[0].create(dataset_id=item[1], name=item[1]),
+                      ((first, "one"), (second, "two"))))
+    assert {item.dataset_id for item in DatasetCenter(tmp_path).list()} == {"one", "two"}
+
+
+def test_dataset_updates_are_optimistic_and_only_real_changes_increment_version(tmp_path):
+    center = DatasetCenter(tmp_path)
+    center.create(dataset_id="eurusd", name="EURUSD")
+    updated = center.update("eurusd", expected_version=1, notes="reviewed")
+    assert updated.version == 2
+    with pytest.raises(ValueError, match="version conflict"):
+        center.update("eurusd", expected_version=1, notes="stale")
+    with pytest.raises(ValueError, match="does not change"):
+        center.update("eurusd", expected_version=2, notes="reviewed")
+    with pytest.raises(ValueError, match="unknown dataset fields"):
+        center.update("eurusd", expected_version=2, bogus="value")
+    assert center.get("eurusd").version == 2
+
+
+def test_empty_member_targets_are_an_explicit_override(tmp_path):
+    center = DatasetCenter(tmp_path)
+    center.create(dataset_id="eurusd", name="EURUSD")
+    item = center.add_member(
+        "eurusd", DatasetMember(symbol="eurusd", derived_targets=()), expected_version=1)
+    member = item.as_dict()["members"]["EURUSD"]
+    assert member["symbol"] == "EURUSD"
+    assert member["derived_targets"] == []
+    assert member["effective_derived_targets"] == []
+
+
+def test_api_preserves_empty_targets_and_optimistic_dataset_versions(tmp_path):
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key")
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    assert client.post("/api/v1/managed-datasets", json={
+        "dataset_id": "empty", "name": "Empty targets"}, headers=auth).status_code == 201
+    member = client.post("/api/v1/managed-datasets/empty/members", json={
+        "symbol": "eurusd", "derived_targets": [], "expected_version": 1}, headers=auth)
+    assert member.status_code == 201
+    assert member.json()["data"]["members"]["EURUSD"]["effective_derived_targets"] == []
+    assert client.get("/api/v1/managed-datasets/empty/coverage").json()["data"]["derived"] == []
+    assert client.get(
+        "/api/v1/managed-datasets/empty/bars?symbol=eurusd&timeframe=5m").status_code == 422
+
+    assert client.patch("/api/v1/managed-datasets/empty", json={
+        "notes": "missing version"}, headers=auth).status_code == 409
+    assert client.patch("/api/v1/managed-datasets/empty", json={
+        "expected_version": 1, "notes": "stale"}, headers=auth).status_code == 409
+    assert client.patch("/api/v1/managed-datasets/empty", json={
+        "expected_version": 2, "bogus": "field"}, headers=auth).status_code == 409
+    assert client.get("/api/v1/managed-datasets/empty").json()["data"]["version"] == 2
+
+
 def test_paused_allows_manual_request_and_archived_rejects(tmp_path):
     center = DatasetCenter(tmp_path)
     center.create(dataset_id="eurusd", name="EURUSD")
-    center.add_member("eurusd", DatasetMember(symbol="EURUSD"))
-    center.update("eurusd", status="paused")
+    center.add_member("eurusd", DatasetMember(symbol="EURUSD"), expected_version=1)
+    center.update("eurusd", status="paused", expected_version=2)
     assert center.request("eurusd", symbol="EURUSD", start="2026-01-01T00:00:00Z", end="2026-01-02T00:00:00Z")["status"] == "queued"
-    center.update("eurusd", status="archived")
+    center.update("eurusd", status="archived", expected_version=3)
     try:
         center.request("eurusd", symbol="EURUSD", start="2026-01-01T00:00:00Z", end="2026-01-02T00:00:00Z")
     except ValueError as exc:
@@ -50,7 +123,8 @@ def test_managed_maintenance_uses_governed_ledger(tmp_path):
     client = TestClient(create_app(config))
     headers = {"X-API-Key": "key", "Idempotency-Key": "managed-1"}
     assert client.post("/api/v1/managed-datasets", json={"dataset_id": "d", "name": "D"}, headers=headers).status_code == 201
-    assert client.post("/api/v1/managed-datasets/d/members", json={"symbol": "EURUSD"}, headers=headers).status_code == 201
+    assert client.post("/api/v1/managed-datasets/d/members", json={
+        "symbol": "EURUSD", "expected_version": 1}, headers=headers).status_code == 201
     response = client.post("/api/v1/managed-datasets/d/maintenance", json={
         "symbol": "EURUSD", "start": "2026-01-01T00:00:00Z", "end": "2026-01-01T01:00:00Z"}, headers=headers)
     assert response.status_code == 202
@@ -69,7 +143,8 @@ def test_refused_second_maintenance_does_not_leave_an_orphan_request(tmp_path):
     auth = {"X-API-Key": "key"}
     assert client.post("/api/v1/managed-datasets", json={"dataset_id": "d", "name": "D"},
                        headers=auth).status_code == 201
-    assert client.post("/api/v1/managed-datasets/d/members", json={"symbol": "EURUSD"},
+    assert client.post("/api/v1/managed-datasets/d/members", json={
+        "symbol": "EURUSD", "expected_version": 1},
                        headers=auth).status_code == 201
 
     first = client.post(
@@ -79,7 +154,8 @@ def test_refused_second_maintenance_does_not_leave_an_orphan_request(tmp_path):
         headers={**auth, "Idempotency-Key": "first-window"},
     )
     assert first.status_code == 202
-    assert client.patch("/api/v1/managed-datasets/d", json={"status": "paused"},
+    assert client.patch("/api/v1/managed-datasets/d", json={
+        "status": "paused", "expected_version": 2},
                         headers=auth).status_code == 200
 
     second = client.post(
@@ -93,6 +169,48 @@ def test_refused_second_maintenance_does_not_leave_an_orphan_request(tmp_path):
     requests = client.get("/api/v1/managed-datasets/d/maintenance").json()["data"]
     assert len(requests) == 1
     assert all(request.get("execution", {}).get("execution_id") for request in requests)
+
+
+def test_managed_idempotency_keys_are_namespaced_by_dataset(tmp_path):
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key",
+                      capacity_fixed_free_ratio=0.9)
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    for dataset_id in ("one", "two"):
+        assert client.post("/api/v1/managed-datasets", json={
+            "dataset_id": dataset_id, "name": dataset_id}, headers=auth).status_code == 201
+        assert client.post(f"/api/v1/managed-datasets/{dataset_id}/members", json={
+            "symbol": "EURUSD", "expected_version": 1}, headers=auth).status_code == 201
+        response = client.post(
+            f"/api/v1/managed-datasets/{dataset_id}/maintenance",
+            json={"symbol": "EURUSD", "start": "2026-01-01T00:00:00Z",
+                  "end": "2026-01-01T01:00:00Z"},
+            headers={**auth, "Idempotency-Key": "same"})
+        assert response.status_code == 202, response.json()
+
+
+def test_archived_or_unknown_managed_dataset_cannot_use_generic_ingest(tmp_path):
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key",
+                      capacity_fixed_free_ratio=0.9)
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    assert client.post("/api/v1/managed-datasets", json={
+        "dataset_id": "arch", "name": "Archived"}, headers=auth).status_code == 201
+    assert client.post("/api/v1/managed-datasets/arch/members", json={
+        "symbol": "EURUSD", "expected_version": 1}, headers=auth).status_code == 201
+    job = {"job_id": "bypass", "managed_dataset_id": "arch", "provider": "dukascopy",
+           "symbol": "EURUSD", "asset_class": "crypto", "timeframe": "1m",
+           "start": "2026-01-01T00:00:00Z", "end": "2026-01-01T01:00:00Z"}
+    assert client.post("/api/v1/ingest/runs", json=job, headers=auth).status_code == 409
+    job["asset_class"] = "fx"
+    assert client.patch("/api/v1/managed-datasets/arch", json={
+        "status": "archived", "expected_version": 2}, headers=auth).status_code == 200
+    assert client.post("/api/v1/ingest/runs", json=job, headers=auth).status_code == 409
+    job["managed_dataset_id"] = "missing"
+    assert client.post("/api/v1/ingest/runs", json=job, headers=auth).status_code == 404
+    assert RunLedger(config.ledger_path).list() == []
 
 
 def test_managed_canonical_root_never_falls_back_to_global_data(tmp_path):

@@ -816,9 +816,9 @@ export function createDataCenterClient(apiKey: string) {
     managedDatasets: () => request<ManagedDataset[]>("/managed-datasets"),
     createManagedDataset: (body: { dataset_id: string; name: string; notes?: string; history_start?: string | null }) =>
       request<ManagedDataset>("/managed-datasets", { method: "POST", body: JSON.stringify(body) }),
-    updateManagedDataset: (datasetId: string, body: Partial<Pick<ManagedDataset, "name" | "notes" | "history_start" | "status">>) =>
+    updateManagedDataset: (datasetId: string, body: Partial<Pick<ManagedDataset, "name" | "notes" | "history_start" | "status">> & { expected_version: number }) =>
       request<ManagedDataset>(`/managed-datasets/${encodeURIComponent(datasetId)}`, { method: "PATCH", body: JSON.stringify(body) }),
-    addManagedMember: (datasetId: string, body: { symbol: "EURUSD"; history_start?: string | null; derived_targets?: string[] }) =>
+    addManagedMember: (datasetId: string, body: { symbol: "EURUSD"; expected_version: number; history_start?: string | null; derived_targets?: string[] }) =>
       request<ManagedDataset>(`/managed-datasets/${encodeURIComponent(datasetId)}/members`, { method: "POST", body: JSON.stringify(body) }),
     managedMaintenance: (datasetId: string) =>
       request<ManagedMaintenance[]>(`/managed-datasets/${encodeURIComponent(datasetId)}/maintenance`),

@@ -17,7 +17,11 @@ from data_center.catalog.manifest import (
     validate_manifest,
     write_manifest,
 )
-from data_center.dataset_center import managed_dataset_root
+from data_center.dataset_center import (
+    DatasetCenter,
+    DatasetStateError,
+    managed_dataset_root,
+)
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.observability import check_alerts
 
@@ -89,10 +93,25 @@ class LocalWorker:
     def _command(self, directory):
         return [sys.executable, "-m", "data_center.ingest.process", str(directory)]
 
+    def _publication_root(self, managed_dataset_id: str | None) -> Path:
+        return managed_dataset_root(self.root, managed_dataset_id)
+
+    def _ensure_managed_writable(self, managed_dataset_id: str | None) -> None:
+        if managed_dataset_id is None:
+            return
+        try:
+            item = DatasetCenter(self.root).get(managed_dataset_id)
+        except (KeyError, DatasetStateError) as exc:
+            raise PublicationError("managed dataset ownership is unavailable") from exc
+        if item.status == "archived":
+            raise PublicationError("archived managed dataset is not writable")
+
     def _publish(self, directory, receipt, managed_dataset_id=None):
         staged_root = directory / "parts"
-        publication_root = managed_dataset_root(
-            self.root, managed_dataset_id or receipt.get("managed_dataset_id"))
+        managed_id = managed_dataset_id or receipt.get("managed_dataset_id")
+        publication_root = self._publication_root(managed_id)
+        if not manifest_path(publication_root, receipt["run_id"]).exists():
+            self._ensure_managed_writable(managed_id)
         manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
         paths = validate_manifest(staged_root, manifest)
         if any(manifest[key] != receipt[key] for key in
@@ -152,7 +171,12 @@ class LocalWorker:
     def _recover(self):
         # The child inherits the lock so a replacement cannot recover a live child.
         for job in self.ledger.running_jobs():
-            directory = self.root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            managed_id = (job.get("payload") or {}).get("managed_dataset_id")
+            execution_root = self._publication_root(managed_id)
+            directory = execution_root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            legacy_directory = self.root / ".ingest-staging" / job["run_id"] / str(job["attempts"])
+            if not directory.exists() and legacy_directory.exists():
+                directory = legacy_directory
             result_path = directory / "result.json"
             result = json.loads(result_path.read_text()) if result_path.exists() else {}
             if "verification" in result:
@@ -168,7 +192,7 @@ class LocalWorker:
                     self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
                     self._persist_findings(job, receipt)
                 except PublicationError:
-                    if manifest_path(self.root, job["run_id"]).exists():
+                    if manifest_path(execution_root, job["run_id"]).exists():
                         raise
                     self.ledger.fail_job(job["job_id"], job["run_id"], "publication validation failed",
                                          error_type="PublicationError", failure_stage="publish", retryable=False)
@@ -190,10 +214,19 @@ class LocalWorker:
             claimed = self.ledger.claim_next_job()
             if claimed is None:
                 return False
-            directory = self.root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
-            directory.mkdir(parents=True, exist_ok=True)
             execution_root = managed_dataset_root(
                 self.root, (claimed.get("payload") or {}).get("managed_dataset_id"))
+            managed_id = (claimed.get("payload") or {}).get("managed_dataset_id")
+            try:
+                self._ensure_managed_writable(managed_id)
+            except PublicationError as exc:
+                self.ledger.fail_job(
+                    claimed["job_id"], claimed["run_id"], str(exc),
+                    error_type="PublicationError", failure_stage="ownership", retryable=False)
+                self.ledger.heartbeat()
+                return True
+            directory = execution_root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
+            directory.mkdir(parents=True, exist_ok=True)
             (directory / "request.json").write_text(json.dumps({
                 **claimed, "canonical_root": str(execution_root),
                 # The child reads its fixed input from the ledger read-only; it
@@ -232,7 +265,10 @@ class LocalWorker:
                 if process is not None and process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
-                if isinstance(exc, PublicationError) and not manifest_path(self.root, claimed["run_id"]).exists():
+                if isinstance(exc, PublicationError):
+                    publication_root = self._publication_root(managed_id)
+                    if manifest_path(publication_root, claimed["run_id"]).exists():
+                        raise
                     self.ledger.fail_job(claimed["job_id"], claimed["run_id"], "publication validation failed",
                                          error_type="PublicationError", failure_stage="publish", retryable=False)
                     self.ledger.heartbeat()

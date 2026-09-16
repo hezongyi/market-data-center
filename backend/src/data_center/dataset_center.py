@@ -1,12 +1,18 @@
 """Small, durable control-plane for dataset-centred EURUSD maintenance."""
 from __future__ import annotations
 
+import fcntl
 import json
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
+
+
+class DatasetStateError(RuntimeError):
+    """The durable managed-dataset control plane cannot be read safely."""
 
 
 def managed_dataset_root(canonical_root: Path, dataset_id: str | None) -> Path:
@@ -43,6 +49,15 @@ class ManagedDataset:
     version: int = 1
     members: dict[str, DatasetMember] = field(default_factory=dict)
 
+    def member(self, symbol: str) -> DatasetMember:
+        """Resolve the canonical member identity used by every dataset seam."""
+        return self.members[symbol.upper()]
+
+    def effective_derived_targets(self, symbol: str) -> tuple[str, ...]:
+        member = self.member(symbol)
+        return (member.derived_targets
+                if member.derived_targets is not None else self.derived_targets)
+
     def as_dict(self) -> dict:
         value = asdict(self)
         value["derived_targets"] = list(self.derived_targets)
@@ -51,7 +66,8 @@ class ManagedDataset:
             raw = asdict(member)
             raw["derived_targets"] = list(member.derived_targets) if member.derived_targets is not None else None
             raw["effective_history_start"] = member.history_start or self.history_start
-            raw["effective_derived_targets"] = list(member.derived_targets or self.derived_targets)
+            effective_targets = self.effective_derived_targets(key)
+            raw["effective_derived_targets"] = list(effective_targets)
             value["members"][key] = raw
         return value
 
@@ -60,15 +76,22 @@ class DatasetCenter:
     """JSON-backed store; writes are atomic and scoped to one canonical root."""
     def __init__(self, root: Path):
         self.path = Path(root) / "datasets" / "managed.json"
+        self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._lock = RLock()
         self._items: dict[str, ManagedDataset] = {}
         self._requests: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
+        if not self.path.exists():
+            self._items = {}
+            self._requests = {}
+            return
         try:
             payload = json.loads(self.path.read_text())
+            items = {}
             for raw in payload.get("datasets", []):
+                raw = dict(raw)
                 members = {}
                 for key, value in raw.pop("members", {}).items():
                     value.pop("effective_history_start", None)
@@ -77,13 +100,22 @@ class DatasetCenter:
                         value["derived_targets"] = tuple(value["derived_targets"])
                     members[key] = DatasetMember(**value)
                 raw["derived_targets"] = tuple(raw.get("derived_targets", ()))
-                self._items[raw["dataset_id"]] = ManagedDataset(**raw, members=members)
-            self._requests = {}
+                items[raw["dataset_id"]] = ManagedDataset(**raw, members=members)
+            requests = {}
             for key, value in payload.get("requests", {}).items():
                 normalized_key = key if key.startswith(f"{value.get('dataset_id')}:") else f"{value.get('dataset_id')}:{key}"
-                self._requests[normalized_key] = value
-        except (OSError, ValueError, TypeError):
-            return
+                requests[normalized_key] = value
+        except (AttributeError, OSError, ValueError, TypeError, KeyError) as exc:
+            raise DatasetStateError(f"managed dataset state is unreadable: {self.path}") from exc
+        self._items = items
+        self._requests = requests
+
+    @contextmanager
+    def _file_lock(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,7 +125,8 @@ class DatasetCenter:
         temporary.replace(self.path)
 
     def create(self, *, dataset_id: str, name: str, notes: str = "", history_start: str | None = None) -> ManagedDataset:
-        with self._lock:
+        with self._lock, self._file_lock():
+            self._load()
             if dataset_id in self._items:
                 raise ValueError("dataset already exists")
             managed_dataset_root(self.path.parent.parent, dataset_id)
@@ -107,40 +140,71 @@ class DatasetCenter:
             return item
 
     def get(self, dataset_id: str) -> ManagedDataset:
-        try: return self._items[dataset_id]
-        except KeyError as exc: raise KeyError(dataset_id) from exc
+        with self._lock, self._file_lock():
+            self._load()
+            try: return self._items[dataset_id]
+            except KeyError as exc: raise KeyError(dataset_id) from exc
 
-    def list(self) -> list[ManagedDataset]: return list(self._items.values())
+    def list(self) -> list[ManagedDataset]:
+        with self._lock, self._file_lock():
+            self._load()
+            return list(self._items.values())
 
-    def update(self, dataset_id: str, **changes) -> ManagedDataset:
-        with self._lock:
-            item = self.get(dataset_id)
+    def update(self, dataset_id: str, *, expected_version: int, **changes) -> ManagedDataset:
+        with self._lock, self._file_lock():
+            self._load()
+            try: item = self._items[dataset_id]
+            except KeyError as exc: raise KeyError(dataset_id) from exc
+            if item.version != expected_version:
+                raise ValueError(f"dataset version conflict: expected {expected_version}, current {item.version}")
+            unknown = set(changes) - {"name", "notes", "history_start", "status",
+                                      "provider", "asset_class", "price_type",
+                                      "base_timeframe", "derived_targets"}
+            if unknown:
+                raise ValueError("unknown dataset fields: " + ", ".join(sorted(unknown)))
             immutable = {key for key in ("provider", "asset_class", "price_type", "base_timeframe", "derived_targets") if key in changes}
             if immutable:
                 raise ValueError("dataset definition is immutable: " + ", ".join(sorted(immutable)))
             if "status" in changes and changes["status"] not in {"active", "paused", "archived"}:
                 raise ValueError("status must be active, paused or archived")
+            applied = False
             for key in ("name", "notes", "history_start", "status"):
-                if key in changes and changes[key] is not None: setattr(item, key, changes[key])
+                if key in changes and changes[key] is not None and getattr(item, key) != changes[key]:
+                    setattr(item, key, changes[key]); applied = True
+            if not applied:
+                raise ValueError("dataset update does not change configuration")
             item.version += 1
             self._save(); return item
 
-    def add_member(self, dataset_id: str, member: DatasetMember) -> ManagedDataset:
-        with self._lock:
-            item = self.get(dataset_id)
+    def add_member(self, dataset_id: str, member: DatasetMember, *, expected_version: int) -> ManagedDataset:
+        with self._lock, self._file_lock():
+            self._load()
+            try: item = self._items[dataset_id]
+            except KeyError as exc: raise KeyError(dataset_id) from exc
+            if item.version != expected_version:
+                raise ValueError(f"dataset version conflict: expected {expected_version}, current {item.version}")
             if item.provider != "dukascopy" or item.asset_class != "fx" or item.price_type != "bid" or item.base_timeframe != "1m":
                 raise ValueError("dataset definition is immutable")
-            if member.symbol.upper() != "EURUSD":
+            symbol = member.symbol.upper()
+            if symbol != "EURUSD":
                 raise ValueError("P2.1 only supports EURUSD")
             if member.derived_targets is not None and any(target != "5m" for target in member.derived_targets):
                 raise ValueError("P2.1 only supports 5m derived target")
-            item.members[member.symbol] = member; item.version += 1; self._save(); return item
+            if symbol in item.members:
+                raise ValueError("member already exists")
+            item.members[symbol] = DatasetMember(
+                symbol=symbol, history_start=member.history_start,
+                derived_targets=member.derived_targets, status=member.status)
+            item.version += 1; self._save(); return item
 
     def submit_request(self, dataset_id: str, *, symbol: str, start: str, end: str,
                        idempotency_key: str | None = None) -> tuple[dict, bool]:
-        with self._lock:
-            item = self.get(dataset_id)
+        with self._lock, self._file_lock():
+            self._load()
+            try: item = self._items[dataset_id]
+            except KeyError as exc: raise KeyError(dataset_id) from exc
             if item.status == "archived": raise ValueError("archived dataset is read-only")
+            symbol = symbol.upper()
             if symbol not in item.members: raise ValueError("member is not registered")
             try:
                 start_at = datetime.fromisoformat(start.replace("Z", "+00:00"))
@@ -168,7 +232,8 @@ class DatasetCenter:
     def discard_unattached_request(self, dataset_id: str, idempotency_key: str,
                                    request_id: str) -> None:
         """Compensate a control-plane refusal without deleting an accepted replay."""
-        with self._lock:
+        with self._lock, self._file_lock():
+            self._load()
             key = f"{dataset_id}:{idempotency_key}"
             value = self._requests.get(key)
             if value and value.get("request_id") == request_id and not value.get("execution"):
@@ -176,10 +241,13 @@ class DatasetCenter:
                 self._save()
 
     def requests(self, dataset_id: str) -> list[dict]:
-        return [r for r in self._requests.values() if r["dataset_id"] == dataset_id]
+        with self._lock, self._file_lock():
+            self._load()
+            return [r for r in self._requests.values() if r["dataset_id"] == dataset_id]
 
     def attach_execution(self, dataset_id: str, idempotency_key: str, execution: dict) -> dict:
-        with self._lock:
+        with self._lock, self._file_lock():
+            self._load()
             value = self._requests.get(f"{dataset_id}:{idempotency_key}")
             if value is None:
                 raise KeyError(idempotency_key)
