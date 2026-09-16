@@ -6,6 +6,8 @@
 
 读取 [当前产品规范](specs/2026-09-15-eurusd-first-product-baseline.md)与[路线图](plans/2026-09-15-eurusd-first-implementation.md)，UI 另读 `webui/AGENTS.md`，预览另读[预览规范](specs/2026-09-15-isolated-preview-environment.md)。旧 spec 的历史状态不代表当前排期，未列入本轮的旧工作默认暂停。
 
+2026-09-16 起同时读取[数据集中心接续规范](specs/2026-09-16-dataset-centered-eurusd-maintenance.md)。P2 已通过用户阶段验收；下一切片 P2.1 仍只做 Dukascopy FX / EURUSD，P3 完善单品种全流程后 P4 才加入 GBPUSD。新模型验收引用 DS01–DS07，旧 P2 receipt 保留但不能证明新行为已通过。
+
 普通切片只需目标、用户动作、验收项和改动范围，不为每个按钮写 spec。新能力或改变数据/接口/权限/预览隔离契约时更新相应 spec；实现方法、文件落点和顺序写 plan；研究证据写 research；已可执行的步骤写 guide/runbook。
 
 用户直接委派的小任务和分析可直接进行，不强制先新建 issue。共享 issue 或多个 agent 同时工作时按[协作约定](agent-collaboration.md)认领；未经授权不向 GitHub/其它人发送消息。保护现有 worktree；广泛变更使用独立分支/worktree。

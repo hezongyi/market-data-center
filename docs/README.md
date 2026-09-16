@@ -1,12 +1,16 @@
 # 文档入口
 
-## 当前交付基线（2026-09-15）
+## 当前交付基线（2026-09-16 接续）
 
 维护者已确认转向独立 EURUSD 维护闭环。当前工作从下列入口开始，旧迁移/扩面未完成项默认暂停排期，必要生产维护保留；这不是停止生产服务的指令。
+
+2026-09-16 确认改为数据集中心管理，当前仍只有 Dukascopy FX / EURUSD / BID 1m→5m。先 P2.1 完成数据集手动闭环，P3 完善 EURUSD 全流程，P4 再增加 GBPUSD；其它资产、粒度和 provider 不进入本轮。
 
 | 文档 | 用途 |
 | --- | --- |
 | [EURUSD 产品与 UI 规范](specs/2026-09-15-eurusd-first-product-baseline.md) | 当前目标、shadcn-admin 基线、E01–E10 验收和旧工作接续 |
+| [数据集中心接续规范](specs/2026-09-16-dataset-centered-eurusd-maintenance.md) | 新管理模型、独立目录、暂停/归档语义、范围与 DS01–DS07；与原基线一起读取 |
+| [领域词汇](../CONTEXT.md) | 数据集、品种、计划、请求、执行和状态的统一含义 |
 | [独立预览环境规范](specs/2026-09-15-isolated-preview-environment.md) | 环境隔离、工具契约与 PV01–PV08；尚待 P0 实现 |
 | [开发指南](development-guide.md) | 每阶段如何预览、反馈、评审、验证、合并与交接 |
 | [实施路线图](plans/2026-09-15-eurusd-first-implementation.md) | P0–P5 顺序、实际进展及旧任务排期 |
