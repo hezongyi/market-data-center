@@ -1,7 +1,7 @@
 # 数据集中心的 EURUSD 维护闭环
 
 日期：2026-09-16  
-状态：approved；尚未实施或验收
+状态：approved；P2.1 已实现，阶段验收修正中
 
 本规范局部接续 `2026-09-15-eurusd-first-product-baseline.md`：保留 EURUSD、Dukascopy、BID 1m→5m、固定输入、缺口正确性、认证、预览和发布门禁；将长期管理对象改为数据集/成员/请求/执行。
 
