@@ -24,6 +24,7 @@ from data_center.dataset_center import (
 )
 from data_center.domain.models import DeriveJob, IngestJob
 from data_center.observability import check_alerts
+from data_center.platform_registry import REGISTRY
 
 
 class LocalWorker:
@@ -58,10 +59,10 @@ class LocalWorker:
 
     def submit_derive(self, job: DeriveJob) -> str:
         from data_center.catalog.snapshot import Catalog, snapshot_reference
-        from data_center.platform_registry import REGISTRY
 
         recipe = REGISTRY.recipe(job.recipe_id, job.recipe_version)
-        snapshot = Catalog(self.root).resolve(
+        execution_root = self._publication_root(job.managed_dataset_id)
+        snapshot = Catalog(execution_root).resolve(
             recipe.input_dataset,
             {"provider": job.provider, "symbol": job.symbol, "timeframe": recipe.source_timeframe},
         )
@@ -72,7 +73,7 @@ class LocalWorker:
         # Persist the parts this execution is accepted against.  The row stays
         # one shared record per snapshot, and the run only carries its id, so a
         # later publication cannot invalidate the accepted input (spec 6.3).
-        input_id = self.ledger.store_production_input(snapshot_reference(self.root, snapshot))
+        input_id = self.ledger.store_production_input(snapshot_reference(execution_root, snapshot))
         # The fixed-input id is carried beside the model dump, not inside the
         # model: a pydantic dump would silently drop an undeclared field and the
         # run would fall back to comparing against the current catalog.
@@ -96,7 +97,8 @@ class LocalWorker:
     def _publication_root(self, managed_dataset_id: str | None) -> Path:
         return managed_dataset_root(self.root, managed_dataset_id)
 
-    def _ensure_managed_writable(self, managed_dataset_id: str | None) -> None:
+    def _ensure_managed_writable(self, managed_dataset_id: str | None,
+                                 payload: dict | None = None) -> None:
         if managed_dataset_id is None:
             return
         try:
@@ -105,13 +107,38 @@ class LocalWorker:
             raise PublicationError("managed dataset ownership is unavailable") from exc
         if item.status == "archived":
             raise PublicationError("archived managed dataset is not writable")
+        if payload is None:
+            return
+        symbol = str(payload.get("symbol") or "").upper()
+        member = item.members.get(symbol)
+        if member is None or member.status != "active":
+            raise PublicationError("managed dataset member is not writable")
+        if (payload.get("provider") != item.provider
+                or payload.get("asset_class") not in {None, item.asset_class}
+                or payload.get("price_basis") not in {None, item.price_type}):
+            raise PublicationError("job does not match managed dataset ownership")
+        dataset_id = payload.get("dataset_id")
+        if dataset_id == "provider_bars":
+            if payload.get("timeframe") != item.base_timeframe:
+                raise PublicationError("job does not match managed base timeframe")
+            return
+        if dataset_id == "market_bars":
+            try:
+                recipe = REGISTRY.recipe(payload.get("recipe_id"), payload.get("recipe_version"))
+            except ValueError as exc:
+                raise PublicationError("managed derive recipe is not registered") from exc
+            if (recipe.source_timeframe != item.base_timeframe
+                    or recipe.target_timeframe not in item.effective_derived_targets(symbol)):
+                raise PublicationError("managed derive recipe is not writable")
+            return
+        raise PublicationError("job dataset does not match managed ownership")
 
-    def _publish(self, directory, receipt, managed_dataset_id=None):
+    def _publish(self, directory, receipt, managed_dataset_id=None, payload=None):
         staged_root = directory / "parts"
         managed_id = managed_dataset_id or receipt.get("managed_dataset_id")
         publication_root = self._publication_root(managed_id)
         if not manifest_path(publication_root, receipt["run_id"]).exists():
-            self._ensure_managed_writable(managed_id)
+            self._ensure_managed_writable(managed_id, payload)
         manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
         paths = validate_manifest(staged_root, manifest)
         if any(manifest[key] != receipt[key] for key in
@@ -188,7 +215,8 @@ class LocalWorker:
                 try:
                     pending_receipt = {**result["receipt"], "managed_dataset_id":
                                        (job.get("payload") or {}).get("managed_dataset_id")}
-                    receipt = self._publish(directory, pending_receipt)
+                    receipt = self._publish(
+                        directory, pending_receipt, payload=job.get("payload") or {})
                     self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
                     self._persist_findings(job, receipt)
                 except PublicationError:
@@ -218,7 +246,7 @@ class LocalWorker:
                 self.root, (claimed.get("payload") or {}).get("managed_dataset_id"))
             managed_id = (claimed.get("payload") or {}).get("managed_dataset_id")
             try:
-                self._ensure_managed_writable(managed_id)
+                self._ensure_managed_writable(managed_id, claimed.get("payload") or {})
             except PublicationError as exc:
                 self.ledger.fail_job(
                     claimed["job_id"], claimed["run_id"], str(exc),
@@ -251,7 +279,8 @@ class LocalWorker:
                 elif "receipt" in result:
                     pending_receipt = {**result["receipt"], "managed_dataset_id":
                                        (claimed.get("payload") or {}).get("managed_dataset_id")}
-                    receipt = self._publish(directory, pending_receipt)
+                    receipt = self._publish(
+                        directory, pending_receipt, payload=claimed.get("payload") or {})
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], receipt)
                     self._persist_findings(claimed, receipt)
                 else:

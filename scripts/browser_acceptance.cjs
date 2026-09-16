@@ -1039,6 +1039,11 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.getByText("已暂停自动维护；查询和手工补数仍可用。", { exact: true }).waitFor();
   await p1Page.getByRole("button", { name: "恢复", exact: true }).click();
   await p1Page.getByText("数据集已恢复。", { exact: true }).waitFor();
+  const retainedStart = await p1Page.getByLabel("开始", { exact: true }).inputValue();
+  await p1Page.getByLabel("开始", { exact: true }).fill("");
+  await p1Page.getByText("请选择开始时间。", { exact: true }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "补齐 1m 并派生 5m", exact: true }).isDisabled(), true);
+  await p1Page.getByLabel("开始", { exact: true }).fill(retainedStart);
 
   await call("PATCH", `/managed-datasets/${secondManagedDatasetId}`, {
     status: "archived", expected_version: 2,
@@ -1074,6 +1079,9 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.locator("table tbody tr").filter({ hasText: "2026-09-14T11:00" }).waitFor();
   assert.equal(await p1Page.getByRole("button", { name: "暂停", exact: true }).count(), 0,
     "an archived dataset must expose no status write control");
+  assert.equal(await p1Page.getByRole("button", { name: "已归档，不能补数", exact: true }).isDisabled(), true);
+  assert.equal(await p1Page.getByLabel("开始", { exact: true }).isDisabled(), true);
+  assert.equal(await p1Page.getByLabel("结束", { exact: true }).isDisabled(), true);
   assert.equal(archivedCoverageCalls, 0,
     "the archived detail must not request forbidden market coverage");
   await p1Page.unroute(archivedMaintenancePattern, archivedMaintenance);
@@ -1168,7 +1176,8 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "p1_mobile_task_sheet", "p1_legacy_css_isolation",
       "p21_dataset_url_refresh_back", "p21_dataset_draft_retention",
       "p21_dataset_loading_empty", "p21_dataset_optimistic_status",
-      "p21_dataset_archived_audit_read_only", "p21_dataset_mobile_no_overflow"],
+      "p21_dataset_window_validation", "p21_dataset_archived_audit_read_only",
+      "p21_dataset_mobile_no_overflow"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,

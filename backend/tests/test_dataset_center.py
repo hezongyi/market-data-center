@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,10 +13,11 @@ from data_center.dataset_center import (
     managed_dataset_root,
 )
 from data_center.domain.models import ProviderBar
+from data_center.ingest.worker import LocalWorker
 from data_center.runs.ledger import RunLedger
 from data_center.settings import Settings
 from data_center.storage.parquet import write_provider_bars
-from data_center.storage.query import query_provider_bars
+from data_center.storage.query import query_market_bars, query_provider_bars
 
 
 def test_dataset_member_inheritance_and_idempotent_request(tmp_path):
@@ -211,6 +212,90 @@ def test_archived_or_unknown_managed_dataset_cannot_use_generic_ingest(tmp_path)
     job["managed_dataset_id"] = "missing"
     assert client.post("/api/v1/ingest/runs", json=job, headers=auth).status_code == 404
     assert RunLedger(config.ledger_path).list() == []
+
+
+def test_production_task_cannot_bypass_managed_dataset_definition(tmp_path):
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key",
+                      capacity_fixed_free_ratio=0.9)
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    assert client.post("/api/v1/managed-datasets", json={
+        "dataset_id": "managed", "name": "Managed"}, headers=auth).status_code == 201
+    assert client.post("/api/v1/managed-datasets/managed/members", json={
+        "symbol": "EURUSD", "expected_version": 1}, headers=auth).status_code == 201
+    definition = {
+        "managed_dataset_id": "managed", "provider": "dukascopy", "symbol": "GBPUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "fixed", "start": "2026-01-01T00:00:00Z",
+                          "end": "2026-01-01T01:00:00Z"},
+        "schedule": {"schedule": "manual"},
+    }
+    assert client.post("/api/v1/production/plans", json={
+        "definition": definition}).status_code == 409
+    assert client.post("/api/v1/production/tasks", json={
+        "task_id": "bad-member", "name": "bad", "definition": definition},
+        headers=auth).status_code == 409
+
+    definition["symbol"] = "EURUSD"
+    created = client.post("/api/v1/production/tasks", json={
+        "task_id": "valid-managed", "name": "valid", "definition": definition}, headers=auth)
+    assert created.status_code == 201, created.json()
+    assert client.patch("/api/v1/managed-datasets/managed", json={
+        "status": "archived", "expected_version": 2}, headers=auth).status_code == 200
+    assert client.post("/api/v1/production/tasks/valid-managed/actions", json={
+        "command": "run_now"}, headers=auth).status_code == 409
+
+
+def test_direct_managed_derive_uses_scoped_snapshot_and_publication(tmp_path):
+    lake = tmp_path / "lake"
+    config = Settings(canonical_root=lake, ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key",
+                      capacity_fixed_free_ratio=0.9)
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    assert client.post("/api/v1/managed-datasets", json={
+        "dataset_id": "managed", "name": "Managed"}, headers=auth).status_code == 201
+    assert client.post("/api/v1/managed-datasets/managed/members", json={
+        "symbol": "EURUSD", "expected_version": 1}, headers=auth).status_code == 201
+    scoped = managed_dataset_root(lake, "managed")
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = [ProviderBar(
+        managed_dataset_id="managed", symbol="EURUSD", asset_class="fx",
+        provider="dukascopy", timeframe="1m", bar_ts=start + timedelta(minutes=index),
+        open=1 + index / 10_000, high=1.1 + index / 10_000,
+        low=0.9 + index / 10_000, close=1.05 + index / 10_000,
+        volume=1, price_type="bid", ingest_ts=start + timedelta(hours=1),
+        source_hash=f"managed-{index}",
+    ) for index in range(60)]
+    paths = write_provider_bars(scoped, rows, part_id="managed-raw")
+    write_manifest(scoped, build_manifest(
+        scoped, run_id="managed-raw", dataset_id="provider_bars",
+        schema_version="provider_bars.v1", paths=paths, row_count=60,
+        quality_summary={"status": "pass", "finding_count": 0, "findings": []}))
+    assert query_provider_bars(lake, provider="dukascopy", symbol="EURUSD", timeframe="1m") == []
+
+    response = client.post("/api/v1/derive/runs", headers=auth, json={
+        "job_id": "direct-managed", "managed_dataset_id": "managed",
+        "provider": "dukascopy", "symbol": "EURUSD",
+        "recipe_id": "utc-24x7-1m-to-5m-ohlcv", "recipe_version": "1",
+        "start": start.isoformat(), "end": (start + timedelta(hours=1)).isoformat(),
+        "run_scope": "maintenance", "run_kind": "derive",
+    })
+    assert response.status_code == 202, response.json()
+    run_id = response.json()["data"]["run_id"]
+    ledger = RunLedger(config.ledger_path)
+    assert ledger.get(run_id)["managed_dataset_id"] == "managed"
+    assert LocalWorker(lake, ledger).run_next() is True
+    assert ledger.get(run_id)["status"] == "pass"
+    assert len(query_market_bars(
+        scoped, provider="dukascopy", symbol="EURUSD", timeframe="5m",
+        price_basis="bid", recipe_id="utc-24x7-1m-to-5m-ohlcv",
+        recipe_version="1")) == 12
+    assert query_market_bars(
+        lake, provider="dukascopy", symbol="EURUSD", timeframe="5m",
+        price_basis="bid", recipe_id="utc-24x7-1m-to-5m-ohlcv",
+        recipe_version="1") == []
 
 
 def test_managed_canonical_root_never_falls_back_to_global_data(tmp_path):

@@ -59,6 +59,9 @@ export function DatasetsPage() {
     () => datasets.find((item) => item.dataset_id === search.dataset) ?? null,
     [datasets, search.dataset],
   );
+  const nameInvalid = !draft.name.trim();
+  const startInvalid = !draft.start;
+  const endInvalid = !draft.end || Boolean(draft.start && draft.end && draft.start >= draft.end);
 
   const load = useCallback(async (preferred?: string) => {
     setError(""); setDatasetsLoading(true);
@@ -169,11 +172,11 @@ export function DatasetsPage() {
         <Card className="min-w-0">
           <CardHeader><CardTitle>新建数据集</CardTitle><CardDescription>来源、价格口径和基础粒度在 P2.1 固定。</CardDescription></CardHeader>
           <CardContent><form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void create(); }}>
-            <div className="field"><Label htmlFor="dataset-name">名称</Label><Input id="dataset-name" value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} /></div>
+            <div className="field"><Label htmlFor="dataset-name">名称</Label><Input id="dataset-name" required aria-invalid={nameInvalid} value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} />{nameInvalid && <p className="m-0 text-xs text-destructive">名称不能为空。</p>}</div>
             <div className="field"><Label htmlFor="dataset-notes">备注</Label><Input id="dataset-notes" value={draft.notes} onChange={(event) => setDraft((value) => ({ ...value, notes: event.target.value }))} /></div>
             <div className="field"><Label htmlFor="history-start">默认历史起点</Label><Input id="history-start" type="datetime-local" value={draft.historyStart} onChange={(event) => setDraft((value) => ({ ...value, historyStart: event.target.value }))} /></div>
             <div className="flex flex-wrap gap-2"><Badge variant="outline">Dukascopy</Badge><Badge variant="outline">FX</Badge><Badge variant="outline">BID</Badge><Badge variant="outline">1m → 5m</Badge></div>
-            <Button disabled={busy === "create" || !draft.name.trim()}><Plus data-icon="inline-start" />{busy === "create" ? "创建中…" : "创建"}</Button>
+            <Button disabled={busy === "create" || nameInvalid}><Plus data-icon="inline-start" />{busy === "create" ? "创建中…" : "创建"}</Button>
           </form></CardContent>
         </Card>
 
@@ -197,6 +200,8 @@ export function DatasetsPage() {
             <p className="m-0 break-words text-sm text-muted-foreground">{selected.notes || "无备注"}</p>
             {selected.members.EURUSD
               ? <p className="m-0 text-sm">EURUSD · 有效起点 {selected.members.EURUSD.effective_history_start || "未设置"} · 派生 {selected.members.EURUSD.effective_derived_targets.join(", ")}</p>
+              : selected.status === "archived"
+                ? <p className="m-0 text-sm text-muted-foreground">归档时未加入 EURUSD；配置不可再修改。</p>
               : <Button variant="outline" onClick={() => void addMember()} disabled={busy === "member"}><Plus data-icon="inline-start" />加入 EURUSD</Button>}
           </CardContent>
           <CardFooter className="gap-2">
@@ -211,9 +216,9 @@ export function DatasetsPage() {
         <Card className="min-w-0">
           <CardHeader><CardTitle>固定区间补数</CardTitle><CardDescription>暂停状态也允许显式手工维护；同一区间重复提交保持幂等。</CardDescription></CardHeader>
           <CardContent><form className="grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void maintain(); }}>
-            <div className="field"><Label htmlFor="maintenance-start">开始</Label><Input id="maintenance-start" type="datetime-local" value={draft.start} onChange={(event) => setDraft((value) => ({ ...value, start: event.target.value }))} /></div>
-            <div className="field"><Label htmlFor="maintenance-end">结束</Label><Input id="maintenance-end" type="datetime-local" value={draft.end} onChange={(event) => setDraft((value) => ({ ...value, end: event.target.value }))} /></div>
-            <Button className="md:col-span-2" disabled={!selected.members.EURUSD || busy === "maintain" || draft.start >= draft.end}><Wrench data-icon="inline-start" />{busy === "maintain" ? "排队中…" : "补齐 1m 并派生 5m"}</Button>
+            <div className="field"><Label htmlFor="maintenance-start">开始</Label><Input id="maintenance-start" type="datetime-local" required disabled={selected.status === "archived"} aria-invalid={startInvalid} max={draft.end || undefined} value={draft.start} onChange={(event) => setDraft((value) => ({ ...value, start: event.target.value }))} />{startInvalid && <p className="m-0 text-xs text-destructive">请选择开始时间。</p>}</div>
+            <div className="field"><Label htmlFor="maintenance-end">结束</Label><Input id="maintenance-end" type="datetime-local" required disabled={selected.status === "archived"} aria-invalid={endInvalid} min={draft.start || undefined} value={draft.end} onChange={(event) => setDraft((value) => ({ ...value, end: event.target.value }))} />{endInvalid && <p className="m-0 text-xs text-destructive">结束时间必须晚于开始时间。</p>}</div>
+            <Button className="md:col-span-2" disabled={selected.status === "archived" || !selected.members.EURUSD || busy === "maintain" || startInvalid || endInvalid}><Wrench data-icon="inline-start" />{selected.status === "archived" ? "已归档，不能补数" : busy === "maintain" ? "排队中…" : "补齐 1m 并派生 5m"}</Button>
           </form></CardContent>
         </Card>
 

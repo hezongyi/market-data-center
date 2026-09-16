@@ -148,6 +148,8 @@ def test_publication_failure_recovers_without_refetch(tmp_path, monkeypatch):
 
 
 def test_managed_publication_and_ledger_recovery_stay_in_scoped_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATACENTER_PROVIDER_ALLOWLIST", "dukascopy,fixture")
+    monkeypatch.setenv("DATACENTER_DATA_MODE", "fixture")
     lake = tmp_path / "lake"
     center = DatasetCenter(lake)
     center.create(dataset_id="managed", name="Managed")
@@ -157,10 +159,10 @@ def test_managed_publication_and_ledger_recovery_stay_in_scoped_root(tmp_path, m
     ledger = RunLedger(tmp_path / "ledger.sqlite")
     worker = LocalWorker(lake, ledger)
     run_id = worker.submit(IngestJob(
-        job_id="managed-recover", managed_dataset_id="managed", provider="fixture",
-        symbol="EURUSD", asset_class="fx", timeframe="1d",
+        job_id="managed-recover", managed_dataset_id="managed", provider="dukascopy",
+        symbol="EURUSD", asset_class="fx", timeframe="1m",
         start=datetime(2025, 12, 31, tzinfo=timezone.utc),
-        end=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2025, 12, 31, 1, tzinfo=timezone.utc),
     ))
     finish = ledger.finish_job
     monkeypatch.setattr(
@@ -199,6 +201,27 @@ def test_archived_dataset_blocks_a_previously_queued_worker_job(tmp_path):
     center.update("managed", expected_version=2, status="archived")
 
     assert worker.run_next() is True
+    receipt = ledger.get(run_id)
+    assert receipt["status"] == "failed"
+    assert receipt["failure_stage"] == "ownership"
+    assert not (managed_dataset_root(lake, "managed") / ".ingest-staging" / run_id).exists()
+
+
+def test_worker_rejects_a_queued_job_outside_managed_membership(tmp_path):
+    lake = tmp_path / "lake"
+    center = DatasetCenter(lake)
+    center.create(dataset_id="managed", name="Managed")
+    center.add_member(
+        "managed", DatasetMember(symbol="EURUSD"), expected_version=1)
+    ledger = RunLedger(tmp_path / "ledger.sqlite")
+    run_id = ledger.enqueue_job({
+        "job_id": "invalid-member", "managed_dataset_id": "managed",
+        "dataset_id": "provider_bars", "provider": "dukascopy", "symbol": "GBPUSD",
+        "asset_class": "fx", "timeframe": "1m", "price_basis": "bid",
+        "start": "2026-01-01T00:00:00+00:00", "end": "2026-01-01T01:00:00+00:00",
+    })
+
+    assert LocalWorker(lake, ledger).run_next() is True
     receipt = ledger.get(run_id)
     assert receipt["status"] == "failed"
     assert receipt["failure_stage"] == "ownership"

@@ -328,6 +328,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         raise HTTPException(status_code=409, detail="dataset is not writable through managed ownership")
 
+    def require_managed_definition(definition: dict) -> None:
+        """Validate a normalized production definition against managed ownership."""
+        preview = production_tasks_service.preview(definition)
+        if preview["validation"]["errors"]:
+            return
+        normalized = preview["definition"]
+        managed_id = normalized.get("managed_dataset_id")
+        if managed_id is None:
+            return
+        try:
+            item = dataset_center.get(managed_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="managed dataset not found") from exc
+        symbol = str(normalized.get("symbol") or "").upper()
+        member = item.members.get(symbol)
+        if item.status == "archived":
+            raise HTTPException(status_code=409, detail="archived dataset is read-only")
+        if member is None or member.status != "active":
+            raise HTTPException(status_code=409, detail="managed dataset member is not writable")
+        if (normalized.get("provider") != item.provider
+                or normalized.get("asset_class") != item.asset_class
+                or normalized.get("raw_timeframe") != item.base_timeframe
+                or normalized.get("price_basis") != item.price_type
+                or set(normalized.get("bar_timeframes") or ())
+                - set(item.effective_derived_targets(symbol))
+                or (normalized.get("window_policy") or {}).get("mode") != "fixed"
+                or (normalized.get("schedule") or {}).get("schedule") != item.schedule):
+            raise HTTPException(status_code=409, detail="production definition does not match managed dataset")
+
     @app.post(f"{config.api_prefix}/auth/login")
     def auth_login(payload: dict, response: Response):
         username = str(payload.get("username", "")); password = str(payload.get("password", ""))
@@ -662,7 +691,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current = production_tasks_service.read(task_id)
         if current is None:
             raise HTTPException(status_code=404, detail="production task not found")
-        require_preview_definition({**(current.get("payload") or {}), **(override or {})})
+        definition = {**(current.get("payload") or {}), **(override or {})}
+        require_preview_definition(definition)
+        require_managed_definition(definition)
 
     @app.middleware("http")
     async def preview_provider_boundary(request: Request, call_next):
@@ -719,7 +750,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def production_task_create(payload: dict, request: Request,
                                x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
-        require_preview_definition(payload.get("definition") or {})
+        definition = payload.get("definition") or {}
+        require_preview_definition(definition)
+        require_managed_definition(definition)
         actor = operator_identity(request, config)
         try:
             task = production_tasks_service.create(
@@ -745,6 +778,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Side-effect-free preview of a plan definition; it writes nothing (spec 8)."""
         definition = payload.get("definition") or payload
         require_preview_definition(definition)
+        require_managed_definition(definition)
         return api_envelope(production_tasks_service.preview(definition))
 
     @app.get(f"{config.api_prefix}/production/tasks/{{task_id}}")
@@ -768,6 +802,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             command = "update"
         if command == "update" and payload.get("definition") is not None:
             require_preview_change(task_id, payload.get("definition"))
+        elif command == "resume":
+            require_preview_change(task_id, None)
         try:
             task = production_tasks_service.change(
                 task_id, command, definition=payload.get("definition"),
@@ -796,6 +832,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         command = str(payload.get("command") or "")
         if command == "copy" or (command == "update" and payload.get("definition") is not None):
             require_preview_change(task_id, payload.get("definition"))
+        elif command in {"resume", "run_now", "retry"}:
+            require_preview_change(task_id, None)
         actor = operator_identity(request, config)
         try:
             result = production_tasks_service.change(
