@@ -81,12 +81,12 @@ export function DatasetsPage() {
     if (!selected) { setRequests([]); setCoverage(null); return; }
     setDetailLoading(true); setError(""); setRequests([]); setCoverage(null);
     try {
-      const [maintenance, covered] = await Promise.all([
-        client.managedMaintenance(selected.dataset_id),
-        client.managedCoverage(selected.dataset_id),
-      ]);
+      const maintenance = await client.managedMaintenance(selected.dataset_id);
       setRequests(maintenance.data);
-      setCoverage(covered.data);
+      if (selected.status !== "archived") {
+        const covered = await client.managedCoverage(selected.dataset_id);
+        setCoverage(covered.data);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "无法读取维护状态");
     } finally { setDetailLoading(false); }
@@ -200,7 +200,9 @@ export function DatasetsPage() {
               : <Button variant="outline" onClick={() => void addMember()} disabled={busy === "member"}><Plus data-icon="inline-start" />加入 EURUSD</Button>}
           </CardContent>
           <CardFooter className="gap-2">
-            {selected.status === "paused"
+            {selected.status === "archived"
+              ? <p className="m-0 text-sm text-muted-foreground">已归档，只保留配置与执行审计。</p>
+              : selected.status === "paused"
               ? <Button variant="outline" onClick={() => void setStatus("active")} disabled={busy === "status"}><Play data-icon="inline-start" />恢复</Button>
               : <Button variant="outline" onClick={() => void setStatus("paused")} disabled={busy === "status"}><Pause data-icon="inline-start" />暂停</Button>}
           </CardFooter>
@@ -220,6 +222,8 @@ export function DatasetsPage() {
           <CardContent className="flex flex-wrap gap-3">
             {detailLoading
               ? <p role="status" className="m-0 text-sm text-muted-foreground">正在读取 coverage…</p>
+              : selected.status === "archived"
+                ? <p className="m-0 text-sm text-muted-foreground">归档数据集禁止行情查询；文件与审计仍保留。</p>
               : <><Badge variant="outline">1m · {coverage?.raw.row_count ?? 0} 行</Badge>
                 {(coverage?.derived ?? []).map((item) => <Badge key={item.timeframe} variant="outline">{item.timeframe} · {item.row_count} 行</Badge>)}</>}
           </CardContent>

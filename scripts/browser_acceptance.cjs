@@ -1040,6 +1040,47 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
   await p1Page.getByRole("button", { name: "恢复", exact: true }).click();
   await p1Page.getByText("数据集已恢复。", { exact: true }).waitFor();
 
+  await call("PATCH", `/managed-datasets/${secondManagedDatasetId}`, {
+    status: "archived", expected_version: 2,
+  });
+  const archivedMaintenancePattern = new RegExp(
+    `/api/v1/managed-datasets/${secondManagedDatasetId}/maintenance$`,
+  );
+  const archivedMaintenance = route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data: [{
+      request_id: "archived-audit-request", dataset_id: secondManagedDatasetId,
+      symbol: "EURUSD", start: "2026-09-14T11:00:00Z", end: "2026-09-14T12:00:00Z",
+      status: "completed", created_at: "2026-09-16T00:00:00Z", run_statuses: ["pass"],
+      execution: { execution_id: "archived-execution", task_id: "archived-task",
+        state: "completed", run_ids: ["archived-run"] },
+    }], meta: {}, errors: [] }),
+  });
+  await p1Page.route(archivedMaintenancePattern, archivedMaintenance);
+  let archivedCoverageCalls = 0;
+  const archivedCoveragePattern = new RegExp(
+    `/api/v1/managed-datasets/${secondManagedDatasetId}/coverage`,
+  );
+  const archivedCoverage = route => {
+    archivedCoverageCalls += 1;
+    return route.fulfill({ status: 409, contentType: "application/json",
+      body: JSON.stringify({ data: null, meta: {}, errors: [{ message: "archived dataset is not queryable" }] }) });
+  };
+  await p1Page.route(archivedCoveragePattern, archivedCoverage);
+  await p1Page.goto(base + `/datasets?dataset=${secondManagedDatasetId}`);
+  await p1Page.getByText("已归档，只保留配置与执行审计。", { exact: true }).waitFor();
+  await p1Page.getByText("archived", { exact: true }).first().waitFor();
+  await p1Page.locator("table tbody tr").filter({ hasText: "2026-09-14T11:00" }).waitFor();
+  assert.equal(await p1Page.getByRole("button", { name: "暂停", exact: true }).count(), 0,
+    "an archived dataset must expose no status write control");
+  assert.equal(archivedCoverageCalls, 0,
+    "the archived detail must not request forbidden market coverage");
+  await p1Page.unroute(archivedMaintenancePattern, archivedMaintenance);
+  await p1Page.unroute(archivedCoveragePattern, archivedCoverage);
+  await p1Page.goto(base + `/datasets?dataset=${managedDatasetId}`);
+  await p1Page.getByText(managedDatasetName, { exact: true }).last().waitFor();
+
   const managedDatasetsPattern = /\/api\/v1\/managed-datasets$/;
   let releaseManagedDatasets;
   const managedDatasetsGate = new Promise(resolve => { releaseManagedDatasets = resolve; });
@@ -1127,7 +1168,7 @@ const writeReceipt = (result, details, failureStage = null, errorCategory = null
       "p1_mobile_task_sheet", "p1_legacy_css_isolation",
       "p21_dataset_url_refresh_back", "p21_dataset_draft_retention",
       "p21_dataset_loading_empty", "p21_dataset_optimistic_status",
-      "p21_dataset_mobile_no_overflow"],
+      "p21_dataset_archived_audit_read_only", "p21_dataset_mobile_no_overflow"],
     original_run_id: failed.run_id,
     acknowledged_run_id: deadLetterId,
     fixture_run_id: fixture.run_id,
