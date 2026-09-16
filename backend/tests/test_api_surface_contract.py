@@ -98,6 +98,10 @@ MUTATING_ROUTES: dict[tuple[str, str], RoutePolicy] = {
     ("POST", "/api/v1/operations/scheduler/actions"): RoutePolicy(
         True, True, {"command": "pause_dispatch"},
         audit_action="scheduler.pause_dispatch", expect_status=200),
+    ("POST", "/api/v1/managed-datasets"): RoutePolicy(True, False, {"dataset_id": "x", "name": "x"}, expect_status=201),
+    ("PATCH", "/api/v1/managed-datasets/{dataset_id}"): RoutePolicy(True, False, {"notes": "x"}, expect_status=404),
+    ("POST", "/api/v1/managed-datasets/{dataset_id}/members"): RoutePolicy(True, False, {"symbol": "EURUSD"}, expect_status=404),
+    ("POST", "/api/v1/managed-datasets/{dataset_id}/maintenance"): RoutePolicy(True, False, {"symbol": "EURUSD", "start": START, "end": END}, expect_status=404),
 }
 
 AUDITING_ROUTES = sorted(route for route, policy in MUTATING_ROUTES.items() if policy.writes_audit)

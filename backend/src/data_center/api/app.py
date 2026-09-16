@@ -35,6 +35,7 @@ from data_center.catalog.snapshot import selector_hash
 from data_center.control_plane import timeframe_delta
 from data_center.deployment import validated_runtime_identity
 from data_center.domain.models import DeriveJob, IngestJob
+from data_center.dataset_center import DatasetCenter, DatasetMember
 from data_center.maintenance_tasks import (
     RUN_SCOPES,
     MaintenanceTaskError,
@@ -269,6 +270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     config.auth_password_hash = None
     app = FastAPI(title=config.app_name, version=__version__)
     ledger = RunLedger(config.ledger_path)
+    dataset_center = DatasetCenter(config.canonical_root)
     query_engine = QueryEngine(config.canonical_root)
     capacity_policy = config.capacity_policy()
     run_view = RunView(ledger, canonical_root=config.canonical_root,
@@ -979,6 +981,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get(f"{config.api_prefix}/datasets")
     def datasets() -> dict:
         return api_envelope([definition.as_dict() for definition in iter_dataset_definitions()])
+
+    @app.get(f"{config.api_prefix}/managed-datasets")
+    def managed_datasets() -> dict:
+        return api_envelope([item.as_dict() for item in dataset_center.list()])
+
+    @app.post(f"{config.api_prefix}/managed-datasets", status_code=201)
+    def create_managed_dataset(payload: dict, http_request: Request,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try:
+            item = dataset_center.create(dataset_id=payload["dataset_id"], name=payload["name"],
+                                         notes=payload.get("notes", ""), history_start=payload.get("history_start"))
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return api_envelope(item.as_dict())
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}")
+    def managed_dataset(dataset_id: str) -> dict:
+        try: return api_envelope(dataset_center.get(dataset_id).as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+
+    @app.patch(f"{config.api_prefix}/managed-datasets/{{dataset_id}}")
+    def update_managed_dataset(dataset_id: str, payload: dict,
+                               x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try: return api_envelope(dataset_center.update(dataset_id, **payload).as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+
+    @app.post(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/members", status_code=201)
+    def add_managed_member(dataset_id: str, payload: dict,
+                           x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try:
+            item = dataset_center.add_member(dataset_id, DatasetMember(symbol=payload["symbol"], history_start=payload.get("history_start"), derived_targets=tuple(payload.get("derived_targets", ["5m"]))))
+            return api_envelope(item.as_dict())
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        except (KeyError, ValueError) as exc: raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance", status_code=202)
+    def request_managed_maintenance(dataset_id: str, payload: dict, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), x_api_key: str | None = Header(default=None)) -> dict:
+        require_api_key(config, x_api_key)
+        try:
+            value = dataset_center.request(dataset_id, symbol=payload["symbol"], start=payload["start"], end=payload["end"], idempotency_key=idempotency_key)
+            return api_envelope(value)
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance")
+    def list_managed_maintenance(dataset_id: str) -> dict:
+        try: dataset_center.get(dataset_id)
+        except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
+        return api_envelope(dataset_center.requests(dataset_id))
 
     @app.get(f"{config.api_prefix}/runs/{{run_id}}")
     def run(run_id: str) -> dict:
