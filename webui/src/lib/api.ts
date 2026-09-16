@@ -26,6 +26,55 @@ export type Dataset = {
   partitioning: string[];
 };
 
+export type ManagedDatasetMember = {
+  symbol: string;
+  history_start: string | null;
+  derived_targets: string[] | null;
+  effective_history_start: string | null;
+  effective_derived_targets: string[];
+  status: string;
+};
+
+export type ManagedDataset = {
+  dataset_id: string;
+  name: string;
+  notes: string;
+  provider: "dukascopy";
+  asset_class: "fx";
+  price_type: "bid";
+  base_timeframe: "1m";
+  history_start: string | null;
+  derived_targets: string[];
+  schedule: "manual";
+  status: "active" | "paused" | "archived";
+  version: number;
+  members: Record<string, ManagedDatasetMember>;
+};
+
+export type ManagedMaintenance = {
+  request_id: string;
+  dataset_id: string;
+  symbol: string;
+  start: string;
+  end: string;
+  status: string;
+  created_at: string;
+  run_statuses?: string[];
+  execution?: {
+    execution_id: string;
+    task_id: string;
+    state: string;
+    run_ids: string[];
+    steps?: Array<{ stage: string; state: string; run_id?: string | null }>;
+  };
+};
+
+export type ManagedCoverage = {
+  dataset_id: string;
+  raw: BarsCoverage;
+  derived: MarketBarsCoverage[];
+};
+
 export type RunWindowReceipt = {
   ordinal: number;
   start: string;
@@ -763,6 +812,21 @@ export function createDataCenterClient(apiKey: string) {
     ready: () => request<ReadyState>("/health/ready", {}, { allowStatuses: [503] }),
     metrics: () => request<Metrics>("/metrics"),
     datasets: () => request<Dataset[]>("/datasets"),
+    managedDatasets: () => request<ManagedDataset[]>("/managed-datasets"),
+    createManagedDataset: (body: { dataset_id: string; name: string; notes?: string; history_start?: string | null }) =>
+      request<ManagedDataset>("/managed-datasets", { method: "POST", body: JSON.stringify(body) }),
+    updateManagedDataset: (datasetId: string, body: Partial<Pick<ManagedDataset, "name" | "notes" | "history_start" | "status">>) =>
+      request<ManagedDataset>(`/managed-datasets/${encodeURIComponent(datasetId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+    addManagedMember: (datasetId: string, body: { symbol: "EURUSD"; history_start?: string | null; derived_targets?: string[] }) =>
+      request<ManagedDataset>(`/managed-datasets/${encodeURIComponent(datasetId)}/members`, { method: "POST", body: JSON.stringify(body) }),
+    managedMaintenance: (datasetId: string) =>
+      request<ManagedMaintenance[]>(`/managed-datasets/${encodeURIComponent(datasetId)}/maintenance`),
+    submitManagedMaintenance: (datasetId: string, body: { symbol: "EURUSD"; start: string; end: string }, idempotencyKey: string) =>
+      request<Record<string, unknown>>(`/managed-datasets/${encodeURIComponent(datasetId)}/maintenance`, {
+        method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(body),
+      }),
+    managedCoverage: (datasetId: string, symbol = "EURUSD") =>
+      request<ManagedCoverage>(`/managed-datasets/${encodeURIComponent(datasetId)}/coverage${queryString({ symbol })}`),
     runs: (status?: string) => request<Run[]>(`/runs${queryString({ status: status && status !== "all" ? status : undefined })}`),
     findings: () => request<Finding[]>("/quality/findings"),
     barsPage: (query: BarsQuery, cursor?: string | null, pageSize = 1000) => request<Bar[]>(`/bars${queryString({

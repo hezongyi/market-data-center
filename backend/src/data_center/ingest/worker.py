@@ -18,6 +18,7 @@ from data_center.catalog.manifest import (
     write_manifest,
 )
 from data_center.domain.models import DeriveJob, IngestJob
+from data_center.dataset_center import managed_dataset_root
 from data_center.observability import check_alerts
 
 
@@ -88,8 +89,10 @@ class LocalWorker:
     def _command(self, directory):
         return [sys.executable, "-m", "data_center.ingest.process", str(directory)]
 
-    def _publish(self, directory, receipt):
+    def _publish(self, directory, receipt, managed_dataset_id=None):
         staged_root = directory / "parts"
+        publication_root = managed_dataset_root(
+            self.root, managed_dataset_id or receipt.get("managed_dataset_id"))
         manifest = json.loads(manifest_path(staged_root, receipt["run_id"]).read_text())
         paths = validate_manifest(staged_root, manifest)
         if any(manifest[key] != receipt[key] for key in
@@ -99,7 +102,7 @@ class LocalWorker:
             raise PublicationError("receipt part list does not match staged manifest")
         published = []
         for source, item in zip(paths, manifest["parts"]):
-            target = self.root / item["path"]
+            target = publication_root / item["path"]
             target.parent.mkdir(parents=True, exist_ok=True)
             # Copy to a fresh inode: staged files must not mutate a published part.
             if not target.exists():
@@ -123,7 +126,7 @@ class LocalWorker:
                 raise PublicationError("existing part differs from staged result")
             published.append(str(target))
         # Same bytes on every recovery; generated_at comes from the staged manifest.
-        published_manifest = write_manifest(self.root, manifest)
+        published_manifest = write_manifest(publication_root, manifest)
         return {**receipt, **({"paths": published} if "paths" in receipt else {"path": published[0]}),
                 "manifest": str(published_manifest)}
 
@@ -159,7 +162,9 @@ class LocalWorker:
                 self._persist_findings(job, payload)
             elif "receipt" in result:
                 try:
-                    receipt = self._publish(directory, result["receipt"])
+                    pending_receipt = {**result["receipt"], "managed_dataset_id":
+                                       (job.get("payload") or {}).get("managed_dataset_id")}
+                    receipt = self._publish(directory, pending_receipt)
                     self.ledger.finish_job(job["job_id"], job["run_id"], receipt)
                     self._persist_findings(job, receipt)
                 except PublicationError:
@@ -187,8 +192,10 @@ class LocalWorker:
                 return False
             directory = self.root / ".ingest-staging" / claimed["run_id"] / str(claimed["attempts"])
             directory.mkdir(parents=True, exist_ok=True)
+            execution_root = managed_dataset_root(
+                self.root, (claimed.get("payload") or {}).get("managed_dataset_id"))
             (directory / "request.json").write_text(json.dumps({
-                **claimed, "canonical_root": str(self.root),
+                **claimed, "canonical_root": str(execution_root),
                 # The child reads its fixed input from the ledger read-only; it
                 # never opens it for writing (spec 6.3).
                 "ledger_path": str(self.ledger.path)}))
@@ -209,7 +216,9 @@ class LocalWorker:
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], payload)
                     self._persist_findings(claimed, payload)
                 elif "receipt" in result:
-                    receipt = self._publish(directory, result["receipt"])
+                    pending_receipt = {**result["receipt"], "managed_dataset_id":
+                                       (claimed.get("payload") or {}).get("managed_dataset_id")}
+                    receipt = self._publish(directory, pending_receipt)
                     self.ledger.finish_job(claimed["job_id"], claimed["run_id"], receipt)
                     self._persist_findings(claimed, receipt)
                 else:

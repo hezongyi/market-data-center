@@ -126,12 +126,12 @@ def run_fixture_ingest(job: IngestJob, root: Path, ledger=None, run_id: str | No
             "severity": "error", "code": "coverage_not_ready",
             "coverage": coverage.as_dict(),
         }])
-    paths = write_provider_bars(root, rows, part_id=resolved_run_id,
-                                managed_dataset_id=job.managed_dataset_id)
+    paths = write_provider_bars(root, rows, part_id=resolved_run_id)
     output_hash = sha256(json.dumps([row.model_dump(mode="json") for row in rows], sort_keys=True).encode()).hexdigest()
     input_hash = sha256(job.model_dump_json().encode()).hexdigest()
     source_lineage = compact_source_hashes(row.source_hash for row in rows)
     payload = {"run_id": resolved_run_id, "job_id": job.job_id, "status": "pass", "dataset_id": job.dataset_id,
+               "managed_dataset_id": job.managed_dataset_id,
                "schema_version": SCHEMA_VERSION, "provider": job.provider,
                "run_kind": job.run_kind, "run_scope": job.run_scope,
                "execution_plan": execution_plan,

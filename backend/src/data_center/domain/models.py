@@ -60,6 +60,7 @@ class IngestJob(BaseModel):
 
 class DeriveJob(BaseModel):
     job_id: str
+    managed_dataset_id: str | None = None
     dataset_id: Literal["market_bars"] = "market_bars"
     provider: str
     symbol: str

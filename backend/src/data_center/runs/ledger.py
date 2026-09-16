@@ -1581,6 +1581,7 @@ class RunLedger:
             return job_payload.get(field) or job_payload.get(f"owner_{field}")
 
         return {"run_id": run_id, "job_id": job_payload["job_id"], "dataset_id": job_payload["dataset_id"],
+                "managed_dataset_id": job_payload.get("managed_dataset_id"),
                 "provider": job_payload.get("provider"), "request_id": job_payload.get("request_id"),
                 "symbol": job_payload.get("symbol"), "recipe_id": job_payload.get("recipe_id"),
                 "recipe_version": job_payload.get("recipe_version"), "input_snapshot_id": job_payload.get("input_snapshot_id"),

@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Database,
   ListChecks,
+  Layers3,
   LogOut,
   Menu,
   Moon,
@@ -46,6 +47,7 @@ import {
   useSidebar,
 } from "./components/shadcn/sidebar";
 import { TaskDetailPage, TasksPage } from "./p1/tasks";
+import { DatasetsPage } from "./p1/datasets";
 import { schedulerBannerLabel } from "./p1/scheduler-status";
 import "./p1.css";
 
@@ -204,6 +206,14 @@ function Shell({
         <SidebarContent>
           <SidebarGroupLabel>主导航</SidebarGroupLabel>
           <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild>
+                <Link to="/datasets" activeProps={{ className: "bg-accent" }}>
+                  <Layers3 />
+                  行情数据集
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild>
                 <Link
@@ -403,6 +413,11 @@ const tasksRoute = createRoute({
   }),
   component: TasksPage,
 });
+const datasetsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/datasets",
+  component: DatasetsPage,
+});
 const taskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/tasks/$taskId",
@@ -433,6 +448,7 @@ const legacyRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  datasetsRoute,
   tasksRoute,
   taskRoute,
   legacyRoute,
