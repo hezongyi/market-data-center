@@ -136,7 +136,8 @@ class DatasetCenter:
                 raise ValueError("P2.1 only supports 5m derived target")
             item.members[member.symbol] = member; item.version += 1; self._save(); return item
 
-    def request(self, dataset_id: str, *, symbol: str, start: str, end: str, idempotency_key: str | None = None) -> dict:
+    def submit_request(self, dataset_id: str, *, symbol: str, start: str, end: str,
+                       idempotency_key: str | None = None) -> tuple[dict, bool]:
         with self._lock:
             item = self.get(dataset_id)
             if item.status == "archived": raise ValueError("archived dataset is read-only")
@@ -154,9 +155,25 @@ class DatasetCenter:
                 existing = self._requests[key]
                 if (existing["symbol"], existing["start"], existing["end"]) != (symbol, start, end):
                     raise ValueError("idempotency key was already used for another request")
-                return existing
+                return existing, False
             value = {"request_id": str(uuid4()), "idempotency_key": raw_key, "dataset_id": dataset_id, "symbol": symbol, "start": start, "end": end, "status": "queued", "created_at": datetime.now(timezone.utc).isoformat()}
-            self._requests[key] = value; self._save(); return value
+            self._requests[key] = value; self._save(); return value, True
+
+    def request(self, dataset_id: str, *, symbol: str, start: str, end: str,
+                idempotency_key: str | None = None) -> dict:
+        return self.submit_request(
+            dataset_id, symbol=symbol, start=start, end=end,
+            idempotency_key=idempotency_key)[0]
+
+    def discard_unattached_request(self, dataset_id: str, idempotency_key: str,
+                                   request_id: str) -> None:
+        """Compensate a control-plane refusal without deleting an accepted replay."""
+        with self._lock:
+            key = f"{dataset_id}:{idempotency_key}"
+            value = self._requests.get(key)
+            if value and value.get("request_id") == request_id and not value.get("execution"):
+                del self._requests[key]
+                self._save()
 
     def requests(self, dataset_id: str) -> list[dict]:
         return [r for r in self._requests.values() if r["dataset_id"] == dataset_id]

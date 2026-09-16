@@ -646,6 +646,21 @@ def test_managed_dataset_raw_snapshot_and_derived_output_share_only_its_root(tmp
                              price_basis="bid", recipe_id="utc-24x7-1m-to-5m-ohlcv",
                              recipe_version="1") == []
     assert ledger.get_production_execution(execution["execution_id"])["state"] == "completed"
+    assert ledger.get_production_task("managed-one")["desired_state"] == "archived"
+    assert all(item["state"] == "archived" for item in ledger.ownership_of("managed-one"))
+    service.change("managed-one", "resume", now=NOW + timedelta(minutes=3))
+    assert ledger.get_production_task("managed-one")["desired_state"] == "enabled"
+    assert service.reconcile(now=NOW + timedelta(minutes=4))["managed_tasks_archived"] == [
+        "managed-one"]
+    assert ledger.get_production_task("managed-one")["desired_state"] == "archived"
+    replacement = service.create(definition={
+        "managed_dataset_id": "eurusd-one", "provider": "dukascopy", "symbol": "EURUSD",
+        "raw_timeframe": "1m", "price_basis": "bid", "bar_timeframes": ["5m"],
+        "window_policy": {"mode": "fixed", "start": "2026-09-14T12:00:00+00:00",
+                          "end": "2026-09-14T13:00:00+00:00"},
+        "schedule": {"schedule": "manual"},
+    }, name="managed next", task_id="managed-two", desired_state="enabled", now=NOW)
+    assert replacement["task_id"] == "managed-two"
 
 
 def test_a_hole_blocks_only_the_bucket_that_covers_it(tmp_path):

@@ -61,6 +61,40 @@ def test_managed_maintenance_uses_governed_ledger(tmp_path):
     assert requests[0]["execution"]["execution_id"] == payload["execution_id"]
 
 
+def test_refused_second_maintenance_does_not_leave_an_orphan_request(tmp_path):
+    config = Settings(canonical_root=tmp_path / "lake", ledger_path=tmp_path / "runs.sqlite",
+                      evidence_root=tmp_path / "evidence", api_key="key",
+                      capacity_fixed_free_ratio=0.9)
+    client = TestClient(create_app(config))
+    auth = {"X-API-Key": "key"}
+    assert client.post("/api/v1/managed-datasets", json={"dataset_id": "d", "name": "D"},
+                       headers=auth).status_code == 201
+    assert client.post("/api/v1/managed-datasets/d/members", json={"symbol": "EURUSD"},
+                       headers=auth).status_code == 201
+
+    first = client.post(
+        "/api/v1/managed-datasets/d/maintenance",
+        json={"symbol": "EURUSD", "start": "2026-01-01T00:00:00Z",
+              "end": "2026-01-01T01:00:00Z"},
+        headers={**auth, "Idempotency-Key": "first-window"},
+    )
+    assert first.status_code == 202
+    assert client.patch("/api/v1/managed-datasets/d", json={"status": "paused"},
+                        headers=auth).status_code == 200
+
+    second = client.post(
+        "/api/v1/managed-datasets/d/maintenance",
+        json={"symbol": "EURUSD", "start": "2026-01-01T01:00:00Z",
+              "end": "2026-01-01T02:00:00Z"},
+        headers={**auth, "Idempotency-Key": "paused-window"},
+    )
+
+    assert second.status_code == 409
+    requests = client.get("/api/v1/managed-datasets/d/maintenance").json()["data"]
+    assert len(requests) == 1
+    assert all(request.get("execution", {}).get("execution_id") for request in requests)
+
+
 def test_managed_canonical_root_never_falls_back_to_global_data(tmp_path):
     root = managed_dataset_root(tmp_path, "d")
     bar = ProviderBar(symbol="EURUSD", asset_class="fx", provider="dukascopy", timeframe="1m",

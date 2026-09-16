@@ -1796,13 +1796,35 @@ class ProductionTasks:
                 "last_execution_id": execution["execution_id"],
             })
             self.ledger.mark_execution_progress_reconciled(execution["execution_id"])
+        archived = self._archive_terminal_managed_tasks()
         return {"closed": closed, "advanced": advanced, "config_drift": drift["config_drift"],
                 "derived_planned": closure["planned"] + publications["planned"],
                 "derived_deferred": closure["deferred"] + publications["deferred"],
                 "fixed_continuations": fixed_continuations,
                 "provider_backoff_recorded": backoffs["recorded"],
                 "provider_backoff_cleared": backoffs["cleared"],
+                "managed_tasks_archived": archived,
                 "reconciled_at": now.isoformat()}
+
+    def _archive_terminal_managed_tasks(self) -> builtins.list[str]:
+        """Release one-shot dataset ownership, including pre-upgrade terminal tasks."""
+        archived = []
+        for task in self.ledger.list_production_tasks():
+            definition = task.get("payload") or {}
+            if (not definition.get("managed_dataset_id")
+                    or (definition.get("schedule") or {}).get("schedule") != "manual"
+                    or task.get("desired_state") == "archived"
+                    or self.ledger.active_execution_for_task(task["task_id"]) is not None):
+                continue
+            executions = self.ledger.list_production_executions(task["task_id"], limit=1)
+            if not executions or executions[0].get("state") not in {"completed", "failed", "skipped"}:
+                continue
+            execution_id = executions[0]["execution_id"]
+            self.change(
+                task["task_id"], "archive", actor="managed-dataset-reconciler",
+                request_id=execution_id)
+            archived.append(task["task_id"])
+        return archived
 
     def _advance_fixed_window_backlog(self, *, now: datetime, limit: int,
                                       step_budget: int) -> builtins.list[dict]:

@@ -1087,9 +1087,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), x_api_key: str | None = Header(default=None)) -> dict:
         require_api_key(config, x_api_key)
         request_key = idempotency_key or current_request_id()
+        created_request = False
+        value = None
         try:
             item = dataset_center.get(dataset_id)
-            value = dataset_center.request(dataset_id, symbol=payload["symbol"], start=payload["start"], end=payload["end"], idempotency_key=request_key)
+            value, created_request = dataset_center.submit_request(
+                dataset_id, symbol=payload["symbol"], start=payload["start"],
+                end=payload["end"], idempotency_key=request_key)
             if value.get("execution"):
                 return api_envelope(value["execution"])
             task_id = f"managed-{dataset_id}-{value['request_id']}"
@@ -1114,7 +1118,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             dataset_center.attach_execution(dataset_id, request_key, execution)
             return api_envelope(execution)
         except KeyError: raise HTTPException(status_code=404, detail="dataset not found")
-        except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            if created_request and value is not None:
+                dataset_center.discard_unattached_request(
+                    dataset_id, request_key, value["request_id"])
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.get(f"{config.api_prefix}/managed-datasets/{{dataset_id}}/maintenance")
     def list_managed_maintenance(dataset_id: str) -> dict:
