@@ -16,9 +16,12 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+from code_identity import checkout_identity as read_checkout_identity
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_PRODUCTION_ROOTS = (
@@ -41,31 +44,8 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=REPO, text=True).strip()
-
-
 def checkout_identity() -> dict:
-    status = subprocess.check_output(
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=REPO
-    )
-    fingerprint = hashlib.sha256(status)
-    fingerprint.update(
-        subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPO)
-    )
-    for record in status.split(b"\0"):
-        if record.startswith(b"?? "):
-            path = REPO / os.fsdecode(record[3:])
-            if path.is_file():
-                fingerprint.update(record[3:])
-                fingerprint.update(path.read_bytes())
-    return {
-        "checkout": str(REPO.resolve()),
-        "branch": run_git("branch", "--show-current") or "detached",
-        "commit": run_git("rev-parse", "HEAD"),
-        "dirty": bool(status),
-        "worktree_fingerprint": fingerprint.hexdigest(),
-    }
+    return read_checkout_identity(REPO)
 
 
 def validate_id(preview_id: str) -> None:
@@ -666,12 +646,15 @@ def start(args, root: Path, metadata_path: Path) -> int:
         ],
     }
     processes: dict[str, subprocess.Popen] = {}
+    # Persist the token before spawning; an interrupted launcher can still be
+    # stopped by token even if it never recorded the last component's PID.
+    write_json(metadata_path, metadata)
     try:
         for name in ("api", "worker", "scheduler", "vite"):
             process, record = spawn_component(name, commands[name], root, env)
             processes[name] = process
             metadata["processes"][name] = record
-        write_json(metadata_path, metadata)
+            write_json(metadata_path, metadata)
         api_base = f"http://127.0.0.1:{ports['api']}"
         wait_until(
             lambda: (
@@ -720,6 +703,49 @@ def command_status(args, root: Path, metadata_path: Path) -> int:
     return 0
 
 
+def render_card(payload: dict, ssh_target: str | None = None, receipt: Path | None = None) -> str:
+    identity = payload["recorded_identity"] or {}
+    rows = [
+        f"预览：{payload['id']}（{payload['state']} / {payload['mode']}）",
+        f"UI：{payload['ui_url']}", f"API docs：{payload['api_docs_url']}",
+        f"运行代码：{identity.get('branch')} / {identity.get('commit')} / dirty={identity.get('dirty')}",
+        f"代码指纹：{identity.get('worktree_fingerprint')}",
+        f"身份匹配：{payload['identity_ok']}；观测时间：{payload['observed_at']}",
+        f"进程：{', '.join(name + '=' + str(item['running']) for name, item in payload['processes'].items())}",
+        f"调度有效派发：{payload['scheduler']['effective_dispatch']}",
+        f"数据保留：{payload['data_root']}（stop 保留）；日志：{payload['logs']}",
+    ]
+    if ssh_target:
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@-]*", ssh_target):
+            raise PreviewError("--ssh-target must be a host or user@host without shell syntax")
+        ui_port = urllib.parse.urlsplit(payload["ui_url"]).port
+        api_port = urllib.parse.urlsplit(payload["api_docs_url"]).port
+        rows.append(f"远程访问：ssh -N -L {ui_port}:127.0.0.1:{ui_port} -L {api_port}:127.0.0.1:{api_port} {ssh_target}")
+    else:
+        rows.append("访问方式：上述地址仅限运行主机；远程访问请用 --ssh-target user@host 生成转发命令。")
+    if receipt:
+        try:
+            evidence = json.loads(receipt.read_text())
+        except (OSError, ValueError) as exc:
+            raise PreviewError("cannot read acceptance receipt") from exc
+        matching = (payload["identity_ok"] and evidence.get("source") == payload["actual_identity"]
+                    and evidence.get("source_after") == payload["actual_identity"])
+        rows.append(f"检查记录：{receipt}；结果={evidence.get('result')}；代码身份匹配={matching}")
+    rows.append("操作步骤 / 预期 / 产品验收范围与限制：由开发 agent 补充；健康或检查通过不自动代表产品验收通过。")
+    if payload["mode"] == "fixture":
+        rows.append("数据限制：fixture 模拟数据，不代表真实源验收。")
+    return "\n".join(rows)
+
+
+def command_card(args, root: Path, metadata_path: Path) -> int:
+    metadata = read_json(metadata_path)
+    if not metadata:
+        raise PreviewError(f"preview does not exist: {args.id}")
+    payload = status_payload(root, metadata)
+    print(render_card(payload, args.ssh_target, args.receipt))
+    return 0 if payload["state"] == "running" else 1
+
+
 def stop(args, root: Path, metadata_path: Path) -> int:
     metadata = read_json(metadata_path)
     if not metadata:
@@ -733,7 +759,7 @@ def stop(args, root: Path, metadata_path: Path) -> int:
 
 def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("start", "status", "stop"))
+    parser.add_argument("command", choices=("start", "status", "stop", "card"))
     parser.add_argument("--id", required=True)
     parser.add_argument("--base", help="controlled parent directory for preview state")
     parser.add_argument("--mode", choices=("fixture", "live"), default="fixture")
@@ -755,6 +781,8 @@ def parse_args(argv: list[str] | None = None):
         help="accept a visible checkout identity change on restart",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--ssh-target", help="user@host for a preview access card (does not connect)")
+    parser.add_argument("--receipt", type=Path, help="existing check receipt to reference in a preview card")
     return parser.parse_args(argv)
 
 
@@ -787,6 +815,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_mode_args(args)
     validate_id(args.id)
     root = preview_root(args.id, args.base)
+    if args.command == "card":
+        return command_card(args, root, root / "preview.json")
     root.parent.mkdir(parents=True, exist_ok=True)
     root.parent.chmod(0o700)
     lock_path = root.parent / ".dev-preview.lock"

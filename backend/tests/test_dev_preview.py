@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/dev_preview.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("dev_preview", SCRIPT)
 dev_preview = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

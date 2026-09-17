@@ -9,15 +9,18 @@
 | 文档 | 用途 |
 | --- | --- |
 | [EURUSD 产品与 UI 规范](specs/2026-09-15-eurusd-first-product-baseline.md) | 当前目标、shadcn-admin 基线、E01–E10 验收和旧工作接续 |
-| [数据集中心接续规范](specs/2026-09-16-dataset-centered-eurusd-maintenance.md) | 新管理模型、独立目录、暂停/归档语义、范围与 DS01–DS07；与原基线一起读取 |
+| [数据集中心接续规范](specs/2026-09-16-dataset-centered-eurusd-maintenance.md) | 新管理模型、独立目录、暂停/归档语义与 DS 验收编号；与原基线一起读取 |
 | [领域词汇](../CONTEXT.md) | 数据集、品种、计划、请求、执行和状态的统一含义 |
-| [独立预览环境规范](specs/2026-09-15-isolated-preview-environment.md) | 环境隔离、工具契约与 PV01–PV08；尚待 P0 实现 |
+| [独立预览环境规范](specs/2026-09-15-isolated-preview-environment.md) | 环境隔离、工具契约与 PV01–PV08；实现进度统一见路线图 |
 | [开发指南](development-guide.md) | 每阶段如何预览、反馈、评审、验证、合并与交接 |
+| [规划指南](planning-guide.md) | 如何编写或更新 spec、切片 plan，交接给实施 agent；含模板与简化条件 |
 | [实施路线图](plans/2026-09-15-eurusd-first-implementation.md) | P0–P5 顺序、实际进展及旧任务排期 |
 | [shadcn-admin 本地来源](references/shadcn-admin.md) | 固定 commit、本地参考路径与更新规则 |
 | [业务与流程分析](research/2026-09-15-eurusd-first-delivery-and-workflow-proposal.md)、[UI 研究](research/2026-09-15-shadcn-admin-adoption-research.md) | 调查证据与决策背景，不作为第二套实施规范 |
 
 specs 写要求与验收，plans 写顺序和任务，research 写证据和取舍；开发流程用 developer guide，实际产品操作用 user guide。AGENTS 负责路由到当前要求，并保留不可省略的执行规则。
+
+开发进度只在实施路线图维护；预览身份通过工具现场读回，历史执行事实放独立证据记录并引用。当前生产观察仍由 `current-state.md` 管理，不与开发进度混写。
 
 ## 运维与历史资料
 

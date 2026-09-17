@@ -42,9 +42,15 @@ Applies to all files under `webui/`. Read the root AGENTS first, then the curren
 - State which upstream layouts/components were used and which were adapted.
   Check actual package/lockfile imports and rendered pages, not just the spec.
 - Provide a working isolated preview URL, commit, data mode, operation steps and
-  limitations before merge; let the maintainer assess the actual task flow.
-- Build and relevant browser checks must pass. Review verifies component
-  provenance and business contracts; the maintainer verifies appearance and use.
+  limitations as soon as it is usable. The developing agent performs stage and
+  integration acceptance of the actual task flow, appearance, and interaction,
+  recording evidence under development guide §2. After passing, continue the
+  authorized workflow without waiting for maintainer feedback or sign-off.
+- Build and relevant browser checks must pass. The primary agent's self-review
+  checks component provenance and business contracts. Independent review follows
+  the single risk matrix in
+  [development guide §3](../docs/development-guide.md#3-验证与-review-按风险缩放);
+  UI work does not automatically require another agent or a separate review.
 - Record remaining legacy pages separately. Do not mark “shadcn migration done”
   because one button was imported or the old CSS build still passes.
 - Current fixed Vite proxy to 18380 is not an isolated preview. Follow the

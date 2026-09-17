@@ -2,14 +2,12 @@ name: Release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
         description: Existing immutable tag to publish
         required: true
-        default: v0.1.0
 
 permissions:
   contents: write
@@ -32,14 +30,19 @@ jobs:
       - name: Select release tag
         id: release
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="$INPUT_TAG"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
             tag="${GITHUB_REF_NAME}"
-          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            tag="${{ inputs.tag }}"
           else
-            tag="v0.1.0"
+            echo "release requires a tag push or an explicit manual tag" >&2
+            exit 1
           fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
           git rev-parse "refs/tags/$tag" >/dev/null
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-list -n 1 "$tag")" >> "$GITHUB_OUTPUT"
